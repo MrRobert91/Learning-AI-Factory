@@ -122,6 +122,43 @@ class ProfileVersionRead(BaseModel):
     created_at: datetime
 
 
+class WorkflowStep(BaseModel):
+    agent: str
+    profile_id: str | None = None
+    approval_after: bool | None = None
+
+
+class WorkflowCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    description: str = ""
+    steps: list[WorkflowStep] = Field(min_length=1)
+
+
+class WorkflowUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = None
+    steps: list[WorkflowStep] | None = None
+
+
+class WorkflowRead(BaseModel):
+    id: str
+    name: str
+    description: str
+    steps: list[dict]
+    is_template: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class WorkflowRunCreate(BaseModel):
+    workflow_id: str
+
+
+class ApprovalRequest(BaseModel):
+    approved: bool
+    feedback: str = ""
+
+
 class AgentRunCreate(BaseModel):
     agent: str = Field(description="curator | planner | lessons | slides | pipeline")
     profile_id: str | None = None

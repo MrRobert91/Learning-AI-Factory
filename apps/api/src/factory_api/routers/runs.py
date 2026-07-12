@@ -155,7 +155,7 @@ async def stream_run_events(job_id: str, user: CurrentUser):
                 for e in job.events
                 if e.seq > after_seq
             ]
-            finished = job.status in ("done", "failed")
+            finished = job.status in ("done", "failed", "waiting_approval")
             return job.status, events, finished
 
     async def generator():

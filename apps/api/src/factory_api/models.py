@@ -129,6 +129,22 @@ class AgentProfileVersion(Base):
     profile: Mapped[AgentProfile] = relationship(back_populates="versions")
 
 
+class Workflow(Base):
+    __tablename__ = "workflows"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    owner_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    # Linear chain: {"steps": [{"agent", "profile_id"?, "approval_after"?}]}
+    definition_json: Mapped[str] = mapped_column(Text, nullable=False)
+    is_template: Mapped[bool] = mapped_column(default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
 class Job(Base):
     __tablename__ = "jobs"
 

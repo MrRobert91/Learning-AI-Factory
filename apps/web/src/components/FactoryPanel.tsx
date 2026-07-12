@@ -8,11 +8,13 @@ import {
   type Artifact,
   type Job,
   type JobEvent,
+  type Workflow,
 } from "@/lib/api";
 
 const STATUS_LABELS: Record<string, string> = {
   queued: "En cola",
   running: "Ejecutando",
+  waiting_approval: "Esperando tu aprobación",
   done: "Completado",
   failed: "Fallido",
 };
@@ -64,6 +66,10 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
   const [activeRun, setActiveRun] = useState<Job | null>(null);
   const [events, setEvents] = useState<JobEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [workflows, setWorkflows] = useState<Workflow[]>([]);
+  const [workflowId, setWorkflowId] = useState<string>("");
+  const [feedback, setFeedback] = useState("");
+  const [deciding, setDeciding] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadType, setUploadType] = useState("slide_deck");
   const sourceRef = useRef<EventSource | null>(null);
@@ -92,6 +98,13 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
             ]),
           ),
         );
+      })
+      .catch(() => {});
+    api
+      .listWorkflows()
+      .then((list) => {
+        setWorkflows(list);
+        if (list.length > 0) setWorkflowId(list[0].id);
       })
       .catch(() => {});
     refresh().catch(() => {});
@@ -133,12 +146,40 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
       const job = await api.createAgentRun(
         projectId,
         agent,
-        agent === "pipeline" ? undefined : selectedProfile[agent] || undefined,
+        selectedProfile[agent] || undefined,
       );
       await refresh();
       follow(job);
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo lanzar");
+    }
+  }
+
+  async function startWorkflow() {
+    if (!workflowId) return;
+    setError(null);
+    try {
+      const job = await api.createWorkflowRun(projectId, workflowId);
+      await refresh();
+      follow(job);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo lanzar");
+    }
+  }
+
+  async function decide(approved: boolean) {
+    if (!activeRun) return;
+    setDeciding(true);
+    setError(null);
+    try {
+      const job = await api.approveRun(activeRun.id, approved, feedback);
+      setFeedback("");
+      await refresh();
+      follow(job);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo enviar");
+    } finally {
+      setDeciding(false);
     }
   }
 
@@ -162,20 +203,39 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
 
   return (
     <section className="mt-10">
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-medium">Fábrica</h2>
           <p className="text-sm text-neutral-400">
-            Ejecuta los agentes por etapas o fabrica todo el contenido de una vez.
+            Lanza un workflow completo o ejecuta agentes sueltos por etapas.
           </p>
         </div>
-        <button
-          onClick={() => start("pipeline")}
-          disabled={running}
-          className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium hover:bg-indigo-500 disabled:opacity-50"
-        >
-          🏭 Fabricar hasta slides
-        </button>
+        <div className="flex items-center gap-2">
+          <select
+            value={workflowId}
+            onChange={(e) => setWorkflowId(e.target.value)}
+            className="max-w-56 rounded-lg border border-neutral-700 bg-neutral-900 px-2 py-2 text-sm outline-none focus:border-indigo-500"
+          >
+            {workflows.map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.name}
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={startWorkflow}
+            disabled={running || !workflowId}
+            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium hover:bg-indigo-500 disabled:opacity-50"
+          >
+            🏭 Ejecutar workflow
+          </button>
+          <Link
+            href="/workflows"
+            className="text-sm text-indigo-400 hover:underline"
+          >
+            Editar
+          </Link>
+        </div>
       </div>
 
       <div className="mb-6 grid gap-3 sm:grid-cols-2">
@@ -224,8 +284,12 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
         <div className="mb-6 rounded-xl border border-neutral-800 bg-neutral-900/50 p-4">
           <div className="mb-2 flex items-center justify-between">
             <span className="text-sm font-medium">
-              {activeRun.kind === "pipeline_run" ? "Pipeline" : "Agente"} —{" "}
-              {STATUS_LABELS[activeRun.status]}
+              {activeRun.kind === "workflow_run"
+                ? "Workflow"
+                : activeRun.kind === "pipeline_run"
+                  ? "Pipeline"
+                  : "Agente"}{" "}
+              — {STATUS_LABELS[activeRun.status]}
             </span>
             <div className="flex items-center gap-3">
               {running && (
@@ -241,6 +305,36 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
           </div>
           {activeRun.status === "failed" && (
             <p className="mb-2 text-sm text-red-400">{activeRun.error}</p>
+          )}
+          {activeRun.status === "waiting_approval" && (
+            <div className="mb-3 rounded-lg border border-amber-900/60 bg-amber-950/30 p-3">
+              <p className="mb-2 text-sm text-amber-300">
+                ✋ El workflow está pausado esperando tu revisión. Revisa el
+                artefacto generado (lista de abajo) y decide.
+              </p>
+              <input
+                value={feedback}
+                onChange={(e) => setFeedback(e.target.value)}
+                placeholder="Feedback opcional (obligatorio si rechazas)"
+                className="mb-2 w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none focus:border-amber-500"
+              />
+              <div className="flex gap-2">
+                <button
+                  onClick={() => decide(true)}
+                  disabled={deciding}
+                  className="rounded-lg bg-emerald-600 px-4 py-1.5 text-sm font-medium hover:bg-emerald-500 disabled:opacity-50"
+                >
+                  Aprobar y continuar
+                </button>
+                <button
+                  onClick={() => decide(false)}
+                  disabled={deciding || !feedback.trim()}
+                  className="rounded-lg border border-red-900 px-4 py-1.5 text-sm text-red-400 hover:bg-red-950 disabled:opacity-50"
+                >
+                  Rechazar
+                </button>
+              </div>
+            </div>
           )}
           <ul className="max-h-64 space-y-1 overflow-y-auto">
             {events.map((e) => (

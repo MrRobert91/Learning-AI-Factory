@@ -30,11 +30,26 @@ make dev-web    # Next.js en :3000 (proxy /api → :8000)
 
 Tests y lint: `make test` · `make lint`
 
+## Qué hay implementado
+
+- **Asistente de Ideación** (`/ideation`): conversa sobre una idea vaga con
+  preguntas de 3-4 opciones hasta producir un brief que se convierte en proyecto.
+- **Agentes de contenido**: Curador (investigación web con fuentes), Diseñador
+  de curso (plan estructurado), Generador de lecciones (verifica el código en
+  sandbox) y Diseñador de slides (Marp → HTML/PDF/PPTX).
+- **Perfiles** (`/profiles`): cada agente se configura con `soul.md` +
+  `agents.md`, con versionado y varios perfiles por agente.
+- **Workflows** (`/workflows`): cadenas de agentes editables (React Flow) con
+  pausas de aprobación humana; motor LangGraph con checkpoints en SQLite
+  (pausar, aprobar/rechazar con feedback, reanudar incluso tras reinicio).
+- **Artefactos**: todas las salidas son artefactos versionados y descargables;
+  puedes subir material propio (p. ej. tus slides) como punto de entrada.
+
 ## Estructura
 
 ```
-apps/api/                  # FastAPI: REST + SSE, auth, dominio
+apps/api/                  # FastAPI: REST + SSE, auth, jobs, workflows (LangGraph)
 apps/web/                  # Next.js: UI (español)
-packages/factory_agents/   # Agentes, herramientas, orquestación, contratos
+packages/factory_agents/   # Agentes, herramientas, contratos de artefactos
 docs/PLAN.md               # Plan de implementación por fases
 ```

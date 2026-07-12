@@ -74,10 +74,20 @@ class JobRunner:
             return
         try:
             result = handler(job_id, payload)
-            self._finish(job_id, result=result)
+            if isinstance(result, dict) and result.get("__waiting__"):
+                self._set_waiting(job_id)
+            else:
+                self._finish(job_id, result=result)
         except Exception as exc:
             logger.exception("Job %s failed", job_id)
             self._finish(job_id, error=str(exc))
+
+    def _set_waiting(self, job_id: str) -> None:
+        with SessionLocal() as db:
+            job = db.get(Job, job_id)
+            if job is not None:
+                job.status = "waiting_approval"
+                db.commit()
 
     def _finish(self, job_id: str, result: dict | None = None, error: str = "") -> None:
         with SessionLocal() as db:
@@ -349,12 +359,51 @@ def run_pipeline_job(job_id: str, payload: dict) -> dict:
     return results
 
 
+def run_workflow_job(job_id: str, payload: dict) -> dict:
+    """Execute (or resume) a declarative workflow via LangGraph."""
+    from langgraph.types import Command
+
+    from factory_api.workflow_engine import (
+        WorkflowRejected,
+        build_workflow_graph,
+        open_checkpointer,
+    )
+
+    definition = payload["definition"]
+    graph = build_workflow_graph(definition, job_id, HANDLERS, append_event)
+    with open_checkpointer() as checkpointer:
+        compiled = graph.compile(checkpointer=checkpointer)
+        config = {"configurable": {"thread_id": job_id}}
+        if payload.get("_resume") is not None:
+            graph_input = Command(resume=payload["_resume"])
+        else:
+            graph_input = {"payload": payload, "results": {}}
+        try:
+            for update in compiled.stream(graph_input, config, stream_mode="updates"):
+                if "__interrupt__" in update:
+                    intr = update["__interrupt__"][0]
+                    value = intr.value if isinstance(intr.value, dict) else {}
+                    append_event(
+                        job_id,
+                        "approval_required",
+                        f"Aprobación requerida tras el paso {value.get('step', '?')} "
+                        f"({value.get('agent', '?')})",
+                        value,
+                    )
+                    return {"__waiting__": True}
+        except WorkflowRejected as exc:
+            raise RuntimeError(str(exc)) from exc
+        state = compiled.get_state(config)
+        return dict(state.values.get("results", {}))
+
+
 HANDLERS = {
     "curator_run": run_curator_job,
     "planner_run": run_planner_job,
     "lessons_run": run_lessons_job,
     "slides_run": run_slides_job,
     "pipeline_run": run_pipeline_job,
+    "workflow_run": run_workflow_job,
 }
 
 runner = JobRunner()

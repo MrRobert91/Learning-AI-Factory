@@ -134,10 +134,26 @@ export interface JobEvent {
   created_at: string;
 }
 
+export interface WorkflowStep {
+  agent: string;
+  profile_id?: string | null;
+  approval_after?: boolean | null;
+}
+
+export interface Workflow {
+  id: string;
+  name: string;
+  description: string;
+  steps: WorkflowStep[];
+  is_template: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Job {
   id: string;
   kind: string;
-  status: "queued" | "running" | "done" | "failed";
+  status: "queued" | "running" | "waiting_approval" | "done" | "failed";
   error: string;
   project_id: string | null;
   result: { artifact_id?: string } | null;
@@ -253,4 +269,37 @@ export const api = {
   listProjectArtifacts: (projectId: string) =>
     request<Artifact[]>(`/api/projects/${projectId}/artifacts`),
   getArtifact: (id: string) => request<Artifact>(`/api/artifacts/${id}`),
+  listWorkflows: () => request<Workflow[]>("/api/workflows"),
+  getWorkflow: (id: string) => request<Workflow>(`/api/workflows/${id}`),
+  createWorkflow: (input: {
+    name: string;
+    description?: string;
+    steps: WorkflowStep[];
+  }) =>
+    request<Workflow>("/api/workflows", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateWorkflow: (
+    id: string,
+    input: Partial<{ name: string; description: string; steps: WorkflowStep[] }>,
+  ) =>
+    request<Workflow>(`/api/workflows/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  deleteWorkflow: (id: string) =>
+    request<void>(`/api/workflows/${id}`, { method: "DELETE" }),
+  createWorkflowRun: (projectId: string, workflowId: string) =>
+    request<Job>(`/api/projects/${projectId}/workflow-runs`, {
+      method: "POST",
+      body: JSON.stringify({ workflow_id: workflowId }),
+    }),
+  approveRun: (jobId: string, approved: boolean, feedback = "") =>
+    request<Job>(`/api/runs/${jobId}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ approved, feedback }),
+    }),
+  cancelRun: (jobId: string) =>
+    request<Job>(`/api/runs/${jobId}/cancel`, { method: "POST" }),
 };

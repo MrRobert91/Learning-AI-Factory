@@ -12,6 +12,7 @@ dependencies = [
     "itsdangerous>=2.1",
     "factory-agents",
     "python-multipart>=0.0.32",
+    "langgraph-checkpoint-sqlite>=3.1.0",
 ]
 
 [dependency-groups]

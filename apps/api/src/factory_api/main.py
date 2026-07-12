@@ -6,8 +6,17 @@ from sqlalchemy import select
 from factory_api.config import get_settings
 from factory_api.db import SessionLocal
 from factory_api.models import User
-from factory_api.routers import agents, artifacts, auth, ideation, projects, runs
+from factory_api.routers import (
+    agents,
+    artifacts,
+    auth,
+    ideation,
+    projects,
+    runs,
+    workflows,
+)
 from factory_api.routers.agents import seed_default_profiles
+from factory_api.routers.workflows import seed_template_workflows
 from factory_api.runner import runner
 
 
@@ -32,6 +41,7 @@ async def lifespan(_app: FastAPI):
     ensure_default_user()
     with SessionLocal() as db:
         seed_default_profiles(db)
+        seed_template_workflows(db)
     await runner.start()
     yield
     await runner.stop()
@@ -45,6 +55,7 @@ app.include_router(ideation.router)
 app.include_router(agents.router)
 app.include_router(runs.router)
 app.include_router(artifacts.router)
+app.include_router(workflows.router)
 
 
 @app.get("/api/health")
