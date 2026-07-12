@@ -1,6 +1,8 @@
+import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from factory_agents.tools.marp import available_renders
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -16,6 +18,17 @@ router = APIRouter(prefix="/api", tags=["artifacts"])
 DB = Annotated[Session, Depends(get_db)]
 
 TEXT_FORMATS = {"markdown", "json", "text"}
+UPLOADABLE_TYPES = {
+    "research_brief": "markdown",
+    "course_plan": "json",
+    "lesson_content": "markdown",
+    "slide_deck": "markdown",
+}
+RENDER_MEDIA_TYPES = {
+    "html": "text/html",
+    "pdf": "application/pdf",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+}
 
 
 def _check_owner(db: Session, user_id: str, artifact: Artifact | None) -> Artifact:
@@ -28,11 +41,11 @@ def _check_owner(db: Session, user_id: str, artifact: Artifact | None) -> Artifa
 
 
 def _artifact_read(artifact: Artifact, include_content: bool) -> ArtifactRead:
+    path = get_settings().data_dir / artifact.path
     content = None
-    if include_content and artifact.format in TEXT_FORMATS:
-        path = get_settings().data_dir / artifact.path
-        if path.is_file():
-            content = path.read_text(encoding="utf-8")
+    if include_content and artifact.format in TEXT_FORMATS and path.is_file():
+        content = path.read_text(encoding="utf-8")
+    renders = sorted(available_renders(path)) if artifact.type == "slide_deck" else []
     return ArtifactRead(
         id=artifact.id,
         project_id=artifact.project_id,
@@ -42,6 +55,7 @@ def _artifact_read(artifact: Artifact, include_content: bool) -> ArtifactRead:
         created_by_job_id=artifact.created_by_job_id,
         created_at=artifact.created_at,
         content=content,
+        renders=renders,
     )
 
 
@@ -69,3 +83,58 @@ def download_artifact(artifact_id: str, user: CurrentUser, db: DB):
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Fichero no encontrado")
     return FileResponse(path, filename=path.name)
+
+
+@router.get("/artifacts/{artifact_id}/render/{fmt}")
+def get_artifact_render(artifact_id: str, fmt: str, user: CurrentUser, db: DB):
+    artifact = _check_owner(db, user.id, db.get(Artifact, artifact_id))
+    if fmt not in RENDER_MEDIA_TYPES:
+        raise HTTPException(status_code=404, detail="Formato desconocido")
+    renders = available_renders(get_settings().data_dir / artifact.path)
+    if fmt not in renders:
+        raise HTTPException(status_code=404, detail=f"Render {fmt} no disponible")
+    return FileResponse(
+        renders[fmt], media_type=RENDER_MEDIA_TYPES[fmt], filename=f"{artifact.title}.{fmt}"
+    )
+
+
+@router.post(
+    "/projects/{project_id}/artifacts",
+    response_model=ArtifactRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_artifact(
+    project_id: str,
+    user: CurrentUser,
+    db: DB,
+    file: Annotated[UploadFile, File()],
+    type: Annotated[str, Form()],
+    title: Annotated[str, Form()] = "",
+):
+    """Entry point for external material (e.g. your own slides or notes)."""
+    project = db.get(Project, project_id)
+    if project is None or project.owner_id != user.id:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if type not in UPLOADABLE_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Tipo no subible. Permitidos: {', '.join(sorted(UPLOADABLE_TYPES))}",
+        )
+    settings = get_settings()
+    format_ = UPLOADABLE_TYPES[type]
+    ext = {"markdown": "md", "json": "json"}[format_]
+    rel_path = f"artifacts/{project_id}/upload-{type}-{uuid.uuid4().hex[:8]}.{ext}"
+    abs_path = settings.data_dir / rel_path
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+    abs_path.write_bytes(await file.read())
+    artifact = Artifact(
+        project_id=project_id,
+        type=type,
+        format=format_,
+        title=title or (file.filename or type),
+        path=rel_path,
+    )
+    db.add(artifact)
+    db.commit()
+    db.refresh(artifact)
+    return _artifact_read(artifact, include_content=False)

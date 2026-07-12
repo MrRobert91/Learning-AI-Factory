@@ -39,12 +39,24 @@ export default function ArtifactViewerPage() {
         >
           ← Volver al proyecto
         </Link>
-        <a
-          href={`/api/artifacts/${artifact.id}/download`}
-          className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm text-neutral-300 hover:bg-neutral-900"
-        >
-          Descargar
-        </a>
+        <div className="flex gap-2">
+          {artifact.renders.map((fmt) => (
+            <a
+              key={fmt}
+              href={`/api/artifacts/${artifact.id}/render/${fmt}`}
+              target={fmt === "html" ? "_blank" : undefined}
+              className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm uppercase text-neutral-300 hover:bg-neutral-900"
+            >
+              {fmt}
+            </a>
+          ))}
+          <a
+            href={`/api/artifacts/${artifact.id}/download`}
+            className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm text-neutral-300 hover:bg-neutral-900"
+          >
+            Descargar {artifact.format === "markdown" ? ".md" : ""}
+          </a>
+        </div>
       </div>
       <h1 className="mb-1 text-2xl font-semibold">
         {artifact.title || artifact.type}
@@ -53,6 +65,13 @@ export default function ArtifactViewerPage() {
         {artifact.type} · {artifact.format} ·{" "}
         {new Date(artifact.created_at).toLocaleString("es")}
       </p>
+      {artifact.renders.includes("html") && (
+        <iframe
+          src={`/api/artifacts/${artifact.id}/render/html`}
+          title="Vista previa de slides"
+          className="mb-6 aspect-video w-full rounded-xl border border-neutral-800 bg-white"
+        />
+      )}
       {artifact.content !== null ? (
         <article className="whitespace-pre-wrap rounded-xl border border-neutral-800 bg-neutral-900/50 p-6 font-mono text-sm leading-relaxed">
           {artifact.content}

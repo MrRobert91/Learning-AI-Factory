@@ -1,11 +1,16 @@
 # Build context is the repo root (the API depends on packages/factory_agents).
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
-# ffmpeg and fonts are needed by later phases (video rendering); installing
-# them here keeps the promise of a single backend image.
+# ffmpeg (video), Chromium + Node (marp-cli slide rendering) and fonts all
+# live in this image to keep the promise of a single backend container.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends \
+        ffmpeg fonts-dejavu-core chromium nodejs npm \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g @marp-team/marp-cli \
+    && npm cache clean --force
+
+ENV CHROME_PATH=/usr/bin/chromium
 
 WORKDIR /app
 

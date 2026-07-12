@@ -34,7 +34,9 @@ def test_curator_run_produces_artifact(auth_client, monkeypatch):
     monkeypatch.setattr("factory_agents.agents.curator.run_curator", _fake_curator)
     project = _create_project(auth_client)
 
-    resp = auth_client.post(f"/api/projects/{project['id']}/curator-runs", json={})
+    resp = auth_client.post(
+        f"/api/projects/{project['id']}/agent-runs", json={"agent": "curator"}
+    )
     assert resp.status_code == 201
     job_id = resp.json()["id"]
 
@@ -63,7 +65,7 @@ def test_curator_run_failure_is_reported(auth_client, monkeypatch):
     monkeypatch.setattr("factory_agents.agents.curator.run_curator", _failing_curator)
     project = _create_project(auth_client)
     job_id = auth_client.post(
-        f"/api/projects/{project['id']}/curator-runs", json={}
+        f"/api/projects/{project['id']}/agent-runs", json={"agent": "curator"}
     ).json()["id"]
     job = _wait_for_job(auth_client, job_id)
     assert job["status"] == "failed"
@@ -84,8 +86,8 @@ def test_curator_run_with_specific_profile(auth_client, monkeypatch):
     ).json()
     project = _create_project(auth_client)
     job_id = auth_client.post(
-        f"/api/projects/{project['id']}/curator-runs",
-        json={"profile_id": profile["id"]},
+        f"/api/projects/{project['id']}/agent-runs",
+        json={"agent": "curator", "profile_id": profile["id"]},
     ).json()["id"]
     job = _wait_for_job(auth_client, job_id)
     assert job["status"] == "done"
@@ -98,7 +100,7 @@ def test_run_events_sse(auth_client, monkeypatch):
     monkeypatch.setattr("factory_agents.agents.curator.run_curator", _fake_curator)
     project = _create_project(auth_client)
     job_id = auth_client.post(
-        f"/api/projects/{project['id']}/curator-runs", json={}
+        f"/api/projects/{project['id']}/agent-runs", json={"agent": "curator"}
     ).json()["id"]
     _wait_for_job(auth_client, job_id)
 

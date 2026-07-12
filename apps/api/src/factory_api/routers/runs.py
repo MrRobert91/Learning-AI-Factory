@@ -13,7 +13,7 @@ from factory_api.db import SessionLocal, get_db
 from factory_api.models import AgentProfile, IdeationSession, Job, JobEvent, Project
 from factory_api.routers.agents import get_default_profile
 from factory_api.runner import runner
-from factory_api.schemas import CuratorRunCreate, JobEventRead, JobRead
+from factory_api.schemas import AgentRunCreate, JobEventRead, JobRead
 
 router = APIRouter(prefix="/api", tags=["runs"])
 
@@ -45,51 +45,76 @@ def _job_read(job: Job, include_events: bool = True) -> JobRead:
     )
 
 
+RUNNABLE_AGENTS = ("curator", "planner", "lessons", "slides")
+
+
+def _profile_fields(profile: AgentProfile | None) -> dict:
+    if profile is None:
+        return {"soul_md": "", "agents_md": "", "model": None}
+    config = json.loads(profile.config_json or "{}")
+    return {
+        "soul_md": profile.soul_md,
+        "agents_md": profile.agents_md,
+        "model": config.get("model"),
+    }
+
+
+def _base_payload(db: Session, project: Project) -> dict:
+    # Reuse the idea brief when the project came from an ideation session.
+    brief = None
+    session = db.scalars(
+        select(IdeationSession).where(IdeationSession.project_id == project.id).limit(1)
+    ).first()
+    if session is not None and session.brief_json:
+        brief = json.loads(session.brief_json)
+    project_dict = {
+        "title": project.title,
+        "topic": project.topic,
+        "audience": project.audience,
+        "level": project.level,
+        "language": project.language,
+        "style": project.style,
+    }
+    return {
+        "project_id": project.id,
+        "project_title": project.title,
+        "project": project_dict,
+        "style": project.style,
+        "task_input": render_curator_input(project_dict, brief),
+    }
+
+
 @router.post(
-    "/projects/{project_id}/curator-runs",
+    "/projects/{project_id}/agent-runs",
     response_model=JobRead,
     status_code=status.HTTP_201_CREATED,
 )
-def create_curator_run(project_id: str, body: CuratorRunCreate, user: CurrentUser, db: DB):
+def create_agent_run(project_id: str, body: AgentRunCreate, user: CurrentUser, db: DB):
     project = db.get(Project, project_id)
     if project is None or project.owner_id != user.id:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
 
-    if body.profile_id:
-        profile = db.get(AgentProfile, body.profile_id)
-        if profile is None or profile.agent_type != "curator":
-            raise HTTPException(status_code=404, detail="Perfil de curador no encontrado")
+    payload = _base_payload(db, project)
+
+    if body.agent == "pipeline":
+        payload["stages"] = {
+            agent: _profile_fields(get_default_profile(db, agent))
+            for agent in RUNNABLE_AGENTS
+        }
+        kind = "pipeline_run"
+    elif body.agent in RUNNABLE_AGENTS:
+        if body.profile_id:
+            profile = db.get(AgentProfile, body.profile_id)
+            if profile is None or profile.agent_type != body.agent:
+                raise HTTPException(status_code=404, detail="Perfil no encontrado")
+        else:
+            profile = get_default_profile(db, body.agent)
+        payload.update(_profile_fields(profile))
+        kind = f"{body.agent}_run"
     else:
-        profile = get_default_profile(db, "curator")
+        raise HTTPException(status_code=422, detail=f"Agente no ejecutable: {body.agent}")
 
-    # Reuse the idea brief when the project came from an ideation session.
-    brief = None
-    session = db.scalars(
-        select(IdeationSession).where(IdeationSession.project_id == project_id).limit(1)
-    ).first()
-    if session is not None and session.brief_json:
-        brief = json.loads(session.brief_json)
-
-    config = json.loads(profile.config_json or "{}") if profile else {}
-    payload = {
-        "project_id": project.id,
-        "project_title": project.title,
-        "task_input": render_curator_input(
-            {
-                "title": project.title,
-                "topic": project.topic,
-                "audience": project.audience,
-                "level": project.level,
-                "language": project.language,
-                "style": project.style,
-            },
-            brief,
-        ),
-        "soul_md": profile.soul_md if profile else "",
-        "agents_md": profile.agents_md if profile else "",
-        "model": config.get("model"),
-    }
-    job = Job(kind="curator_run", project_id=project.id, payload_json=json.dumps(payload))
+    job = Job(kind=kind, project_id=project.id, payload_json=json.dumps(payload))
     db.add(job)
     db.commit()
     db.refresh(job)

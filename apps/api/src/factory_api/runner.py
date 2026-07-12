@@ -131,6 +131,29 @@ def _save_artifact(
         return artifact.id
 
 
+def _latest_artifact_content(project_id: str, type_: str) -> tuple[str | None, str | None]:
+    """Return (artifact_id, content) of the newest artifact of a type."""
+    settings = get_settings()
+    with SessionLocal() as db:
+        artifact = db.scalars(
+            select(Artifact)
+            .where(Artifact.project_id == project_id, Artifact.type == type_)
+            .order_by(Artifact.created_at.desc())
+            .limit(1)
+        ).first()
+        if artifact is None:
+            return None, None
+        path = settings.data_dir / artifact.path
+        return artifact.id, path.read_text(encoding="utf-8") if path.is_file() else None
+
+
+def _require_artifact(project_id: str, type_: str, hint: str) -> str:
+    _id, content = _latest_artifact_content(project_id, type_)
+    if not content:
+        raise RuntimeError(f"Falta el artefacto '{type_}': {hint}")
+    return content
+
+
 def run_curator_job(job_id: str, payload: dict) -> dict:
     # Imported lazily so tests can monkeypatch factory_agents pieces easily.
     from factory_agents.agents.curator import run_curator
@@ -166,8 +189,172 @@ def run_curator_job(job_id: str, payload: dict) -> dict:
     return {"artifact_id": artifact_id}
 
 
+def run_planner_job(job_id: str, payload: dict) -> dict:
+    from factory_agents.agents.planner import render_planner_input, run_planner
+    from factory_agents.llm import get_llm_client
+
+    settings = get_settings()
+    brief_md = _require_artifact(
+        payload["project_id"], "research_brief", "ejecuta antes el Curador"
+    )
+    append_event(job_id, "stage", "Diseñando la estructura del curso…")
+    plan = run_planner(
+        render_planner_input(payload.get("project", {}), brief_md),
+        client=get_llm_client(settings.openrouter_api_key),
+        model=payload.get("model") or settings.openrouter_model,
+        soul_md=payload.get("soul_md", ""),
+        agents_md=payload.get("agents_md", ""),
+    )
+    artifact_id = _save_artifact(
+        job_id,
+        payload["project_id"],
+        "course_plan",
+        f"Plan del curso — {plan.course_title}",
+        plan.model_dump_json(indent=2),
+        format_="json",
+    )
+    total = sum(len(m.lessons) for m in plan.modules)
+    append_event(
+        job_id,
+        "artifact",
+        f"Plan generado: {len(plan.modules)} módulos, {total} lecciones",
+        {"artifact_id": artifact_id},
+    )
+    return {"artifact_id": artifact_id}
+
+
+def run_lessons_job(job_id: str, payload: dict) -> dict:
+    from factory_agents.agents.lessons import render_lesson_input, run_lesson
+    from factory_agents.contracts import CoursePlan
+
+    settings = get_settings()
+    plan_json = _require_artifact(
+        payload["project_id"], "course_plan", "ejecuta antes el Diseñador de curso"
+    )
+    brief_md = _require_artifact(
+        payload["project_id"], "research_brief", "ejecuta antes el Curador"
+    )
+    plan = CoursePlan.model_validate_json(plan_json)
+
+    artifact_ids: list[str] = []
+    for mi, li, _module, lesson in plan.iter_lessons():
+        label = f"{mi}.{li} {lesson.title}"
+        append_event(job_id, "stage", f"Escribiendo lección {label}…")
+        final_text = ""
+        for event in run_lesson(
+            render_lesson_input(plan, mi, li, brief_md),
+            model=payload.get("model") or settings.openrouter_model,
+            api_key=settings.openrouter_api_key,
+            workspace_dir=str(settings.data_dir / "runs" / job_id / f"lesson-{mi}-{li}"),
+            soul_md=payload.get("soul_md", ""),
+            agents_md=payload.get("agents_md", ""),
+        ):
+            if event.type == "result":
+                final_text = event.summary
+            elif event.type == "tool_call":
+                append_event(job_id, event.type, f"[{label}] {event.summary}", event.data)
+        if not final_text.strip():
+            raise RuntimeError(f"La lección {label} quedó vacía")
+        artifact_id = _save_artifact(
+            job_id, payload["project_id"], "lesson_content", label, final_text
+        )
+        artifact_ids.append(artifact_id)
+        append_event(job_id, "artifact", f"Lección {label} lista", {"artifact_id": artifact_id})
+
+    return {"artifact_ids": artifact_ids}
+
+
+def run_slides_job(job_id: str, payload: dict) -> dict:
+    from factory_agents.agents.slides import render_slides_input, run_slides
+    from factory_agents.contracts import CoursePlan
+    from factory_agents.llm import get_llm_client
+    from factory_agents.tools.marp import marp_available, render_deck
+
+    settings = get_settings()
+    plan_json = _require_artifact(
+        payload["project_id"], "course_plan", "ejecuta antes el Diseñador de curso"
+    )
+    plan = CoursePlan.model_validate_json(plan_json)
+    client = get_llm_client(settings.openrouter_api_key)
+
+    with SessionLocal() as db:
+        lesson_artifacts = db.scalars(
+            select(Artifact)
+            .where(
+                Artifact.project_id == payload["project_id"],
+                Artifact.type == "lesson_content",
+            )
+            .order_by(Artifact.created_at)
+        ).all()
+        # Newest artifact per lesson title wins (lessons can be regenerated).
+        by_title = {a.title: (a.id, a.path) for a in lesson_artifacts}
+    if not by_title:
+        raise RuntimeError(
+            "Falta el artefacto 'lesson_content': ejecuta antes el Generador de lecciones"
+        )
+
+    if not marp_available():
+        append_event(
+            job_id,
+            "stage",
+            "marp-cli no está instalado: se generará solo el Markdown de las slides",
+        )
+
+    artifact_ids: list[str] = []
+    for title, (_lesson_id, rel_path) in by_title.items():
+        append_event(job_id, "stage", f"Diseñando slides de {title}…")
+        lesson_md = (settings.data_dir / rel_path).read_text(encoding="utf-8")
+        deck = run_slides(
+            render_slides_input(lesson_md, plan.course_title, payload.get("style", "")),
+            client=client,
+            model=payload.get("model") or settings.openrouter_model,
+            soul_md=payload.get("soul_md", ""),
+            agents_md=payload.get("agents_md", ""),
+        )
+        artifact_id = _save_artifact(
+            job_id, payload["project_id"], "slide_deck", f"Slides — {title}", deck
+        )
+        with SessionLocal() as db:
+            artifact = db.get(Artifact, artifact_id)
+            deck_path = settings.data_dir / artifact.path
+        rendered = render_deck(deck_path)
+        artifact_ids.append(artifact_id)
+        append_event(
+            job_id,
+            "artifact",
+            f"Slides de {title} listas"
+            + (f" (render: {', '.join(rendered)})" if rendered else ""),
+            {"artifact_id": artifact_id},
+        )
+
+    return {"artifact_ids": artifact_ids}
+
+
+def run_pipeline_job(job_id: str, payload: dict) -> dict:
+    """Fixed content chain: curator → planner → lessons → slides."""
+    stages = payload.get("stages", {})
+    results: dict[str, dict] = {}
+
+    steps = [
+        ("curator", "① Curador de contenido", run_curator_job),
+        ("planner", "② Diseñador de curso", run_planner_job),
+        ("lessons", "③ Generador de lecciones", run_lessons_job),
+        ("slides", "④ Diseñador de slides", run_slides_job),
+    ]
+    for agent, label, handler in steps:
+        append_event(job_id, "stage", f"{label} — iniciando")
+        stage_payload = {**payload, **stages.get(agent, {})}
+        results[agent] = handler(job_id, stage_payload)
+
+    return results
+
+
 HANDLERS = {
     "curator_run": run_curator_job,
+    "planner_run": run_planner_job,
+    "lessons_run": run_lessons_job,
+    "slides_run": run_slides_job,
+    "pipeline_run": run_pipeline_job,
 }
 
 runner = JobRunner()

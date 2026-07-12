@@ -122,7 +122,8 @@ class ProfileVersionRead(BaseModel):
     created_at: datetime
 
 
-class CuratorRunCreate(BaseModel):
+class AgentRunCreate(BaseModel):
+    agent: str = Field(description="curator | planner | lessons | slides | pipeline")
     profile_id: str | None = None
 
 
@@ -156,6 +157,7 @@ class ArtifactRead(BaseModel):
     created_by_job_id: str | None
     created_at: datetime
     content: str | None = None
+    renders: list[str] = []
 
 
 class ProjectRead(BaseModel):

@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { api, type Project } from "@/lib/api";
 import ProjectForm from "@/components/ProjectForm";
-import CuratorRunner from "@/components/CuratorRunner";
+import FactoryPanel from "@/components/FactoryPanel";
 
 export default function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -71,7 +71,7 @@ export default function ProjectDetailPage() {
         }}
       />
       {saved && <p className="mt-3 text-sm text-emerald-400">Guardado ✓</p>}
-      <CuratorRunner projectId={id} />
+      <FactoryPanel projectId={id} />
     </main>
   );
 }

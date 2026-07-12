@@ -11,6 +11,7 @@ dependencies = [
     "pydantic-settings>=2.2",
     "itsdangerous>=2.1",
     "factory-agents",
+    "python-multipart>=0.0.32",
 ]
 
 [dependency-groups]

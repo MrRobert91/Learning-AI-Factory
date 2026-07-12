@@ -156,6 +156,7 @@ export interface Artifact {
   created_by_job_id: string | null;
   created_at: string;
   content: string | null;
+  renders: string[];
 }
 
 export const api = {
@@ -221,11 +222,31 @@ export const api = {
     }),
   deleteProfile: (id: string) =>
     request<void>(`/api/agents/profiles/${id}`, { method: "DELETE" }),
-  createCuratorRun: (projectId: string, profileId?: string) =>
-    request<Job>(`/api/projects/${projectId}/curator-runs`, {
+  createAgentRun: (projectId: string, agent: string, profileId?: string) =>
+    request<Job>(`/api/projects/${projectId}/agent-runs`, {
       method: "POST",
-      body: JSON.stringify({ profile_id: profileId ?? null }),
+      body: JSON.stringify({ agent, profile_id: profileId ?? null }),
     }),
+  uploadArtifact: async (
+    projectId: string,
+    file: File,
+    type: string,
+    title?: string,
+  ) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("type", type);
+    if (title) form.append("title", title);
+    const resp = await fetch(`/api/projects/${projectId}/artifacts`, {
+      method: "POST",
+      body: form,
+    });
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({ detail: resp.statusText }));
+      throw new ApiError(resp.status, body.detail ?? resp.statusText);
+    }
+    return resp.json() as Promise<Artifact>;
+  },
   listProjectRuns: (projectId: string) =>
     request<Job[]>(`/api/projects/${projectId}/runs`),
   getRun: (id: string) => request<Job>(`/api/runs/${id}`),
