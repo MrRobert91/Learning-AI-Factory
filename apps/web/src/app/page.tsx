@@ -51,6 +51,12 @@ export default function DashboardPage() {
             {showForm ? "Cancelar" : "Proyecto manual"}
           </button>
           <Link
+            href="/improvements"
+            className="rounded-lg border border-neutral-700 px-4 py-2 text-sm text-neutral-300 hover:bg-neutral-900"
+          >
+            Mejora continua
+          </Link>
+          <Link
             href="/workflows"
             className="rounded-lg border border-neutral-700 px-4 py-2 text-sm text-neutral-300 hover:bg-neutral-900"
           >

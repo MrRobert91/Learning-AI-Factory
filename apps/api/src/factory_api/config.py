@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     budget_usd_per_run: float = 5.0
     budget_price_per_mtok_usd: float = 0.6
 
+    # Continuous-improvement scheduler (days between automatic analyses;
+    # 0 = only on demand)
+    analytics_interval_days: int = 0
+
     # YouTube publishing (Google OAuth; see docs/YOUTUBE.md)
     google_client_id: str = ""
     google_client_secret: str = ""

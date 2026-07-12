@@ -146,6 +146,20 @@ class YouTubePublishRequest(BaseModel):
     privacy: str = "private"
 
 
+class ImprovementProposalRead(BaseModel):
+    id: str
+    project_id: str | None
+    kind: str
+    agent_type: str
+    slug: str
+    title: str
+    proposed_content: str
+    evidence: str
+    status: str
+    applied_profile_id: str | None
+    created_at: datetime
+
+
 class WorkflowStep(BaseModel):
     agent: str
     profile_id: str | None = None

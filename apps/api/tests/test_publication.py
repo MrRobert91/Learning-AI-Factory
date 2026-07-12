@@ -108,6 +108,8 @@ def test_publisher_requires_video(auth_client, monkeypatch):
 
 def test_youtube_status_and_publish_guardrails(auth_client, monkeypatch):
     _patch_publication(monkeypatch)
+    # Other tests may have connected a fake token; disconnect for isolation.
+    auth_client.delete("/api/youtube/connection")
     status = auth_client.get("/api/youtube/status").json()
     assert status == {"configured": False, "connected": False}
 
@@ -151,7 +153,8 @@ def test_wiki_crud(auth_client):
     auth_client.put(
         "/api/wiki/preferencias", json={"title": "Preferencias", "content_md": "- Español"}
     )
-    assert len(auth_client.get("/api/wiki").json()) == 1
+    user_slugs = {p["slug"] for p in auth_client.get("/api/wiki").json()}
+    assert "preferencias" in user_slugs and "glosario" not in user_slugs
     assert len(auth_client.get(f"/api/projects/{project['id']}/wiki").json()) == 1
 
     assert (

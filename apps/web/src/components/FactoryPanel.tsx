@@ -43,6 +43,7 @@ const PROFILE_AGENTS = [
 
 const TYPE_LABELS: Record<string, string> = {
   research_brief: "Research brief",
+  performance_report: "Informe de rendimiento",
   course_plan: "Plan del curso",
   lesson_content: "Lecciones",
   slide_deck: "Slides",
@@ -188,6 +189,17 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
     }
   }
 
+  async function startAnalytics() {
+    setError(null);
+    try {
+      const job = await api.createAnalyticsRun(projectId);
+      await refresh();
+      follow(job);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo lanzar");
+    }
+  }
+
   async function startWorkflow() {
     if (!workflowId) return;
     setError(null);
@@ -261,6 +273,14 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
             className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium hover:bg-indigo-500 disabled:opacity-50"
           >
             🏭 Ejecutar workflow
+          </button>
+          <button
+            onClick={startAnalytics}
+            disabled={running}
+            title="Analiza métricas y comentarios de los vídeos publicados de este proyecto"
+            className="rounded-lg border border-neutral-700 px-3 py-2 text-sm text-neutral-300 hover:bg-neutral-900 disabled:opacity-50"
+          >
+            📈 Analizar rendimiento
           </button>
           <Link
             href="/workflows"

@@ -134,6 +134,20 @@ export interface JobEvent {
   created_at: string;
 }
 
+export interface ImprovementProposal {
+  id: string;
+  project_id: string | null;
+  kind: "wiki" | "agents_md";
+  agent_type: string;
+  slug: string;
+  title: string;
+  proposed_content: string;
+  evidence: string;
+  status: string;
+  applied_profile_id: string | null;
+  created_at: string;
+}
+
 export interface WikiPage {
   slug: string;
   title: string;
@@ -327,6 +341,22 @@ export const api = {
         package_artifact_id: packageArtifactId,
         privacy,
       }),
+    }),
+  createAnalyticsRun: (projectId: string) =>
+    request<Job>(`/api/projects/${projectId}/analytics-runs`, {
+      method: "POST",
+    }),
+  listImprovements: (status = "pending") =>
+    request<ImprovementProposal[]>(`/api/improvements?status_filter=${status}`),
+  getImprovementCurrent: (id: string) =>
+    request<{ current: string }>(`/api/improvements/${id}/current`),
+  approveImprovement: (id: string) =>
+    request<ImprovementProposal>(`/api/improvements/${id}/approve`, {
+      method: "POST",
+    }),
+  rejectImprovement: (id: string) =>
+    request<ImprovementProposal>(`/api/improvements/${id}/reject`, {
+      method: "POST",
     }),
   approveRun: (jobId: string, approved: boolean, feedback = "") =>
     request<Job>(`/api/runs/${jobId}/approve`, {

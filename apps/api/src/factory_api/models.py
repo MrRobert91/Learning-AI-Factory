@@ -159,6 +159,35 @@ class OAuthToken(Base):
     )
 
 
+class ImprovementProposal(Base):
+    """Feedback-loop proposal: never auto-applied, always human-reviewed."""
+
+    __tablename__ = "improvement_proposals"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)  # wiki | agents_md
+    agent_type: Mapped[str] = mapped_column(String(50), default="", nullable=False)
+    slug: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    proposed_content: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+    # status: pending | approved | rejected
+    applied_profile_id: Mapped[str | None] = mapped_column(
+        ForeignKey("agent_profiles.id", ondelete="SET NULL"), nullable=True
+    )
+    created_by_job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
 class Workflow(Base):
     __tablename__ = "workflows"
 

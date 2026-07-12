@@ -939,6 +939,121 @@ def evaluate_stage(job_id: str, agent: str, result: dict | None) -> tuple[str, s
     return evaluation.verdict, evaluation.feedback
 
 
+def run_analyst_job(job_id: str, payload: dict) -> dict:
+    """Continuous-improvement analysis for one project's published videos."""
+    import json as _json
+
+    from factory_agents.agents.analyst import render_analyst_input, run_analyst
+
+    from factory_api.models import ImprovementProposal, OAuthToken, WikiPage
+    from factory_api.youtube import fetch_videos_data
+
+    settings = get_settings()
+    project_id = payload["project_id"]
+
+    # Videos uploaded for this project (from completed upload jobs).
+    with SessionLocal() as db:
+        upload_jobs = db.scalars(
+            select(Job).where(
+                Job.project_id == project_id,
+                Job.kind == "youtube_upload",
+                Job.status == "done",
+            )
+        ).all()
+        video_ids = []
+        for upload_job in upload_jobs:
+            result = _json.loads(upload_job.result_json or "{}")
+            if result.get("video_id"):
+                video_ids.append(result["video_id"])
+        token = db.scalars(
+            select(OAuthToken).where(OAuthToken.provider == "google").limit(1)
+        ).first()
+        token_data = _json.loads(token.token_json) if token else None
+
+    if not video_ids:
+        raise RuntimeError(
+            "Este proyecto no tiene vídeos publicados en YouTube todavía: "
+            "publica al menos uno para poder analizar su rendimiento"
+        )
+    if token_data is None:
+        raise RuntimeError("YouTube no está conectado: autoriza el acceso primero")
+
+    append_event(job_id, "stage", f"Recogiendo métricas de {len(video_ids)} vídeo(s)…")
+    videos_data = fetch_videos_data(
+        token_data, settings.google_client_id, settings.google_client_secret, video_ids
+    )
+    total_comments = sum(len(v.get("comments", [])) for v in videos_data)
+    append_event(
+        job_id, "stage", f"Datos recogidos ({total_comments} comentarios). Analizando…"
+    )
+
+    with SessionLocal() as db:
+        # Current default agents.md per agent, so proposals are minimal diffs.
+        from factory_api.routers.agents import get_default_profile
+
+        current_agents_md = {}
+        for agent in ("curator", "planner", "lessons", "slides", "script", "voice", "publisher"):
+            profile = get_default_profile(db, agent)
+            if profile is not None:
+                current_agents_md[agent] = profile.agents_md
+        channel_wiki = [
+            {"slug": p.slug, "title": p.title, "content_md": p.content_md}
+            for p in db.scalars(
+                select(WikiPage).where(WikiPage.project_id.is_(None))
+            ).all()
+        ]
+
+    result = run_analyst(
+        render_analyst_input(
+            payload.get("project_title", ""),
+            videos_data,
+            current_agents_md,
+            channel_wiki,
+        ),
+        client=_client(job_id),
+        model=payload.get("model") or settings.openrouter_model,
+        soul_md=payload.get("soul_md", ""),
+        agents_md=payload.get("agents_md", ""),
+    )
+
+    report_id = _save_artifact(
+        job_id,
+        project_id,
+        "performance_report",
+        f"Informe de rendimiento — {payload.get('project_title', '')}".strip(" —"),
+        result.report_md,
+    )
+    append_event(
+        job_id, "artifact", "Informe de rendimiento generado", {"artifact_id": report_id}
+    )
+
+    proposal_ids = []
+    with SessionLocal() as db:
+        for draft in result.proposals:
+            proposal = ImprovementProposal(
+                project_id=project_id,
+                kind=draft.kind,
+                agent_type=draft.agent_type,
+                slug=draft.slug or "canal-aprendizajes",
+                title=draft.title,
+                proposed_content=draft.proposed_content,
+                evidence=draft.evidence,
+                created_by_job_id=job_id,
+            )
+            db.add(proposal)
+            db.flush()
+            proposal_ids.append(proposal.id)
+        db.commit()
+    if proposal_ids:
+        append_event(
+            job_id,
+            "stage",
+            f"{len(proposal_ids)} propuesta(s) de mejora pendientes de tu revisión "
+            f"(ninguna se aplica sola)",
+        )
+    return {"artifact_id": report_id, "proposal_ids": proposal_ids}
+
+
 def run_workflow_job(job_id: str, payload: dict) -> dict:
     """Execute (or resume) a declarative workflow via LangGraph."""
     from langgraph.types import Command
@@ -993,6 +1108,7 @@ HANDLERS = {
     "video_run": run_video_job,
     "publisher_run": run_publisher_job,
     "youtube_upload": run_youtube_upload_job,
+    "analyst_run": run_analyst_job,
     "pipeline_run": run_pipeline_job,
     "workflow_run": run_workflow_job,
 }
