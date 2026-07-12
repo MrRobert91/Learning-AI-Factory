@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+npm-debug.log*
+
+# Local data (SQLite, artifacts, agent memory)
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Env
+.env
+.env.local
+.env*.local
+
+# Misc
+.DS_Store
