@@ -87,3 +87,98 @@ class IdeationMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     session: Mapped[IdeationSession] = relationship(back_populates="messages")
+
+
+class AgentProfile(Base):
+    __tablename__ = "agent_profiles"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    agent_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    soul_md: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    agents_md: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    config_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    version: Mapped[int] = mapped_column(default=1, nullable=False)
+    is_default: Mapped[bool] = mapped_column(default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+    versions: Mapped[list["AgentProfileVersion"]] = relationship(
+        back_populates="profile",
+        cascade="all, delete-orphan",
+        order_by="AgentProfileVersion.version.desc()",
+    )
+
+
+class AgentProfileVersion(Base):
+    __tablename__ = "agent_profile_versions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    profile_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    version: Mapped[int] = mapped_column(nullable=False)
+    soul_md: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    agents_md: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    config_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    note: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    profile: Mapped[AgentProfile] = relationship(back_populates="versions")
+
+
+class Job(Base):
+    __tablename__ = "jobs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    kind: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="queued", nullable=False)
+    # status: queued | running | done | failed
+    payload_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    events: Mapped[list["JobEvent"]] = relationship(
+        back_populates="job", cascade="all, delete-orphan", order_by="JobEvent.seq"
+    )
+
+
+class JobEvent(Base):
+    __tablename__ = "job_events"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    seq: Mapped[int] = mapped_column(nullable=False)
+    type: Mapped[str] = mapped_column(String(30), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    data_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    job: Mapped[Job] = relationship(back_populates="events")
+
+
+class Artifact(Base):
+    __tablename__ = "artifacts"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    type: Mapped[str] = mapped_column(String(50), nullable=False)
+    format: Mapped[str] = mapped_column(String(20), default="markdown", nullable=False)
+    title: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    path: Mapped[str] = mapped_column(Text, nullable=False)  # relative to data_dir
+    created_by_job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

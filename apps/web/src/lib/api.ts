@@ -95,6 +95,69 @@ export interface IdeationSession extends IdeationSessionSummary {
   messages: IdeationMessage[];
 }
 
+export interface AgentSpec {
+  name: string;
+  display_name: string;
+  description: string;
+  kind: "task" | "conversational";
+  tool_names: string[];
+  consumes: string[];
+  produces: string[];
+}
+
+export interface AgentProfile {
+  id: string;
+  agent_type: string;
+  name: string;
+  soul_md: string;
+  agents_md: string;
+  model: string | null;
+  version: number;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProfileVersion {
+  version: number;
+  soul_md: string;
+  agents_md: string;
+  note: string;
+  created_at: string;
+}
+
+export interface JobEvent {
+  seq: number;
+  type: string;
+  summary: string;
+  data: { tool?: string; artifact_id?: string } | null;
+  created_at: string;
+}
+
+export interface Job {
+  id: string;
+  kind: string;
+  status: "queued" | "running" | "done" | "failed";
+  error: string;
+  project_id: string | null;
+  result: { artifact_id?: string } | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  events: JobEvent[];
+}
+
+export interface Artifact {
+  id: string;
+  project_id: string;
+  type: string;
+  format: string;
+  title: string;
+  created_by_job_id: string | null;
+  created_at: string;
+  content: string | null;
+}
+
 export const api = {
   login: (password: string) =>
     request<{ email: string }>("/api/auth/login", {
@@ -132,4 +195,41 @@ export const api = {
     request<Project>(`/api/ideation/${id}/finalize`, { method: "POST" }),
   deleteIdeation: (id: string) =>
     request<void>(`/api/ideation/${id}`, { method: "DELETE" }),
+  listAgents: () => request<AgentSpec[]>("/api/agents"),
+  listProfiles: (agentType: string) =>
+    request<AgentProfile[]>(`/api/agents/${agentType}/profiles`),
+  createProfile: (
+    agentType: string,
+    input: { name: string; soul_md?: string; agents_md?: string; model?: string },
+  ) =>
+    request<AgentProfile>(`/api/agents/${agentType}/profiles`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  getProfile: (id: string) => request<AgentProfile>(`/api/agents/profiles/${id}`),
+  getProfileVersions: (id: string) =>
+    request<ProfileVersion[]>(`/api/agents/profiles/${id}/versions`),
+  updateProfile: (
+    id: string,
+    input: Partial<
+      Pick<AgentProfile, "name" | "soul_md" | "agents_md" | "is_default">
+    > & { model?: string; note?: string },
+  ) =>
+    request<AgentProfile>(`/api/agents/profiles/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  deleteProfile: (id: string) =>
+    request<void>(`/api/agents/profiles/${id}`, { method: "DELETE" }),
+  createCuratorRun: (projectId: string, profileId?: string) =>
+    request<Job>(`/api/projects/${projectId}/curator-runs`, {
+      method: "POST",
+      body: JSON.stringify({ profile_id: profileId ?? null }),
+    }),
+  listProjectRuns: (projectId: string) =>
+    request<Job[]>(`/api/projects/${projectId}/runs`),
+  getRun: (id: string) => request<Job>(`/api/runs/${id}`),
+  listProjectArtifacts: (projectId: string) =>
+    request<Artifact[]>(`/api/projects/${projectId}/artifacts`),
+  getArtifact: (id: string) => request<Artifact>(`/api/artifacts/${id}`),
 };

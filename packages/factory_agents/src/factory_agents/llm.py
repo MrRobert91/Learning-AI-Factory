@@ -22,3 +22,17 @@ def get_llm_client(api_key: str) -> OpenAI:
 
 class MissingApiKeyError(RuntimeError):
     pass
+
+
+def get_chat_model(model: str, api_key: str, temperature: float = 0.7):
+    """LangChain chat model against OpenRouter (used by deep agents)."""
+    from langchain_openai import ChatOpenAI
+
+    if not api_key:
+        raise MissingApiKeyError("OPENROUTER_API_KEY no está configurada")
+    return ChatOpenAI(
+        model=model,
+        api_key=api_key,
+        base_url=OPENROUTER_BASE_URL,
+        temperature=temperature,
+    )

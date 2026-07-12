@@ -5,7 +5,7 @@ def _fake_turn_factory(script):
     """Returns a run_ideation_turn stand-in that pops events per call."""
     calls = []
 
-    def fake_turn(client, model, history):
+    def fake_turn(client, model, history, **kwargs):
         calls.append(list(history))
         return script.pop(0)
 

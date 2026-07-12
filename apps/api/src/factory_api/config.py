@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     openrouter_api_key: str = ""
     openrouter_model: str = "deepseek/deepseek-v4-flash"
 
+    # Research search (optional; DuckDuckGo fallback when empty)
+    tavily_api_key: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

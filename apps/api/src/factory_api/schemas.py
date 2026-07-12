@@ -73,6 +73,91 @@ class IdeationSessionRead(IdeationSessionSummary):
     messages: list[IdeationMessageRead] = []
 
 
+class AgentSpecRead(BaseModel):
+    name: str
+    display_name: str
+    description: str
+    kind: str
+    tool_names: list[str]
+    consumes: list[str]
+    produces: list[str]
+
+
+class ProfileCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    soul_md: str = ""
+    agents_md: str = ""
+    model: str | None = None
+
+
+class ProfileUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    soul_md: str | None = None
+    agents_md: str | None = None
+    model: str | None = None
+    is_default: bool | None = None
+    note: str = ""
+
+
+class ProfileRead(BaseModel):
+    id: str
+    agent_type: str
+    name: str
+    soul_md: str
+    agents_md: str
+    model: str | None = None
+    version: int
+    is_default: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProfileVersionRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    version: int
+    soul_md: str
+    agents_md: str
+    note: str
+    created_at: datetime
+
+
+class CuratorRunCreate(BaseModel):
+    profile_id: str | None = None
+
+
+class JobEventRead(BaseModel):
+    seq: int
+    type: str
+    summary: str
+    data: dict | None = None
+    created_at: datetime
+
+
+class JobRead(BaseModel):
+    id: str
+    kind: str
+    status: str
+    error: str
+    project_id: str | None
+    result: dict | None = None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    events: list[JobEventRead] = []
+
+
+class ArtifactRead(BaseModel):
+    id: str
+    project_id: str
+    type: str
+    format: str
+    title: str
+    created_by_job_id: str | None
+    created_at: datetime
+    content: str | None = None
+
+
 class ProjectRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

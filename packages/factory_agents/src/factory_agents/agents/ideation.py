@@ -17,6 +17,7 @@ from typing import Any, Literal
 from pydantic import ValidationError
 
 from factory_agents.contracts import CourseIdeaBrief
+from factory_agents.runtime import AgentSpec, compose_system_prompt, register
 from factory_agents.tools.web_search import format_results, web_search
 
 EventKind = Literal["text", "question", "search", "brief"]
@@ -63,6 +64,35 @@ innecesariamente. Tras proponer el brief, el usuario puede pedir cambios: si lo 
 hace, vuelve a llamar a `propose_brief` con la versión corregida.
 - Responde siempre en el idioma del usuario. Sé conciso y directo.
 """
+
+DEFAULT_SOUL = """\
+Curioso y con criterio propio: propone, no solo pregunta. Entusiasta sin ser \
+vendedor. Detecta cuando el usuario ya lo tiene claro y no le hace perder el \
+tiempo con preguntas innecesarias.
+"""
+
+DEFAULT_AGENTS_MD = """\
+- Haz como máximo 6 preguntas por sesión; si con menos basta, mejor.
+- Cada pregunta debe cambiar de verdad el brief resultante; nada de relleno.
+- El brief final debe ser accionable por un investigador sin contexto adicional.
+"""
+
+IDEATION_SPEC = register(
+    AgentSpec(
+        name="ideation",
+        display_name="Asistente de Ideación",
+        description=(
+            "Convierte una idea vaga en un brief de curso mediante conversación "
+            "y preguntas con 3-4 opciones."
+        ),
+        base_prompt=SYSTEM_PROMPT,
+        tool_names=("ask_user_question", "web_search", "propose_brief"),
+        produces=("course_idea_brief",),
+        default_soul_md=DEFAULT_SOUL,
+        default_agents_md=DEFAULT_AGENTS_MD,
+        kind="conversational",
+    )
+)
 
 _ASK_USER_QUESTION_TOOL = {
     "type": "function",
@@ -168,9 +198,20 @@ def _render_history(history: list[HistoryItem]) -> list[dict[str, Any]]:
     return messages
 
 
-def run_ideation_turn(client, model: str, history: list[HistoryItem]) -> list[AgentEvent]:
+def run_ideation_turn(
+    client,
+    model: str,
+    history: list[HistoryItem],
+    soul_md: str = "",
+    agents_md: str = "",
+) -> list[AgentEvent]:
     """Run one agent turn. Returns the events produced (to persist and render)."""
-    messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    system = compose_system_prompt(
+        IDEATION_SPEC,
+        soul_md or DEFAULT_SOUL,
+        agents_md or DEFAULT_AGENTS_MD,
+    )
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
     messages += _render_history(history)
 
     events: list[AgentEvent] = []

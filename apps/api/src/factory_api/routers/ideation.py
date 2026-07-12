@@ -87,10 +87,19 @@ def _append(db: Session, session: IdeationSession, role: str, kind: str, content
 
 
 def _run_agent(db: Session, session: IdeationSession) -> list[AgentEvent]:
+    from factory_api.routers.agents import get_default_profile
+
     settings = get_settings()
+    profile = get_default_profile(db, "ideation")
     try:
         client = get_llm_client(settings.openrouter_api_key)
-        events = run_ideation_turn(client, session.model, _history(session))
+        events = run_ideation_turn(
+            client,
+            session.model,
+            _history(session),
+            soul_md=profile.soul_md if profile else "",
+            agents_md=profile.agents_md if profile else "",
+        )
     except MissingApiKeyError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
