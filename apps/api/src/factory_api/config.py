@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     default_user_email: str = "owner@localhost"
     default_user_name: str = "Owner"
 
+    # LLM provider (OpenRouter, OpenAI-compatible API)
+    openrouter_api_key: str = ""
+    openrouter_model: str = "deepseek/deepseek-v4-flash"
+
 
 @lru_cache
 def get_settings() -> Settings:

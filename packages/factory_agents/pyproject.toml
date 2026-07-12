@@ -5,6 +5,8 @@ description = "Agents, tools, orchestration, memory and artifact contracts for A
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.7",
+    "openai>=1.40",
+    "ddgs>=9.0",
 ]
 
 [build-system]

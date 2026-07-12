@@ -48,6 +48,53 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return resp.json();
 }
 
+export interface IdeationOption {
+  label: string;
+  description?: string;
+}
+
+export interface IdeationMessage {
+  id: string;
+  seq: number;
+  role: "user" | "assistant";
+  kind: "text" | "question" | "answer" | "search" | "brief";
+  content: string;
+  payload: { options?: IdeationOption[]; query?: string } | Record<
+    string,
+    unknown
+  > | null;
+  created_at: string;
+}
+
+export interface CourseIdeaBrief {
+  working_title: string;
+  topic: string;
+  audience: string;
+  level: string;
+  language: string;
+  style: string;
+  output_format: string;
+  objectives: string[];
+  scope_outline: string[];
+  differential_angle: string;
+  open_questions: string[];
+}
+
+export interface IdeationSessionSummary {
+  id: string;
+  status: "active" | "finalized";
+  initial_idea: string;
+  project_id: string | null;
+  has_brief: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IdeationSession extends IdeationSessionSummary {
+  brief: CourseIdeaBrief | null;
+  messages: IdeationMessage[];
+}
+
 export const api = {
   login: (password: string) =>
     request<{ email: string }>("/api/auth/login", {
@@ -69,4 +116,20 @@ export const api = {
     }),
   deleteProject: (id: string) =>
     request<void>(`/api/projects/${id}`, { method: "DELETE" }),
+  createIdeation: (idea: string) =>
+    request<IdeationSession>("/api/ideation", {
+      method: "POST",
+      body: JSON.stringify({ idea }),
+    }),
+  listIdeations: () => request<IdeationSessionSummary[]>("/api/ideation"),
+  getIdeation: (id: string) => request<IdeationSession>(`/api/ideation/${id}`),
+  sendIdeationMessage: (id: string, content: string) =>
+    request<IdeationSession>(`/api/ideation/${id}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ content }),
+    }),
+  finalizeIdeation: (id: string) =>
+    request<Project>(`/api/ideation/${id}/finalize`, { method: "POST" }),
+  deleteIdeation: (id: string) =>
+    request<void>(`/api/ideation/${id}`, { method: "DELETE" }),
 };

@@ -6,7 +6,7 @@ from sqlalchemy import select
 from factory_api.config import get_settings
 from factory_api.db import SessionLocal
 from factory_api.models import User
-from factory_api.routers import auth, projects
+from factory_api.routers import auth, ideation, projects
 
 
 def ensure_default_user() -> None:
@@ -35,6 +35,7 @@ app = FastAPI(title="AI Learning Factory API", lifespan=lifespan)
 
 app.include_router(auth.router)
 app.include_router(projects.router)
+app.include_router(ideation.router)
 
 
 @app.get("/api/health")

@@ -38,11 +38,17 @@ export default function DashboardPage() {
           <p className="text-sm text-neutral-400">Tus proyectos educativos</p>
         </div>
         <div className="flex gap-2">
-          <button
-            onClick={() => setShowForm((v) => !v)}
+          <Link
+            href="/ideation"
             className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium hover:bg-indigo-500"
           >
-            {showForm ? "Cancelar" : "Nuevo proyecto"}
+            💡 Nueva idea (asistente)
+          </Link>
+          <button
+            onClick={() => setShowForm((v) => !v)}
+            className="rounded-lg border border-neutral-700 px-4 py-2 text-sm text-neutral-300 hover:bg-neutral-900"
+          >
+            {showForm ? "Cancelar" : "Proyecto manual"}
           </button>
           <button
             onClick={logout}

@@ -10,6 +10,7 @@ services:
       DATABASE_URL: sqlite:////data/db/factory.sqlite
       DATA_DIR: /data
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-deepseek/deepseek-v4-flash}
     volumes:
       - ./data:/data
     ports:
