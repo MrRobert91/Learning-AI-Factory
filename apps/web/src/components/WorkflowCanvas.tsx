@@ -21,6 +21,7 @@ const AGENT_LABELS: Record<string, string> = {
   script: "🎙 Guion docente",
   voice: "🗣 Adaptación a voz",
   video: "🎬 Vídeo",
+  publisher: "▶️ Publicación",
 };
 
 type StepNodeData = {

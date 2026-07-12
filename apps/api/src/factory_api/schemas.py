@@ -122,6 +122,30 @@ class ProfileVersionRead(BaseModel):
     created_at: datetime
 
 
+class WikiPageWrite(BaseModel):
+    title: str = ""
+    content_md: str = ""
+
+
+class WikiPageRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    slug: str
+    title: str
+    content_md: str
+    updated_at: datetime
+
+
+class YouTubeStatus(BaseModel):
+    configured: bool
+    connected: bool
+
+
+class YouTubePublishRequest(BaseModel):
+    package_artifact_id: str
+    privacy: str = "private"
+
+
 class WorkflowStep(BaseModel):
     agent: str
     profile_id: str | None = None

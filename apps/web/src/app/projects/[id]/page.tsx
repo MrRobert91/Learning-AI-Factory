@@ -6,6 +6,7 @@ import { useParams, useRouter } from "next/navigation";
 import { api, type Project } from "@/lib/api";
 import ProjectForm from "@/components/ProjectForm";
 import FactoryPanel from "@/components/FactoryPanel";
+import WikiPanel from "@/components/WikiPanel";
 
 export default function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -72,6 +73,7 @@ export default function ProjectDetailPage() {
       />
       {saved && <p className="mt-3 text-sm text-emerald-400">Guardado ✓</p>}
       <FactoryPanel projectId={id} />
+      <WikiPanel projectId={id} />
     </main>
   );
 }

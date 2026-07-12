@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     tts_voice: str = "nova"
     tts_model: str = "gpt-4o-mini-tts"
 
+    # YouTube publishing (Google OAuth; see docs/YOUTUBE.md)
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_redirect_uri: str = "http://localhost:3000/api/youtube/callback"
+
 
 @lru_cache
 def get_settings() -> Settings:

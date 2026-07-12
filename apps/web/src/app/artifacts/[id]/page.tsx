@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { api, type Artifact } from "@/lib/api";
+import YouTubePublish from "@/components/YouTubePublish";
 
 export default function ArtifactViewerPage() {
   const { id } = useParams<{ id: string }>();
@@ -65,6 +66,16 @@ export default function ArtifactViewerPage() {
         {artifact.type} · {artifact.format} ·{" "}
         {new Date(artifact.created_at).toLocaleString("es")}
       </p>
+      {artifact.type === "publication_package" && (
+        <YouTubePublish packageArtifactId={artifact.id} />
+      )}
+      {artifact.type === "thumbnail" && (
+        <img
+          src={`/api/artifacts/${artifact.id}/download`}
+          alt="Miniatura del vídeo"
+          className="mb-6 w-full max-w-2xl rounded-xl border border-neutral-800"
+        />
+      )}
       {artifact.type === "video" && (
         <video
           controls

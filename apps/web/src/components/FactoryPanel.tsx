@@ -27,10 +27,19 @@ const STAGES: { agent: string; label: string; produces: string }[] = [
   { agent: "script", label: "⑤ Guion docente", produces: "teaching_script" },
   { agent: "voice", label: "⑥ Adaptación a voz", produces: "voice_script" },
   { agent: "video", label: "⑦ Vídeo", produces: "video" },
+  { agent: "publisher", label: "⑧ Publicación", produces: "publication_package" },
 ];
 
 // Video production is tool-driven (TTS + ffmpeg), not an LLM agent with profiles.
-const PROFILE_AGENTS = ["curator", "planner", "lessons", "slides", "script", "voice"];
+const PROFILE_AGENTS = [
+  "curator",
+  "planner",
+  "lessons",
+  "slides",
+  "script",
+  "voice",
+  "publisher",
+];
 
 const TYPE_LABELS: Record<string, string> = {
   research_brief: "Research brief",
@@ -41,6 +50,8 @@ const TYPE_LABELS: Record<string, string> = {
   voice_script: "Guion de voz",
   video: "Vídeo",
   subtitles: "Subtítulos",
+  publication_package: "Publicación",
+  thumbnail: "Miniatura",
 };
 
 const UPLOAD_TYPES = [
@@ -424,7 +435,7 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
             <input
               ref={fileRef}
               type="file"
-              accept=".md,.json,.txt"
+              accept=".md,.json,.txt,.pptx"
               className="hidden"
               onChange={(e) => {
                 const f = e.target.files?.[0];

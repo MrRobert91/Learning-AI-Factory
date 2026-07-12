@@ -11,8 +11,25 @@ import {
 } from "@/lib/api";
 import WorkflowCanvas from "@/components/WorkflowCanvas";
 
-const AGENTS = ["curator", "planner", "lessons", "slides", "script", "voice", "video"];
-const PROFILE_AGENTS = ["curator", "planner", "lessons", "slides", "script", "voice"];
+const AGENTS = [
+  "curator",
+  "planner",
+  "lessons",
+  "slides",
+  "script",
+  "voice",
+  "video",
+  "publisher",
+];
+const PROFILE_AGENTS = [
+  "curator",
+  "planner",
+  "lessons",
+  "slides",
+  "script",
+  "voice",
+  "publisher",
+];
 const AGENT_NAMES: Record<string, string> = {
   curator: "Curador",
   planner: "Plan del curso",
@@ -21,6 +38,7 @@ const AGENT_NAMES: Record<string, string> = {
   script: "Guion docente",
   voice: "Adaptación a voz",
   video: "Vídeo",
+  publisher: "Publicación",
 };
 
 export default function WorkflowEditorPage() {

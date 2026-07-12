@@ -45,7 +45,16 @@ def _job_read(job: Job, include_events: bool = True) -> JobRead:
     )
 
 
-RUNNABLE_AGENTS = ("curator", "planner", "lessons", "slides", "script", "voice", "video")
+RUNNABLE_AGENTS = (
+    "curator",
+    "planner",
+    "lessons",
+    "slides",
+    "script",
+    "voice",
+    "video",
+    "publisher",
+)
 
 
 def _profile_fields(profile: AgentProfile | None) -> dict:

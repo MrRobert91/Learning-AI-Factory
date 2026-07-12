@@ -78,6 +78,8 @@ class JobRunner:
                 self._set_waiting(job_id)
             else:
                 self._finish(job_id, result=result)
+                if kind in MEMORY_KINDS:
+                    consolidate_memory(job_id)
         except Exception as exc:
             logger.exception("Job %s failed", job_id)
             self._finish(job_id, error=str(exc))
@@ -172,7 +174,7 @@ def run_curator_job(job_id: str, payload: dict) -> dict:
     workspace = settings.data_dir / "runs" / job_id
     final_text = ""
     for event in run_curator(
-        payload["task_input"],
+        _with_wiki(payload["task_input"], payload["project_id"]),
         model=payload.get("model") or settings.openrouter_model,
         api_key=settings.openrouter_api_key,
         tavily_api_key=settings.tavily_api_key,
@@ -209,7 +211,10 @@ def run_planner_job(job_id: str, payload: dict) -> dict:
     )
     append_event(job_id, "stage", "Diseñando la estructura del curso…")
     plan = run_planner(
-        render_planner_input(payload.get("project", {}), brief_md),
+        _with_wiki(
+            render_planner_input(payload.get("project", {}), brief_md),
+            payload["project_id"],
+        ),
         client=get_llm_client(settings.openrouter_api_key),
         model=payload.get("model") or settings.openrouter_model,
         soul_md=payload.get("soul_md", ""),
@@ -252,7 +257,7 @@ def run_lessons_job(job_id: str, payload: dict) -> dict:
         append_event(job_id, "stage", f"Escribiendo lección {label}…")
         final_text = ""
         for event in run_lesson(
-            render_lesson_input(plan, mi, li, brief_md),
+            _with_wiki(render_lesson_input(plan, mi, li, brief_md), payload["project_id"]),
             model=payload.get("model") or settings.openrouter_model,
             api_key=settings.openrouter_api_key,
             workspace_dir=str(settings.data_dir / "runs" / job_id / f"lesson-{mi}-{li}"),
@@ -315,7 +320,10 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
         append_event(job_id, "stage", f"Diseñando slides de {title}…")
         lesson_md = (settings.data_dir / rel_path).read_text(encoding="utf-8")
         deck = run_slides(
-            render_slides_input(lesson_md, plan.course_title, payload.get("style", "")),
+            _with_wiki(
+                render_slides_input(lesson_md, plan.course_title, payload.get("style", "")),
+                payload["project_id"],
+            ),
             client=client,
             model=payload.get("model") or settings.openrouter_model,
             soul_md=payload.get("soul_md", ""),
@@ -386,7 +394,15 @@ def _register_artifact_file(
         return artifact.id
 
 
-PREFIXES = {"slide_deck": "Slides — ", "teaching_script": "Guion — ", "voice_script": "Voz — "}
+PREFIXES = {
+    "slide_deck": "Slides — ",
+    "teaching_script": "Guion — ",
+    "voice_script": "Voz — ",
+    "video": "Vídeo — ",
+    "subtitles": "Subtítulos — ",
+    "publication_package": "Publicación — ",
+    "thumbnail": "Miniatura — ",
+}
 
 
 def _latest_by_base(project_id: str, type_: str) -> dict[str, "Artifact"]:
@@ -428,7 +444,10 @@ def run_script_job(job_id: str, payload: dict) -> dict:
             (settings.data_dir / lesson.path).read_text(encoding="utf-8") if lesson else None
         )
         script_md = run_script(
-            render_script_input(deck_md, lesson_md, payload.get("project_title", "")),
+            _with_wiki(
+                render_script_input(deck_md, lesson_md, payload.get("project_title", "")),
+                payload["project_id"],
+            ),
             client=client,
             model=payload.get("model") or settings.openrouter_model,
             soul_md=payload.get("soul_md", ""),
@@ -560,6 +579,240 @@ def run_video_job(job_id: str, payload: dict) -> dict:
     return {"artifact_ids": video_ids}
 
 
+def _wiki_context(project_id: str) -> str:
+    """Render the project wiki (plus user memory) as a prompt section."""
+    from factory_agents.memory import render_wiki_for_prompt
+
+    from factory_api.models import WikiPage
+
+    with SessionLocal() as db:
+        pages = db.scalars(
+            select(WikiPage)
+            .where((WikiPage.project_id == project_id) | (WikiPage.project_id.is_(None)))
+            .order_by(WikiPage.updated_at)
+        ).all()
+        data = [
+            {"slug": p.slug, "title": p.title, "content_md": p.content_md} for p in pages
+        ]
+    return render_wiki_for_prompt(data)
+
+
+def _with_wiki(task_input: str, project_id: str) -> str:
+    wiki = _wiki_context(project_id)
+    return f"{task_input}\n\n{wiki}" if wiki else task_input
+
+
+def consolidate_memory(job_id: str) -> None:
+    """Librarian pass after a successful job (best-effort, never raises)."""
+    from factory_agents.llm import get_llm_client
+    from factory_agents.memory import run_librarian
+
+    from factory_api.models import WikiPage
+
+    settings = get_settings()
+    if not settings.openrouter_api_key:
+        return
+    try:
+        with SessionLocal() as db:
+            job = db.get(Job, job_id)
+            if job is None or job.project_id is None:
+                return
+            project_id = job.project_id
+            artifacts = db.scalars(
+                select(Artifact)
+                .where(Artifact.created_by_job_id == job_id)
+                .order_by(Artifact.created_at)
+            ).all()
+            if not artifacts:
+                return
+            excerpts = []
+            for artifact in artifacts[:3]:
+                path = settings.data_dir / artifact.path
+                if artifact.format in ("markdown", "json", "text") and path.is_file():
+                    excerpts.append(
+                        f"[{artifact.type}: {artifact.title}]\n"
+                        + path.read_text(encoding="utf-8")[:2500]
+                    )
+            pages = db.scalars(
+                select(WikiPage).where(WikiPage.project_id == project_id)
+            ).all()
+            current = [
+                {"slug": p.slug, "title": p.title, "content_md": p.content_md}
+                for p in pages
+            ]
+            summary = f"Job {job.kind} completado con {len(artifacts)} artefactos"
+
+        client = get_llm_client(settings.openrouter_api_key)
+        updates = run_librarian(
+            client, settings.openrouter_model, current, summary, "\n\n".join(excerpts)
+        )
+        if not updates:
+            return
+        with SessionLocal() as db:
+            for update in updates:
+                page = db.scalars(
+                    select(WikiPage).where(
+                        WikiPage.project_id == project_id, WikiPage.slug == update.slug
+                    )
+                ).first()
+                if page is None:
+                    db.add(
+                        WikiPage(
+                            project_id=project_id,
+                            slug=update.slug,
+                            title=update.title,
+                            content_md=update.content_md,
+                        )
+                    )
+                else:
+                    page.title = update.title
+                    page.content_md = update.content_md
+            db.commit()
+        append_event(
+            job_id,
+            "memory",
+            "Memoria del proyecto actualizada: " + ", ".join(u.slug for u in updates),
+        )
+    except Exception:
+        logger.exception("Memory consolidation failed for job %s", job_id)
+
+
+def extract_srt_timestamps(srt_content: str) -> list[str]:
+    """Start times ('MM:SS') of each SRT entry, for video chapters."""
+    stamps = []
+    for line in srt_content.splitlines():
+        if " --> " in line:
+            start = line.split(" --> ")[0].strip()  # HH:MM:SS,mmm
+            h, m, s = start.split(",")[0].split(":")
+            stamps.append(f"{m}:{s}" if h == "00" else f"{h}:{m}:{s}")
+    return stamps
+
+
+def run_publisher_job(job_id: str, payload: dict) -> dict:
+    from factory_agents.agents.publisher import render_publisher_input, run_publisher
+    from factory_agents.llm import get_llm_client
+    from factory_agents.tools.thumbnail import render_thumbnail
+
+    settings = get_settings()
+    videos = _latest_by_base(payload["project_id"], "video")
+    if not videos:
+        raise RuntimeError("Falta el artefacto 'video': ejecuta antes el montaje de vídeo")
+    subtitles = _latest_by_base(payload["project_id"], "subtitles")
+    scripts = _latest_by_base(payload["project_id"], "teaching_script")
+    client = get_llm_client(settings.openrouter_api_key)
+    language = payload.get("project", {}).get("language", "es")
+
+    artifact_ids: list[str] = []
+    for base, _video in videos.items():
+        append_event(job_id, "stage", f"Preparando publicación de {base}…")
+        srt_artifact = subtitles.get(base)
+        chapters = []
+        if srt_artifact is not None:
+            srt_path = settings.data_dir / srt_artifact.path
+            if srt_path.is_file():
+                chapters = extract_srt_timestamps(srt_path.read_text(encoding="utf-8"))
+        script_artifact = scripts.get(base)
+        script_md = ""
+        if script_artifact is not None:
+            script_md = (settings.data_dir / script_artifact.path).read_text(
+                encoding="utf-8"
+            )
+        package = run_publisher(
+            _with_wiki(
+                render_publisher_input(
+                    base, payload.get("project_title", ""), chapters, script_md, language
+                ),
+                payload["project_id"],
+            ),
+            client=client,
+            model=payload.get("model") or settings.openrouter_model,
+            soul_md=payload.get("soul_md", ""),
+            agents_md=payload.get("agents_md", ""),
+        )
+        package_id = _save_artifact(
+            job_id,
+            payload["project_id"],
+            "publication_package",
+            f"Publicación — {base}",
+            package.model_dump_json(indent=2),
+            format_="json",
+        )
+        artifact_ids.append(package_id)
+
+        workdir = settings.data_dir / "runs" / job_id
+        thumb = render_thumbnail(
+            package.thumbnail_title or package.video_title,
+            package.thumbnail_subtitle,
+            payload.get("project_title", "Curso"),
+            workdir / f"thumb-{len(artifact_ids)}.png",
+        )
+        if thumb is not None:
+            thumb_id = _register_artifact_file(
+                job_id, payload["project_id"], "thumbnail", f"Miniatura — {base}", thumb, "image"
+            )
+            append_event(
+                job_id, "artifact", f"Miniatura de {base} lista", {"artifact_id": thumb_id}
+            )
+        else:
+            append_event(
+                job_id, "stage", "Chromium no disponible: miniatura omitida (solo metadatos)"
+            )
+        append_event(
+            job_id,
+            "artifact",
+            f"Paquete de publicación de {base} listo",
+            {"artifact_id": package_id},
+        )
+    return {"artifact_ids": artifact_ids}
+
+
+def run_youtube_upload_job(job_id: str, payload: dict) -> dict:
+    """Upload a video to YouTube. Only reachable via explicit user action."""
+    import json as _json
+
+    from factory_api.models import OAuthToken
+    from factory_api.youtube import upload_video
+
+    settings = get_settings()
+    with SessionLocal() as db:
+        token = db.scalars(
+            select(OAuthToken).where(OAuthToken.provider == "google").limit(1)
+        ).first()
+        if token is None:
+            raise RuntimeError("YouTube no está conectado: autoriza el acceso primero")
+        token_data = _json.loads(token.token_json)
+        video = db.get(Artifact, payload["video_artifact_id"])
+        package_artifact = db.get(Artifact, payload["package_artifact_id"])
+        if video is None or package_artifact is None:
+            raise RuntimeError("Artefactos de vídeo o publicación no encontrados")
+        video_path = settings.data_dir / video.path
+        package = _json.loads(
+            (settings.data_dir / package_artifact.path).read_text(encoding="utf-8")
+        )
+        thumbnails = _latest_by_base(payload["project_id"], "thumbnail")
+        base = video.title.removeprefix(PREFIXES["video"])
+        thumb = thumbnails.get(base)
+        thumb_path = settings.data_dir / thumb.path if thumb else None
+
+    append_event(job_id, "stage", f"Subiendo «{package.get('video_title', '')}» a YouTube…")
+    result = upload_video(
+        token_data,
+        settings.google_client_id,
+        settings.google_client_secret,
+        str(video_path),
+        package,
+        privacy=payload.get("privacy", "private"),
+        thumbnail_path=str(thumb_path) if thumb_path and thumb_path.is_file() else None,
+    )
+    append_event(
+        job_id,
+        "artifact",
+        f"Vídeo publicado: {result['url']} (privacidad: {payload.get('privacy', 'private')})",
+        result,
+    )
+    return result
+
+
 def run_workflow_job(job_id: str, payload: dict) -> dict:
     """Execute (or resume) a declarative workflow via LangGraph."""
     from langgraph.types import Command
@@ -606,8 +859,22 @@ HANDLERS = {
     "script_run": run_script_job,
     "voice_run": run_voice_job,
     "video_run": run_video_job,
+    "publisher_run": run_publisher_job,
+    "youtube_upload": run_youtube_upload_job,
     "pipeline_run": run_pipeline_job,
     "workflow_run": run_workflow_job,
+}
+
+# Jobs whose output feeds the project memory (librarian pass after success).
+MEMORY_KINDS = {
+    "curator_run",
+    "planner_run",
+    "lessons_run",
+    "slides_run",
+    "script_run",
+    "publisher_run",
+    "pipeline_run",
+    "workflow_run",
 }
 
 runner = JobRunner()

@@ -134,6 +134,13 @@ export interface JobEvent {
   created_at: string;
 }
 
+export interface WikiPage {
+  slug: string;
+  title: string;
+  content_md: string;
+  updated_at: string;
+}
+
 export interface WorkflowStep {
   agent: string;
   profile_id?: string | null;
@@ -294,6 +301,31 @@ export const api = {
     request<Job>(`/api/projects/${projectId}/workflow-runs`, {
       method: "POST",
       body: JSON.stringify({ workflow_id: workflowId }),
+    }),
+  listProjectWiki: (projectId: string) =>
+    request<WikiPage[]>(`/api/projects/${projectId}/wiki`),
+  upsertWikiPage: (projectId: string, slug: string, input: {
+    title?: string;
+    content_md: string;
+  }) =>
+    request<WikiPage>(`/api/projects/${projectId}/wiki/${slug}`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
+  deleteWikiPage: (projectId: string, slug: string) =>
+    request<void>(`/api/projects/${projectId}/wiki/${slug}`, {
+      method: "DELETE",
+    }),
+  youtubeStatus: () =>
+    request<{ configured: boolean; connected: boolean }>("/api/youtube/status"),
+  youtubeAuthUrl: () => request<{ url: string }>("/api/youtube/auth-url"),
+  youtubePublish: (packageArtifactId: string, privacy: string) =>
+    request<Job>("/api/youtube/publish", {
+      method: "POST",
+      body: JSON.stringify({
+        package_artifact_id: packageArtifactId,
+        privacy,
+      }),
     }),
   approveRun: (jobId: string, approved: boolean, feedback = "") =>
     request<Job>(`/api/runs/${jobId}/approve`, {

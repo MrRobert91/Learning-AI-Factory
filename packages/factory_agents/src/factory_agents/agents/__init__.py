@@ -5,6 +5,7 @@ from factory_agents.agents import (  # noqa: F401
     ideation,
     lessons,
     planner,
+    publisher,
     script,
     slides,
     voice,

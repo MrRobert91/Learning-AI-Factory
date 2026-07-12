@@ -13,7 +13,9 @@ from factory_api.routers import (
     ideation,
     projects,
     runs,
+    wiki,
     workflows,
+    youtube,
 )
 from factory_api.routers.agents import seed_default_profiles
 from factory_api.routers.workflows import seed_template_workflows
@@ -56,6 +58,8 @@ app.include_router(agents.router)
 app.include_router(runs.router)
 app.include_router(artifacts.router)
 app.include_router(workflows.router)
+app.include_router(wiki.router)
+app.include_router(youtube.router)
 
 
 @app.get("/api/health")
