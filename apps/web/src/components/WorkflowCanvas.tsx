@@ -27,6 +27,7 @@ const AGENT_LABELS: Record<string, string> = {
 type StepNodeData = {
   label: string;
   approval: boolean;
+  evaluate: boolean;
   selected: boolean;
   status?: string;
 };
@@ -48,6 +49,9 @@ function StepNode({ data }: NodeProps) {
     >
       <Handle type="target" position={Position.Left} className="!bg-neutral-500" />
       <div className="font-medium">{d.label}</div>
+      {d.evaluate && (
+        <div className="mt-1 text-xs text-sky-400">🧪 evaluación automática</div>
+      )}
       {d.approval && (
         <div className="mt-1 text-xs text-amber-400">✋ aprobación humana</div>
       )}
@@ -82,6 +86,7 @@ export default function WorkflowCanvas({
       data: {
         label: AGENT_LABELS[step.agent] ?? step.agent,
         approval: Boolean(step.approval_after),
+        evaluate: Boolean(step.evaluate),
         selected: selectedIndex === i,
         status: statuses?.[i],
       },

@@ -94,6 +94,7 @@ def run_task_agent(
     agents_md: str = "",
     tools: list[Any] | None = None,
     recursion_limit: int = 80,
+    callbacks: list[Any] | None = None,
 ) -> Iterator[RunEvent]:
     """Run a task agent to completion, yielding progress events.
 
@@ -116,7 +117,7 @@ def run_task_agent(
     for update in agent.stream(
         {"messages": [{"role": "user", "content": task_input}]},
         stream_mode="updates",
-        config={"recursion_limit": recursion_limit},
+        config={"recursion_limit": recursion_limit, "callbacks": callbacks or []},
     ):
         for node_output in update.values():
             if not isinstance(node_output, dict):

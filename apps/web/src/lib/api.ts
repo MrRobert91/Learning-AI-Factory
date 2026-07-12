@@ -145,6 +145,7 @@ export interface WorkflowStep {
   agent: string;
   profile_id?: string | null;
   approval_after?: boolean | null;
+  evaluate?: boolean | null;
 }
 
 export interface Workflow {

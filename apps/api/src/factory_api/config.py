@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     tts_voice: str = "nova"
     tts_model: str = "gpt-4o-mini-tts"
 
+    # Per-run spend firewall (rough estimate from token counts; 0 disables)
+    budget_usd_per_run: float = 5.0
+    budget_price_per_mtok_usd: float = 0.6
+
     # YouTube publishing (Google OAuth; see docs/YOUTUBE.md)
     google_client_id: str = ""
     google_client_secret: str = ""

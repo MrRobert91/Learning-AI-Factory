@@ -89,6 +89,7 @@ def run_lesson(
     workspace_dir: str,
     soul_md: str = "",
     agents_md: str = "",
+    callbacks: list | None = None,
 ) -> Iterator[RunEvent]:
     yield from run_task_agent(
         LESSONS_SPEC,
@@ -99,4 +100,5 @@ def run_lesson(
         soul_md=soul_md or DEFAULT_SOUL,
         agents_md=agents_md or DEFAULT_AGENTS_MD,
         tools=[build_sandbox_tool()],
+        callbacks=callbacks,
     )

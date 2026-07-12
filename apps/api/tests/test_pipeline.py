@@ -47,6 +47,10 @@ def _patch_all(monkeypatch):
     monkeypatch.setattr("factory_agents.agents.lessons.run_lesson", _fake_lesson)
     monkeypatch.setattr("factory_agents.agents.slides.run_slides", _fake_slides)
     monkeypatch.setattr("factory_agents.llm.get_llm_client", lambda key: object())
+    # Templates carry evaluate=true on core steps; default to passing judge.
+    monkeypatch.setattr(
+        "factory_api.runner.evaluate_stage", lambda job_id, agent, result: ("pass", "")
+    )
 
 
 def _run_agent(auth_client, project_id, agent):

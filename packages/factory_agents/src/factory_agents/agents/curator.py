@@ -100,6 +100,7 @@ def run_curator(
     workspace_dir: str,
     soul_md: str = "",
     agents_md: str = "",
+    callbacks: list | None = None,
 ) -> Iterator[RunEvent]:
     tools = build_research_tools(tavily_api_key)
     yield from run_task_agent(
@@ -111,4 +112,5 @@ def run_curator(
         soul_md=soul_md or DEFAULT_SOUL,
         agents_md=agents_md or DEFAULT_AGENTS_MD,
         tools=tools,
+        callbacks=callbacks,
     )

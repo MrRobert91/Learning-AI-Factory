@@ -70,7 +70,11 @@ function EventLine({ event }: { event: JobEvent }) {
         ? "📄"
         : event.type === "stage"
           ? "▶"
-          : "💬";
+          : event.type === "evaluation"
+            ? "🧪"
+            : event.type === "memory"
+              ? "🧠"
+              : "💬";
   return (
     <li className="flex gap-2 text-sm">
       <span>{icon}</span>

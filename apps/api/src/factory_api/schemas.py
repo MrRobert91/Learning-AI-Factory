@@ -150,6 +150,7 @@ class WorkflowStep(BaseModel):
     agent: str
     profile_id: str | None = None
     approval_after: bool | None = None
+    evaluate: bool | None = None
 
 
 class WorkflowCreate(BaseModel):

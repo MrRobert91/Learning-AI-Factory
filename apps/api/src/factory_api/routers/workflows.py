@@ -34,9 +34,9 @@ TEMPLATES = [
         ),
         "steps": [
             {"agent": "curator"},
-            {"agent": "planner", "approval_after": True},
-            {"agent": "lessons"},
-            {"agent": "slides", "approval_after": True},
+            {"agent": "planner", "evaluate": True, "approval_after": True},
+            {"agent": "lessons", "evaluate": True},
+            {"agent": "slides", "evaluate": True, "approval_after": True},
         ],
     },
     {
@@ -49,7 +49,10 @@ TEMPLATES = [
         "description": (
             "Parte de un course_plan ya generado o subido y produce lecciones y slides."
         ),
-        "steps": [{"agent": "lessons"}, {"agent": "slides", "approval_after": True}],
+        "steps": [
+            {"agent": "lessons", "evaluate": True},
+            {"agent": "slides", "evaluate": True, "approval_after": True},
+        ],
     },
     {
         "name": "Solo slides (desde lecciones existentes)",
@@ -64,9 +67,9 @@ TEMPLATES = [
         ),
         "steps": [
             {"agent": "curator"},
-            {"agent": "planner", "approval_after": True},
-            {"agent": "lessons"},
-            {"agent": "slides", "approval_after": True},
+            {"agent": "planner", "evaluate": True, "approval_after": True},
+            {"agent": "lessons", "evaluate": True},
+            {"agent": "slides", "evaluate": True, "approval_after": True},
             {"agent": "script"},
             {"agent": "voice"},
             {"agent": "video"},

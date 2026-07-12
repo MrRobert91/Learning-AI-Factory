@@ -40,6 +40,10 @@ class WorkflowRejected(Exception):
 class WorkflowState(TypedDict, total=False):
     payload: dict[str, Any]
     results: dict[str, Any]
+    escalate: dict[str, Any] | None
+
+
+MAX_REVISIONS = 2
 
 
 def validate_definition(definition: dict) -> list[str]:
@@ -67,8 +71,15 @@ def open_checkpointer():
         conn.close()
 
 
-def build_workflow_graph(definition: dict, job_id: str, handlers: dict, append_event):
-    """Compile the declarative chain into a LangGraph StateGraph."""
+def build_workflow_graph(
+    definition: dict, job_id: str, handlers: dict, append_event, evaluator=None
+):
+    """Compile the declarative chain into a LangGraph StateGraph.
+
+    evaluator(agent, result) -> (verdict, feedback) is injected by the
+    runner; steps with evaluate=true get a judge + bounded revise loop and
+    a human-escalation node when revisions run out.
+    """
     graph: StateGraph = StateGraph(WorkflowState)
     steps = definition["steps"]
     previous = START
@@ -92,6 +103,67 @@ def build_workflow_graph(definition: dict, job_id: str, handlers: dict, append_e
         graph.add_node(node_name, make_agent_node())
         graph.add_edge(previous, node_name)
         previous = node_name
+
+        if step.get("evaluate") and evaluator is not None:
+            eval_name = f"eval{i + 1}_{agent}"
+            escalate_name = f"escalate{i + 1}_{agent}"
+
+            def make_eval_node(step=step, agent=agent, index=i):
+                def node(state: WorkflowState) -> WorkflowState:
+                    results = dict(state.get("results", {}))
+                    stage_payload = {**state["payload"], **step.get("overrides", {})}
+                    attempts = 0
+                    while True:
+                        verdict, feedback = evaluator(agent, results.get(agent))
+                        if verdict == "pass":
+                            return {"results": results, "escalate": None}
+                        if attempts >= MAX_REVISIONS:
+                            return {
+                                "results": results,
+                                "escalate": {
+                                    "step": index + 1,
+                                    "agent": agent,
+                                    "type": "evaluation",
+                                    "feedback": feedback,
+                                },
+                            }
+                        attempts += 1
+                        append_event(
+                            job_id,
+                            "stage",
+                            f"Revisión {attempts}/{MAX_REVISIONS} de {agent} "
+                            f"con feedback del evaluador…",
+                        )
+                        results[agent] = handlers[f"{agent}_run"](
+                            job_id,
+                            {**stage_payload, "revision_feedback": feedback},
+                        )
+
+                return node
+
+            # Escalation lives in its own node (interrupt must not share a
+            # node with expensive work) and no-ops when there is nothing
+            # to escalate, keeping the graph linear.
+            def make_escalate_node(agent=agent, index=i):
+                def node(state: WorkflowState) -> WorkflowState:
+                    info = state.get("escalate")
+                    if not info:
+                        return {}
+                    decision = interrupt(info)
+                    if not (decision or {}).get("approved", False):
+                        raise WorkflowRejected(
+                            f"paso {index + 1} ({agent}, evaluación)",
+                            (decision or {}).get("feedback", ""),
+                        )
+                    return {"escalate": None}
+
+                return node
+
+            graph.add_node(eval_name, make_eval_node())
+            graph.add_edge(previous, eval_name)
+            graph.add_node(escalate_name, make_escalate_node())
+            graph.add_edge(eval_name, escalate_name)
+            previous = escalate_name
 
         if step.get("approval_after"):
             approval_name = f"approval{i + 1}_{agent}"

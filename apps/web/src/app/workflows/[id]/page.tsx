@@ -250,18 +250,33 @@ export default function WorkflowEditorPage() {
                 ))}
               </select>
             </div>
-            <label className="flex items-center gap-2 text-sm text-neutral-300">
-              <input
-                type="checkbox"
-                checked={Boolean(step.approval_after)}
-                onChange={(e) =>
-                  updateStep(selected!, { approval_after: e.target.checked })
-                }
-                disabled={readOnly}
-                className="h-4 w-4"
-              />
-              Pausar para aprobación humana tras este paso
-            </label>
+            <div className="space-y-2">
+              <label className="flex items-center gap-2 text-sm text-neutral-300">
+                <input
+                  type="checkbox"
+                  checked={Boolean(step.approval_after)}
+                  onChange={(e) =>
+                    updateStep(selected!, { approval_after: e.target.checked })
+                  }
+                  disabled={readOnly}
+                  className="h-4 w-4"
+                />
+                Pausar para aprobación humana tras este paso
+              </label>
+              <label className="flex items-center gap-2 text-sm text-neutral-300">
+                <input
+                  type="checkbox"
+                  checked={Boolean(step.evaluate)}
+                  onChange={(e) =>
+                    updateStep(selected!, { evaluate: e.target.checked })
+                  }
+                  disabled={readOnly}
+                  className="h-4 w-4"
+                />
+                Evaluación automática (revisa y corrige hasta 2 veces, luego
+                escala a ti)
+              </label>
+            </div>
           </div>
         </section>
       )}

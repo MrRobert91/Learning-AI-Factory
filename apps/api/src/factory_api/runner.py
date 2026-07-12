@@ -66,6 +66,7 @@ class JobRunner:
             job.started_at = datetime.now(UTC)
             db.commit()
             kind, payload = job.kind, json.loads(job.payload_json)
+        _TOKENS_USED.setdefault(job_id, 0)
 
         try:
             handler = HANDLERS[kind]
@@ -101,6 +102,77 @@ class JobRunner:
             job.result_json = json.dumps(result, ensure_ascii=False) if result else None
             job.finished_at = datetime.now(UTC)
             db.commit()
+
+
+class BudgetExceeded(RuntimeError):
+    pass
+
+
+# Per-job token accounting (in-process; reset when the job starts).
+_TOKENS_USED: dict[str, int] = {}
+
+
+def add_tokens(job_id: str, tokens: int) -> None:
+    settings = get_settings()
+    total = _TOKENS_USED.get(job_id, 0) + max(tokens, 0)
+    _TOKENS_USED[job_id] = total
+    estimated_usd = total / 1_000_000 * settings.budget_price_per_mtok_usd
+    if settings.budget_usd_per_run > 0 and estimated_usd > settings.budget_usd_per_run:
+        raise BudgetExceeded(
+            f"Presupuesto del run superado: ~${estimated_usd:.2f} "
+            f"(límite ${settings.budget_usd_per_run:.2f}, {total:,} tokens). "
+            f"Ajusta BUDGET_USD_PER_RUN si lo necesitas."
+        )
+
+
+class TrackedClient:
+    """Wraps the OpenAI-compatible client to enforce the per-run budget."""
+
+    def __init__(self, inner, job_id: str):
+        self._inner = inner
+        self._job_id = job_id
+        self.chat = type(
+            "chat", (), {"completions": type("completions", (), {"create": self._create})()}
+        )()
+
+    def _create(self, **kwargs):
+        response = self._inner.chat.completions.create(**kwargs)
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            add_tokens(
+                self._job_id,
+                (getattr(usage, "prompt_tokens", 0) or 0)
+                + (getattr(usage, "completion_tokens", 0) or 0),
+            )
+        return response
+
+
+def _client(job_id: str):
+    from factory_agents.llm import get_llm_client
+
+    settings = get_settings()
+    return TrackedClient(get_llm_client(settings.openrouter_api_key), job_id)
+
+
+def _budget_callbacks(job_id: str) -> list:
+    """LangChain callback tracking deep-agent token usage against the budget."""
+    from langchain_core.callbacks import BaseCallbackHandler
+
+    class BudgetCallback(BaseCallbackHandler):
+        raise_error = True
+
+        def on_llm_end(self, response, **kwargs):
+            for generations in response.generations:
+                for generation in generations:
+                    message = getattr(generation, "message", None)
+                    usage = getattr(message, "usage_metadata", None) or {}
+                    add_tokens(
+                        job_id,
+                        (usage.get("input_tokens", 0) or 0)
+                        + (usage.get("output_tokens", 0) or 0),
+                    )
+
+    return [BudgetCallback()]
 
 
 def append_event(job_id: str, type_: str, summary: str, data: dict | None = None) -> None:
@@ -174,13 +246,14 @@ def run_curator_job(job_id: str, payload: dict) -> dict:
     workspace = settings.data_dir / "runs" / job_id
     final_text = ""
     for event in run_curator(
-        _with_wiki(payload["task_input"], payload["project_id"]),
+        _augment_input(payload["task_input"], payload),
         model=payload.get("model") or settings.openrouter_model,
         api_key=settings.openrouter_api_key,
         tavily_api_key=settings.tavily_api_key,
         workspace_dir=str(workspace),
         soul_md=payload.get("soul_md", ""),
         agents_md=payload.get("agents_md", ""),
+        callbacks=_budget_callbacks(job_id),
     ):
         if event.type == "result":
             final_text = event.summary
@@ -203,7 +276,6 @@ def run_curator_job(job_id: str, payload: dict) -> dict:
 
 def run_planner_job(job_id: str, payload: dict) -> dict:
     from factory_agents.agents.planner import render_planner_input, run_planner
-    from factory_agents.llm import get_llm_client
 
     settings = get_settings()
     brief_md = _require_artifact(
@@ -211,11 +283,8 @@ def run_planner_job(job_id: str, payload: dict) -> dict:
     )
     append_event(job_id, "stage", "Diseñando la estructura del curso…")
     plan = run_planner(
-        _with_wiki(
-            render_planner_input(payload.get("project", {}), brief_md),
-            payload["project_id"],
-        ),
-        client=get_llm_client(settings.openrouter_api_key),
+        _augment_input(render_planner_input(payload.get("project", {}), brief_md), payload),
+        client=_client(job_id),
         model=payload.get("model") or settings.openrouter_model,
         soul_md=payload.get("soul_md", ""),
         agents_md=payload.get("agents_md", ""),
@@ -257,12 +326,13 @@ def run_lessons_job(job_id: str, payload: dict) -> dict:
         append_event(job_id, "stage", f"Escribiendo lección {label}…")
         final_text = ""
         for event in run_lesson(
-            _with_wiki(render_lesson_input(plan, mi, li, brief_md), payload["project_id"]),
+            _augment_input(render_lesson_input(plan, mi, li, brief_md), payload),
             model=payload.get("model") or settings.openrouter_model,
             api_key=settings.openrouter_api_key,
             workspace_dir=str(settings.data_dir / "runs" / job_id / f"lesson-{mi}-{li}"),
             soul_md=payload.get("soul_md", ""),
             agents_md=payload.get("agents_md", ""),
+            callbacks=_budget_callbacks(job_id),
         ):
             if event.type == "result":
                 final_text = event.summary
@@ -282,7 +352,6 @@ def run_lessons_job(job_id: str, payload: dict) -> dict:
 def run_slides_job(job_id: str, payload: dict) -> dict:
     from factory_agents.agents.slides import render_slides_input, run_slides
     from factory_agents.contracts import CoursePlan
-    from factory_agents.llm import get_llm_client
     from factory_agents.tools.marp import marp_available, render_deck
 
     settings = get_settings()
@@ -290,7 +359,7 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
         payload["project_id"], "course_plan", "ejecuta antes el Diseñador de curso"
     )
     plan = CoursePlan.model_validate_json(plan_json)
-    client = get_llm_client(settings.openrouter_api_key)
+    client = _client(job_id)
 
     with SessionLocal() as db:
         lesson_artifacts = db.scalars(
@@ -320,9 +389,9 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
         append_event(job_id, "stage", f"Diseñando slides de {title}…")
         lesson_md = (settings.data_dir / rel_path).read_text(encoding="utf-8")
         deck = run_slides(
-            _with_wiki(
+            _augment_input(
                 render_slides_input(lesson_md, plan.course_title, payload.get("style", "")),
-                payload["project_id"],
+                payload,
             ),
             client=client,
             model=payload.get("model") or settings.openrouter_model,
@@ -424,7 +493,6 @@ def _latest_by_base(project_id: str, type_: str) -> dict[str, "Artifact"]:
 
 def run_script_job(job_id: str, payload: dict) -> dict:
     from factory_agents.agents.script import render_script_input, run_script
-    from factory_agents.llm import get_llm_client
 
     settings = get_settings()
     decks = _latest_by_base(payload["project_id"], "slide_deck")
@@ -433,7 +501,7 @@ def run_script_job(job_id: str, payload: dict) -> dict:
             "Falta el artefacto 'slide_deck': genera o sube slides primero"
         )
     lessons = _latest_by_base(payload["project_id"], "lesson_content")
-    client = get_llm_client(settings.openrouter_api_key)
+    client = _client(job_id)
 
     artifact_ids: list[str] = []
     for base, deck in decks.items():
@@ -444,9 +512,9 @@ def run_script_job(job_id: str, payload: dict) -> dict:
             (settings.data_dir / lesson.path).read_text(encoding="utf-8") if lesson else None
         )
         script_md = run_script(
-            _with_wiki(
+            _augment_input(
                 render_script_input(deck_md, lesson_md, payload.get("project_title", "")),
-                payload["project_id"],
+                payload,
             ),
             client=client,
             model=payload.get("model") or settings.openrouter_model,
@@ -463,7 +531,6 @@ def run_script_job(job_id: str, payload: dict) -> dict:
 
 def run_voice_job(job_id: str, payload: dict) -> dict:
     from factory_agents.agents.voice import render_voice_input, run_voice
-    from factory_agents.llm import get_llm_client
 
     settings = get_settings()
     scripts = _latest_by_base(payload["project_id"], "teaching_script")
@@ -471,7 +538,7 @@ def run_voice_job(job_id: str, payload: dict) -> dict:
         raise RuntimeError(
             "Falta el artefacto 'teaching_script': ejecuta antes el Guionista docente"
         )
-    client = get_llm_client(settings.openrouter_api_key)
+    client = _client(job_id)
     language = payload.get("project", {}).get("language", "es")
 
     artifact_ids: list[str] = []
@@ -602,6 +669,18 @@ def _with_wiki(task_input: str, project_id: str) -> str:
     return f"{task_input}\n\n{wiki}" if wiki else task_input
 
 
+def _augment_input(task_input: str, payload: dict) -> str:
+    """Attach wiki memory and (when revising) the evaluator feedback."""
+    parts = [_with_wiki(task_input, payload["project_id"])]
+    feedback = payload.get("revision_feedback")
+    if feedback:
+        parts.append(
+            "# Feedback del evaluador (versión anterior rechazada — corrige esto)\n\n"
+            + feedback
+        )
+    return "\n\n".join(parts)
+
+
 def consolidate_memory(job_id: str) -> None:
     """Librarian pass after a successful job (best-effort, never raises)."""
     from factory_agents.llm import get_llm_client
@@ -690,7 +769,6 @@ def extract_srt_timestamps(srt_content: str) -> list[str]:
 
 def run_publisher_job(job_id: str, payload: dict) -> dict:
     from factory_agents.agents.publisher import render_publisher_input, run_publisher
-    from factory_agents.llm import get_llm_client
     from factory_agents.tools.thumbnail import render_thumbnail
 
     settings = get_settings()
@@ -699,7 +777,7 @@ def run_publisher_job(job_id: str, payload: dict) -> dict:
         raise RuntimeError("Falta el artefacto 'video': ejecuta antes el montaje de vídeo")
     subtitles = _latest_by_base(payload["project_id"], "subtitles")
     scripts = _latest_by_base(payload["project_id"], "teaching_script")
-    client = get_llm_client(settings.openrouter_api_key)
+    client = _client(job_id)
     language = payload.get("project", {}).get("language", "es")
 
     artifact_ids: list[str] = []
@@ -718,11 +796,11 @@ def run_publisher_job(job_id: str, payload: dict) -> dict:
                 encoding="utf-8"
             )
         package = run_publisher(
-            _with_wiki(
+            _augment_input(
                 render_publisher_input(
                     base, payload.get("project_title", ""), chapters, script_md, language
                 ),
-                payload["project_id"],
+                payload,
             ),
             client=client,
             model=payload.get("model") or settings.openrouter_model,
@@ -813,6 +891,54 @@ def run_youtube_upload_job(job_id: str, payload: dict) -> dict:
     return result
 
 
+AGENT_OUTPUT_TYPE = {
+    "curator": "research_brief",
+    "planner": "course_plan",
+    "lessons": "lesson_content",
+    "slides": "slide_deck",
+    "script": "teaching_script",
+}
+
+
+def evaluate_stage(job_id: str, agent: str, result: dict | None) -> tuple[str, str]:
+    """Judge a stage's artifacts. Returns (verdict, feedback)."""
+    from factory_agents.evals import run_evaluator
+
+    settings = get_settings()
+    artifact_type = AGENT_OUTPUT_TYPE.get(agent)
+    if artifact_type is None or not result:
+        return "pass", ""
+    ids = result.get("artifact_ids") or (
+        [result["artifact_id"]] if result.get("artifact_id") else []
+    )
+    excerpts = []
+    with SessionLocal() as db:
+        for artifact_id in ids[:2]:
+            artifact = db.get(Artifact, artifact_id)
+            if artifact is None:
+                continue
+            path = settings.data_dir / artifact.path
+            if path.is_file():
+                excerpts.append(f"[{artifact.title}]\n" + path.read_text(encoding="utf-8"))
+    if not excerpts:
+        return "pass", ""
+    evaluation = run_evaluator(
+        _client(job_id),
+        settings.openrouter_model,
+        artifact_type,
+        "\n\n---\n\n".join(excerpts),
+    )
+    icon = "✔" if evaluation.verdict == "pass" else "✎"
+    append_event(
+        job_id,
+        "evaluation",
+        f"{icon} Evaluación de {agent}: {evaluation.verdict} (nota {evaluation.score}/10)"
+        + (f" — {evaluation.feedback[:300]}" if evaluation.feedback else ""),
+        {"agent": agent, "verdict": evaluation.verdict, "score": evaluation.score},
+    )
+    return evaluation.verdict, evaluation.feedback
+
+
 def run_workflow_job(job_id: str, payload: dict) -> dict:
     """Execute (or resume) a declarative workflow via LangGraph."""
     from langgraph.types import Command
@@ -824,7 +950,13 @@ def run_workflow_job(job_id: str, payload: dict) -> dict:
     )
 
     definition = payload["definition"]
-    graph = build_workflow_graph(definition, job_id, HANDLERS, append_event)
+    graph = build_workflow_graph(
+        definition,
+        job_id,
+        HANDLERS,
+        append_event,
+        evaluator=lambda agent, result: evaluate_stage(job_id, agent, result),
+    )
     with open_checkpointer() as checkpointer:
         compiled = graph.compile(checkpointer=checkpointer)
         config = {"configurable": {"thread_id": job_id}}
