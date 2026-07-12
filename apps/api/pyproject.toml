@@ -13,6 +13,7 @@ dependencies = [
     "factory-agents",
     "python-multipart>=0.0.32",
     "langgraph-checkpoint-sqlite>=3.1.0",
+    "python-pptx>=1.0.2",
 ]
 
 [dependency-groups]

@@ -65,6 +65,13 @@ export default function ArtifactViewerPage() {
         {artifact.type} · {artifact.format} ·{" "}
         {new Date(artifact.created_at).toLocaleString("es")}
       </p>
+      {artifact.type === "video" && (
+        <video
+          controls
+          src={`/api/artifacts/${artifact.id}/download`}
+          className="mb-6 aspect-video w-full rounded-xl border border-neutral-800 bg-black"
+        />
+      )}
       {artifact.renders.includes("html") && (
         <iframe
           src={`/api/artifacts/${artifact.id}/render/html`}

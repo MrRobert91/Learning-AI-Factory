@@ -56,6 +56,34 @@ TEMPLATES = [
         "description": "Convierte lecciones existentes (generadas o subidas) en slides.",
         "steps": [{"agent": "slides"}],
     },
+    {
+        "name": "Curso completo con vídeo",
+        "description": (
+            "El flujo entero: investigación, plan (aprobación), lecciones, slides "
+            "(aprobación), guion docente, narración TTS y montaje del vídeo."
+        ),
+        "steps": [
+            {"agent": "curator"},
+            {"agent": "planner", "approval_after": True},
+            {"agent": "lessons"},
+            {"agent": "slides", "approval_after": True},
+            {"agent": "script"},
+            {"agent": "voice"},
+            {"agent": "video"},
+        ],
+    },
+    {
+        "name": "Guion docente desde slides existentes",
+        "description": (
+            "Sube tus propias slides (Marp .md o .pptx) y genera solo el guion del profesor."
+        ),
+        "steps": [{"agent": "script"}],
+    },
+    {
+        "name": "Narración y vídeo (desde guion)",
+        "description": "Adapta el guion a voz, sintetiza la narración y monta el vídeo.",
+        "steps": [{"agent": "voice"}, {"agent": "video"}],
+    },
 ]
 
 

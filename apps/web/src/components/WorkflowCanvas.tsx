@@ -18,6 +18,9 @@ const AGENT_LABELS: Record<string, string> = {
   planner: "📋 Plan del curso",
   lessons: "✍️ Lecciones",
   slides: "🖼 Slides",
+  script: "🎙 Guion docente",
+  voice: "🗣 Adaptación a voz",
+  video: "🎬 Vídeo",
 };
 
 type StepNodeData = {

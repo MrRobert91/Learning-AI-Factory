@@ -24,16 +24,32 @@ const STAGES: { agent: string; label: string; produces: string }[] = [
   { agent: "planner", label: "② Plan del curso", produces: "course_plan" },
   { agent: "lessons", label: "③ Lecciones", produces: "lesson_content" },
   { agent: "slides", label: "④ Slides", produces: "slide_deck" },
+  { agent: "script", label: "⑤ Guion docente", produces: "teaching_script" },
+  { agent: "voice", label: "⑥ Adaptación a voz", produces: "voice_script" },
+  { agent: "video", label: "⑦ Vídeo", produces: "video" },
 ];
+
+// Video production is tool-driven (TTS + ffmpeg), not an LLM agent with profiles.
+const PROFILE_AGENTS = ["curator", "planner", "lessons", "slides", "script", "voice"];
 
 const TYPE_LABELS: Record<string, string> = {
   research_brief: "Research brief",
   course_plan: "Plan del curso",
   lesson_content: "Lecciones",
   slide_deck: "Slides",
+  teaching_script: "Guion docente",
+  voice_script: "Guion de voz",
+  video: "Vídeo",
+  subtitles: "Subtítulos",
 };
 
-const UPLOAD_TYPES = Object.keys(TYPE_LABELS);
+const UPLOAD_TYPES = [
+  "research_brief",
+  "course_plan",
+  "lesson_content",
+  "slide_deck",
+  "teaching_script",
+];
 
 function EventLine({ event }: { event: JobEvent }) {
   const icon =
@@ -86,7 +102,9 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
 
   useEffect(() => {
     Promise.all(
-      STAGES.map(async (s) => [s.agent, await api.listProfiles(s.agent)] as const),
+      PROFILE_AGENTS.map(
+        async (agent) => [agent, await api.listProfiles(agent)] as const,
+      ),
     )
       .then((entries) => {
         setProfilesByAgent(Object.fromEntries(entries));
@@ -251,22 +269,28 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
               )}
             </div>
             <div className="flex gap-2">
-              <select
-                value={selectedProfile[stage.agent] ?? ""}
-                onChange={(e) =>
-                  setSelectedProfile((prev) => ({
-                    ...prev,
-                    [stage.agent]: e.target.value,
-                  }))
-                }
-                className="min-w-0 flex-1 rounded-lg border border-neutral-700 bg-neutral-900 px-2 py-1.5 text-xs outline-none focus:border-indigo-500"
-              >
-                {(profilesByAgent[stage.agent] ?? []).map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} (v{p.version})
-                  </option>
-                ))}
-              </select>
+              {(profilesByAgent[stage.agent] ?? []).length > 0 ? (
+                <select
+                  value={selectedProfile[stage.agent] ?? ""}
+                  onChange={(e) =>
+                    setSelectedProfile((prev) => ({
+                      ...prev,
+                      [stage.agent]: e.target.value,
+                    }))
+                  }
+                  className="min-w-0 flex-1 rounded-lg border border-neutral-700 bg-neutral-900 px-2 py-1.5 text-xs outline-none focus:border-indigo-500"
+                >
+                  {(profilesByAgent[stage.agent] ?? []).map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} (v{p.version})
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <span className="flex-1 self-center text-xs text-neutral-500">
+                  TTS + ffmpeg (sin perfil)
+                </span>
+              )}
               <button
                 onClick={() => start(stage.agent)}
                 disabled={running}

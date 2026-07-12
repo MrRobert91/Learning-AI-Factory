@@ -11,12 +11,16 @@ import {
 } from "@/lib/api";
 import WorkflowCanvas from "@/components/WorkflowCanvas";
 
-const AGENTS = ["curator", "planner", "lessons", "slides"];
+const AGENTS = ["curator", "planner", "lessons", "slides", "script", "voice", "video"];
+const PROFILE_AGENTS = ["curator", "planner", "lessons", "slides", "script", "voice"];
 const AGENT_NAMES: Record<string, string> = {
   curator: "Curador",
   planner: "Plan del curso",
   lessons: "Lecciones",
   slides: "Slides",
+  script: "Guion docente",
+  voice: "Adaptación a voz",
+  video: "Vídeo",
 };
 
 export default function WorkflowEditorPage() {
@@ -41,7 +45,7 @@ export default function WorkflowEditorPage() {
       })
       .catch(() => {});
     Promise.all(
-      AGENTS.map(async (a) => [a, await api.listProfiles(a)] as const),
+      PROFILE_AGENTS.map(async (a) => [a, await api.listProfiles(a)] as const),
     ).then((entries) => setProfiles(Object.fromEntries(entries)));
   }, [id]);
 

@@ -18,7 +18,7 @@ from langgraph.types import interrupt
 
 from factory_api.config import get_settings
 
-VALID_AGENTS = ("curator", "planner", "lessons", "slides")
+VALID_AGENTS = ("curator", "planner", "lessons", "slides", "script", "voice", "video")
 
 
 class WorkflowRejected(Exception):

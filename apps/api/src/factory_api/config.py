@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     # Research search (optional; DuckDuckGo fallback when empty)
     tavily_api_key: str = ""
 
+    # TTS narration (OpenAI TTS)
+    openai_api_key: str = ""
+    tts_voice: str = "nova"
+    tts_model: str = "gpt-4o-mini-tts"
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -359,6 +359,207 @@ def run_pipeline_job(job_id: str, payload: dict) -> dict:
     return results
 
 
+def _register_artifact_file(
+    job_id: str, project_id: str, type_: str, title: str, src_path, format_: str
+) -> str:
+    """Register an already-produced binary/text file as an artifact."""
+    import shutil
+    from pathlib import Path
+
+    settings = get_settings()
+    src_path = Path(src_path)
+    rel_path = f"artifacts/{project_id}/{type_}-{job_id}-{src_path.name}"
+    dst = settings.data_dir / rel_path
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src_path, dst)
+    with SessionLocal() as db:
+        artifact = Artifact(
+            project_id=project_id,
+            type=type_,
+            format=format_,
+            title=title,
+            path=rel_path,
+            created_by_job_id=job_id,
+        )
+        db.add(artifact)
+        db.commit()
+        return artifact.id
+
+
+PREFIXES = {"slide_deck": "Slides — ", "teaching_script": "Guion — ", "voice_script": "Voz — "}
+
+
+def _latest_by_base(project_id: str, type_: str) -> dict[str, "Artifact"]:
+    """Latest artifact of a type per base lesson label (prefix stripped)."""
+    prefix = PREFIXES.get(type_, "")
+    with SessionLocal() as db:
+        artifacts = db.scalars(
+            select(Artifact)
+            .where(Artifact.project_id == project_id, Artifact.type == type_)
+            .order_by(Artifact.created_at)
+        ).all()
+        db.expunge_all()
+    result: dict[str, Artifact] = {}
+    for artifact in artifacts:
+        base = artifact.title.removeprefix(prefix)
+        result[base] = artifact  # later (newer) wins
+    return result
+
+
+def run_script_job(job_id: str, payload: dict) -> dict:
+    from factory_agents.agents.script import render_script_input, run_script
+    from factory_agents.llm import get_llm_client
+
+    settings = get_settings()
+    decks = _latest_by_base(payload["project_id"], "slide_deck")
+    if not decks:
+        raise RuntimeError(
+            "Falta el artefacto 'slide_deck': genera o sube slides primero"
+        )
+    lessons = _latest_by_base(payload["project_id"], "lesson_content")
+    client = get_llm_client(settings.openrouter_api_key)
+
+    artifact_ids: list[str] = []
+    for base, deck in decks.items():
+        append_event(job_id, "stage", f"Escribiendo guion docente de {base}…")
+        deck_md = (settings.data_dir / deck.path).read_text(encoding="utf-8")
+        lesson = lessons.get(base)
+        lesson_md = (
+            (settings.data_dir / lesson.path).read_text(encoding="utf-8") if lesson else None
+        )
+        script_md = run_script(
+            render_script_input(deck_md, lesson_md, payload.get("project_title", "")),
+            client=client,
+            model=payload.get("model") or settings.openrouter_model,
+            soul_md=payload.get("soul_md", ""),
+            agents_md=payload.get("agents_md", ""),
+        )
+        artifact_id = _save_artifact(
+            job_id, payload["project_id"], "teaching_script", f"Guion — {base}", script_md
+        )
+        artifact_ids.append(artifact_id)
+        append_event(job_id, "artifact", f"Guion de {base} listo", {"artifact_id": artifact_id})
+    return {"artifact_ids": artifact_ids}
+
+
+def run_voice_job(job_id: str, payload: dict) -> dict:
+    from factory_agents.agents.voice import render_voice_input, run_voice
+    from factory_agents.llm import get_llm_client
+
+    settings = get_settings()
+    scripts = _latest_by_base(payload["project_id"], "teaching_script")
+    if not scripts:
+        raise RuntimeError(
+            "Falta el artefacto 'teaching_script': ejecuta antes el Guionista docente"
+        )
+    client = get_llm_client(settings.openrouter_api_key)
+    language = payload.get("project", {}).get("language", "es")
+
+    artifact_ids: list[str] = []
+    for base, script in scripts.items():
+        append_event(job_id, "stage", f"Adaptando a voz {base}…")
+        script_md = (settings.data_dir / script.path).read_text(encoding="utf-8")
+        voice_script = run_voice(
+            render_voice_input(script_md, base, language),
+            client=client,
+            model=payload.get("model") or settings.openrouter_model,
+            soul_md=payload.get("soul_md", ""),
+            agents_md=payload.get("agents_md", ""),
+        )
+        artifact_id = _save_artifact(
+            job_id,
+            payload["project_id"],
+            "voice_script",
+            f"Voz — {base}",
+            voice_script.model_dump_json(indent=2),
+            format_="json",
+        )
+        artifact_ids.append(artifact_id)
+        append_event(
+            job_id,
+            "artifact",
+            f"Guion de voz de {base} listo ({len(voice_script.segments)} segmentos)",
+            {"artifact_id": artifact_id},
+        )
+    return {"artifact_ids": artifact_ids}
+
+
+def run_video_job(job_id: str, payload: dict) -> dict:
+    from factory_agents.contracts import VoiceScript
+    from factory_agents.tools.tts import OpenAITTSProvider, synthesize_cached
+    from factory_agents.tools.video import (
+        build_srt,
+        compose_video,
+        probe_duration,
+        render_slide_images,
+    )
+
+    settings = get_settings()
+    voices = _latest_by_base(payload["project_id"], "voice_script")
+    decks = _latest_by_base(payload["project_id"], "slide_deck")
+    if not voices:
+        raise RuntimeError(
+            "Falta el artefacto 'voice_script': ejecuta antes el Adaptador de voz"
+        )
+
+    provider = OpenAITTSProvider(
+        settings.openai_api_key, voice=settings.tts_voice, model=settings.tts_model
+    )
+    cache_dir = settings.data_dir / "tts-cache"
+    workdir_root = settings.data_dir / "runs" / job_id
+
+    video_ids: list[str] = []
+    for base, voice_artifact in voices.items():
+        deck = decks.get(base)
+        if deck is None:
+            raise RuntimeError(f"No hay slide_deck para «{base}»: regenera las slides")
+        workdir = workdir_root / base.replace("/", "_").replace(" ", "_")[:60]
+
+        append_event(job_id, "stage", f"Renderizando slides de {base} a imágenes…")
+        images = render_slide_images(settings.data_dir / deck.path, workdir / "slides")
+
+        voice_script = VoiceScript.model_validate_json(
+            (settings.data_dir / voice_artifact.path).read_text(encoding="utf-8")
+        )
+        append_event(
+            job_id,
+            "stage",
+            f"Sintetizando narración de {base} ({len(voice_script.segments)} segmentos)…",
+        )
+        pairs: list[tuple] = []
+        srt_segments: list[tuple[str, float]] = []
+        for segment in voice_script.segments:
+            audio = synthesize_cached(provider, segment.text, cache_dir)
+            image = images[min(segment.slide, len(images)) - 1]
+            pairs.append((image, audio))
+            srt_segments.append((segment.text, probe_duration(audio)))
+
+        append_event(job_id, "stage", f"Montando vídeo de {base} (ffmpeg)…")
+        out_mp4 = workdir / "lesson.mp4"
+        compose_video(pairs, out_mp4, workdir / "segments")
+
+        video_id = _register_artifact_file(
+            job_id, payload["project_id"], "video", f"Vídeo — {base}", out_mp4, "video"
+        )
+        srt_id = _save_artifact(
+            job_id,
+            payload["project_id"],
+            "subtitles",
+            f"Subtítulos — {base}",
+            build_srt(srt_segments),
+            format_="text",
+        )
+        video_ids.append(video_id)
+        duration = sum(d for _t, d in srt_segments)
+        append_event(
+            job_id,
+            "artifact",
+            f"Vídeo de {base} listo ({duration / 60:.1f} min)",
+            {"artifact_id": video_id, "subtitles_id": srt_id},
+        )
+    return {"artifact_ids": video_ids}
+
+
 def run_workflow_job(job_id: str, payload: dict) -> dict:
     """Execute (or resume) a declarative workflow via LangGraph."""
     from langgraph.types import Command
@@ -402,6 +603,9 @@ HANDLERS = {
     "planner_run": run_planner_job,
     "lessons_run": run_lessons_job,
     "slides_run": run_slides_job,
+    "script_run": run_script_job,
+    "voice_run": run_voice_job,
+    "video_run": run_video_job,
     "pipeline_run": run_pipeline_job,
     "workflow_run": run_workflow_job,
 }

@@ -23,7 +23,38 @@ UPLOADABLE_TYPES = {
     "course_plan": "json",
     "lesson_content": "markdown",
     "slide_deck": "markdown",
+    "teaching_script": "markdown",
 }
+
+
+def pptx_to_marp(data: bytes) -> str:
+    """Convert an uploaded PPTX to Marp Markdown (titles + text, best effort)."""
+    from io import BytesIO
+
+    from pptx import Presentation
+
+    prs = Presentation(BytesIO(data))
+    parts = ["---", "marp: true", "theme: default", "paginate: true", "---", ""]
+    for i, slide in enumerate(prs.slides):
+        if i > 0:
+            parts.append("\n---\n")
+        title = ""
+        try:
+            if slide.shapes.title is not None and slide.shapes.title.text.strip():
+                title = slide.shapes.title.text.strip()
+        except (AttributeError, KeyError):
+            pass
+        parts.append(f"## {title or f'Slide {i + 1}'}\n")
+        for shape in slide.shapes:
+            if not getattr(shape, "has_text_frame", False):
+                continue
+            if title and shape is slide.shapes.title:
+                continue
+            for paragraph in shape.text_frame.paragraphs:
+                text = "".join(run.text for run in paragraph.runs).strip()
+                if text:
+                    parts.append(f"- {text}")
+    return "\n".join(parts) + "\n"
 RENDER_MEDIA_TYPES = {
     "html": "text/html",
     "pdf": "application/pdf",
@@ -126,7 +157,15 @@ async def upload_artifact(
     rel_path = f"artifacts/{project_id}/upload-{type}-{uuid.uuid4().hex[:8]}.{ext}"
     abs_path = settings.data_dir / rel_path
     abs_path.parent.mkdir(parents=True, exist_ok=True)
-    abs_path.write_bytes(await file.read())
+    data = await file.read()
+    if type == "slide_deck" and (file.filename or "").lower().endswith(".pptx"):
+        try:
+            data = pptx_to_marp(data).encode("utf-8")
+        except Exception as exc:
+            raise HTTPException(
+                status_code=422, detail=f"No se pudo convertir el PPTX: {exc}"
+            ) from exc
+    abs_path.write_bytes(data)
     artifact = Artifact(
         project_id=project_id,
         type=type,
