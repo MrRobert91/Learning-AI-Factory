@@ -1,0 +1,36 @@
+# AI Learning Factory — local deployment: exactly two containers.
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      APP_PASSWORD: ${APP_PASSWORD:-changeme}
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-change-me}
+      DATABASE_URL: sqlite:////data/db/factory.sqlite
+      DATA_DIR: /data
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-deepseek/deepseek-v4-flash}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      TTS_VOICE: ${TTS_VOICE:-nova}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      BUDGET_USD_PER_RUN: ${BUDGET_USD_PER_RUN:-5}
+      BUDGET_PRICE_PER_MTOK_USD: ${BUDGET_PRICE_PER_MTOK_USD:-0.6}
+      ANALYTICS_INTERVAL_DAYS: ${ANALYTICS_INTERVAL_DAYS:-0}
+      LANGSMITH_TRACING: ${LANGSMITH_TRACING:-false}
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-ai-learning-factory}
+    volumes:
+      - ./data:/data
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: apps/web
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend

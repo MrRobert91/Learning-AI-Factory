@@ -1,0 +1,104 @@
+"""Lesson Generator: writes the full content of one lesson (deep agent + sandbox)."""
+
+from collections.abc import Iterator
+
+from factory_agents.contracts import CoursePlan
+from factory_agents.runtime import AgentSpec, RunEvent, register, run_task_agent
+from factory_agents.tools.sandbox import build_sandbox_tool
+
+LESSONS_BASE_PROMPT = """\
+Eres el Generador de Lecciones de AI Learning Factory. Escribes el contenido completo \
+de UNA lección del curso, en Markdown, listo para convertirse en slides y guion docente.
+
+Cómo trabajas:
+1. Lee el encargo: plan de la lección (objetivo, key points), contexto del curso y \
+extractos del research brief.
+2. Desarrolla la lección con progresión clara: motivación → conceptos → ejemplos → \
+recapitulación. Usa encabezados ## por sección.
+3. Si la lección incluye código, VERIFICA cada ejemplo con la herramienta `run_python` \
+antes de incluirlo. Si un ejemplo falla, corrígelo y vuelve a verificarlo. Solo usa la \
+biblioteca estándar de Python (el sandbox no tiene paquetes instalados).
+4. Mantén la coherencia con el resto del curso: no expliques lo que se vio en lecciones \
+anteriores (referéncialo) ni adelantes lo que llega después.
+
+Tu respuesta FINAL debe ser únicamente el Markdown completo de la lección, empezando \
+por `# <título de la lección>`. Escribe en el idioma del curso.
+"""
+
+DEFAULT_SOUL = """\
+Profesor que se nota que ha dado clase: anticipa dónde se pierde la gente y lo \
+desactiva con un ejemplo antes de que pase. Concreto, cero paja; cada párrafo enseña \
+algo. Prefiere un buen ejemplo ejecutable a tres párrafos de teoría.
+"""
+
+DEFAULT_AGENTS_MD = """\
+- Longitud objetivo: 600-1200 palabras por lección (5-15 min de vídeo).
+- Todo bloque de código debe haberse ejecutado con éxito en el sandbox.
+- Cierra siempre con "## Resumen" (3-5 bullets) que mapee al objetivo de la lección.
+- Si citas datos del research brief, mantén las referencias [n].
+"""
+
+LESSONS_SPEC = register(
+    AgentSpec(
+        name="lessons",
+        display_name="Generador de lecciones",
+        description=(
+            "Escribe el contenido completo de cada lección en Markdown, "
+            "verificando los ejemplos de código en un sandbox."
+        ),
+        base_prompt=LESSONS_BASE_PROMPT,
+        tool_names=("run_python",),
+        consumes=("course_plan", "research_brief"),
+        produces=("lesson_content",),
+        default_soul_md=DEFAULT_SOUL,
+        default_agents_md=DEFAULT_AGENTS_MD,
+    )
+)
+
+
+def render_lesson_input(
+    plan: CoursePlan,
+    module_index: int,
+    lesson_index: int,
+    research_brief_md: str,
+) -> str:
+    module = plan.modules[module_index - 1]
+    lesson = module.lessons[lesson_index - 1]
+    siblings = "\n".join(
+        f"  {mi}.{li} {les.title}" for mi, li, _m, les in plan.iter_lessons()
+    )
+    key_points = "\n".join(f"- {p}" for p in lesson.key_points)
+    return (
+        f"Curso: {plan.course_title} (nivel {plan.level}, audiencia: {plan.audience}, "
+        f"idioma: {plan.language})\n\n"
+        f"Estructura completa del curso:\n{siblings}\n\n"
+        f"Escribe la lección {module_index}.{lesson_index} del módulo «{module.title}»:\n"
+        f"- Título: {lesson.title}\n"
+        f"- Objetivo: {lesson.objective}\n"
+        f"- Duración estimada: {lesson.estimated_minutes} min\n"
+        f"- Puntos clave a cubrir:\n{key_points}\n\n"
+        f"Material de investigación (research brief):\n\n{research_brief_md[:8000]}"
+    )
+
+
+def run_lesson(
+    task_input: str,
+    *,
+    model: str,
+    api_key: str,
+    workspace_dir: str,
+    soul_md: str = "",
+    agents_md: str = "",
+    callbacks: list | None = None,
+) -> Iterator[RunEvent]:
+    yield from run_task_agent(
+        LESSONS_SPEC,
+        task_input,
+        model=model,
+        api_key=api_key,
+        workspace_dir=workspace_dir,
+        soul_md=soul_md or DEFAULT_SOUL,
+        agents_md=agents_md or DEFAULT_AGENTS_MD,
+        tools=[build_sandbox_tool()],
+        callbacks=callbacks,
+    )
