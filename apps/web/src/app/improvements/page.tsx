@@ -1,8 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
 import { api, type ImprovementProposal } from "@/lib/api";
+import {
+  EmptyState,
+  IconCheck,
+  IconTrendingUp,
+  IconX,
+  LoadingScreen,
+  PageHeader,
+} from "@/components/ui";
 
 const KIND_LABELS: Record<string, string> = {
   wiki: "Memoria del canal",
@@ -40,55 +47,56 @@ function ProposalCard({
   }
 
   return (
-    <li className="rounded-xl border border-neutral-800 p-4">
-      <div className="mb-1 flex items-center justify-between">
-        <span className="font-medium">{proposal.title}</span>
-        <span className="rounded-full border border-neutral-700 px-2 py-0.5 text-xs text-neutral-400">
+    <li className="card animate-in p-5">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <span className="text-sm font-semibold text-zinc-100">
+          {proposal.title}
+        </span>
+        <span className="badge-neutral shrink-0">
           {KIND_LABELS[proposal.kind]}
           {proposal.agent_type && ` · ${proposal.agent_type}`}
         </span>
       </div>
-      <p className="mb-3 text-sm text-neutral-400">
-        <span className="font-medium text-neutral-300">Evidencia:</span>{" "}
+      <p className="mb-4 text-sm leading-relaxed text-zinc-400">
+        <span className="font-medium text-zinc-300">Evidencia:</span>{" "}
         {proposal.evidence}
       </p>
-      <div className="mb-3 rounded-lg border border-emerald-900/50 bg-emerald-950/20 p-3">
-        <p className="mb-1 text-xs uppercase tracking-wide text-emerald-400">
+      <div className="mb-3 rounded-xl border border-emerald-400/20 bg-emerald-500/[0.05] p-4">
+        <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-emerald-400">
           Contenido propuesto
         </p>
-        <pre className="whitespace-pre-wrap text-sm text-neutral-200">
+        <pre className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-200">
           {proposal.proposed_content}
         </pre>
       </div>
       {showDiff && current !== null && (
-        <div className="mb-3 rounded-lg border border-neutral-800 bg-neutral-900/50 p-3">
-          <p className="mb-1 text-xs uppercase tracking-wide text-neutral-500">
+        <div className="animate-in mb-3 rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
+          <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
             Contenido actual (se sustituiría)
           </p>
-          <pre className="whitespace-pre-wrap text-sm text-neutral-400">
+          <pre className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-400">
             {current || "(vacío)"}
           </pre>
         </div>
       )}
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <button
           onClick={() => decide(true)}
           disabled={busy}
-          className="rounded-lg bg-emerald-600 px-4 py-1.5 text-sm font-medium hover:bg-emerald-500 disabled:opacity-50"
+          className="btn-success btn-sm"
         >
+          <IconCheck size={13} />
           Aprobar y aplicar
         </button>
         <button
           onClick={() => decide(false)}
           disabled={busy}
-          className="rounded-lg border border-red-900 px-4 py-1.5 text-sm text-red-400 hover:bg-red-950 disabled:opacity-50"
+          className="btn-danger btn-sm"
         >
+          <IconX size={13} />
           Rechazar
         </button>
-        <button
-          onClick={loadCurrent}
-          className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm text-neutral-300 hover:bg-neutral-900"
-        >
+        <button onClick={loadCurrent} className="btn-secondary btn-sm">
           {showDiff ? "Ocultar actual" : "Comparar con actual"}
         </button>
       </div>
@@ -99,6 +107,7 @@ function ProposalCard({
 export default function ImprovementsPage() {
   const [pending, setPending] = useState<ImprovementProposal[] | null>(null);
   const [reviewed, setReviewed] = useState<ImprovementProposal[]>([]);
+  const [showReviewed, setShowReviewed] = useState(false);
 
   const load = useCallback(async () => {
     const [p, all] = await Promise.all([
@@ -114,27 +123,31 @@ export default function ImprovementsPage() {
   }, [load]);
 
   return (
-    <main className="mx-auto max-w-4xl p-6">
-      <div className="mb-6">
-        <Link href="/" className="text-sm text-indigo-400 hover:underline">
-          ← Volver al panel
-        </Link>
-      </div>
-      <h1 className="mb-1 text-2xl font-semibold">Mejora continua</h1>
-      <p className="mb-8 text-sm text-neutral-400">
-        El Analista estudia las métricas y comentarios de tus vídeos publicados y
-        propone mejoras a la memoria del canal o a los <code>agents.md</code> de
-        los agentes. Nada se aplica sin tu aprobación. Lanza un análisis desde la
-        página de cada proyecto («📈 Analizar rendimiento»).
-      </p>
+    <div className="mx-auto max-w-4xl px-6 py-8">
+      <PageHeader
+        title="Mejora continua"
+        description={
+          <>
+            El Analista estudia las métricas y comentarios de tus vídeos
+            publicados y propone mejoras a la memoria del canal o a los{" "}
+            <code>agents.md</code> de los agentes. Nada se aplica sin tu
+            aprobación. Lanza un análisis desde la página de cada proyecto
+            («Analizar rendimiento»).
+          </>
+        }
+      />
 
-      <h2 className="mb-3 text-lg font-medium">Propuestas pendientes</h2>
+      <h2 className="mb-3 text-base font-semibold tracking-tight text-zinc-100">
+        Propuestas pendientes
+      </h2>
       {pending === null ? (
-        <p className="text-neutral-400">Cargando…</p>
+        <LoadingScreen label="Cargando propuestas…" />
       ) : pending.length === 0 ? (
-        <p className="mb-8 text-sm text-neutral-500">
-          No hay propuestas pendientes.
-        </p>
+        <EmptyState
+          icon={<IconTrendingUp size={22} />}
+          title="No hay propuestas pendientes"
+          description="Cuando el Analista encuentre patrones en las métricas de tus vídeos, sus propuestas aparecerán aquí para que las revises."
+        />
       ) : (
         <ul className="mb-8 space-y-3">
           {pending.map((p) => (
@@ -144,29 +157,38 @@ export default function ImprovementsPage() {
       )}
 
       {reviewed.length > 0 && (
-        <details>
-          <summary className="cursor-pointer text-sm text-neutral-400">
-            Historial de propuestas revisadas ({reviewed.length})
-          </summary>
-          <ul className="mt-2 space-y-2">
-            {reviewed.map((p) => (
-              <li
-                key={p.id}
-                className="flex items-center justify-between rounded-lg border border-neutral-800 p-3 text-sm"
-              >
-                <span>{p.title}</span>
-                <span
-                  className={
-                    p.status === "approved" ? "text-emerald-400" : "text-red-400"
-                  }
+        <div className="mt-8">
+          <button
+            onClick={() => setShowReviewed((v) => !v)}
+            className="btn-ghost btn-sm -ml-2"
+          >
+            {showReviewed
+              ? "Ocultar historial"
+              : `Historial de propuestas revisadas (${reviewed.length})`}
+          </button>
+          {showReviewed && (
+            <ul className="animate-in mt-2 space-y-1.5">
+              {reviewed.map((p) => (
+                <li
+                  key={p.id}
+                  className="card flex items-center justify-between gap-3 px-4 py-2.5 text-sm"
                 >
-                  {p.status === "approved" ? "Aprobada" : "Rechazada"}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </details>
+                  <span className="min-w-0 truncate text-zinc-300">
+                    {p.title}
+                  </span>
+                  <span
+                    className={
+                      p.status === "approved" ? "badge-success" : "badge-danger"
+                    }
+                  >
+                    {p.status === "approved" ? "Aprobada" : "Rechazada"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
-    </main>
+    </div>
   );
 }

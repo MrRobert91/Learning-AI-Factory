@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api, type Job } from "@/lib/api";
+import { ErrorBanner, IconYoutube, Spinner } from "@/components/ui";
 
 export default function YouTubePublish({
   packageArtifactId,
@@ -63,58 +64,71 @@ export default function YouTubePublish({
     | undefined;
 
   return (
-    <div className="mb-6 rounded-xl border border-red-900/50 bg-red-950/20 p-4">
-      <h3 className="mb-2 text-sm font-semibold text-red-300">
-        ▶ Publicar en YouTube
-      </h3>
-      {!status.configured ? (
-        <p className="text-sm text-neutral-400">
-          YouTube no está configurado. Añade <code>GOOGLE_CLIENT_ID</code> y{" "}
-          <code>GOOGLE_CLIENT_SECRET</code> al .env (guía en{" "}
-          <code>docs/YOUTUBE.md</code>) o descarga el vídeo y este paquete para
-          publicar a mano.
-        </p>
-      ) : !status.connected ? (
-        <button
-          onClick={connect}
-          className="rounded-lg bg-red-700 px-4 py-2 text-sm font-medium hover:bg-red-600"
-        >
-          Conectar con YouTube (OAuth)
-        </button>
-      ) : job?.status === "done" && uploadedUrl ? (
-        <p className="text-sm text-emerald-400">
-          Publicado ✓{" "}
-          <a href={uploadedUrl} target="_blank" className="underline">
-            {uploadedUrl}
-          </a>
-        </p>
-      ) : (
-        <div className="flex items-center gap-2">
-          <select
-            value={privacy}
-            onChange={(e) => setPrivacy(e.target.value)}
-            className="rounded-lg border border-neutral-700 bg-neutral-900 px-2 py-2 text-sm outline-none"
-          >
-            <option value="private">Privado</option>
-            <option value="unlisted">Oculto</option>
-            <option value="public">Público</option>
-          </select>
-          <button
-            onClick={publish}
-            disabled={publishing}
-            className="rounded-lg bg-red-700 px-4 py-2 text-sm font-medium hover:bg-red-600 disabled:opacity-50"
-          >
-            {publishing ? "Subiendo…" : "Subir vídeo a YouTube"}
+    <div className="card mb-6 overflow-hidden">
+      <div className="flex items-center gap-2.5 border-b border-red-400/15 bg-red-500/[0.06] px-5 py-3">
+        <IconYoutube size={17} className="text-red-400" />
+        <h3 className="text-sm font-semibold text-zinc-100">
+          Publicar en YouTube
+        </h3>
+      </div>
+      <div className="p-5">
+        {!status.configured ? (
+          <p className="text-sm leading-relaxed text-zinc-400">
+            YouTube no está configurado. Añade <code>GOOGLE_CLIENT_ID</code> y{" "}
+            <code>GOOGLE_CLIENT_SECRET</code> al .env (guía en{" "}
+            <code>docs/YOUTUBE.md</code>) o descarga el vídeo y este paquete
+            para publicar a mano.
+          </p>
+        ) : !status.connected ? (
+          <button onClick={connect} className="btn-danger">
+            <IconYoutube size={15} />
+            Conectar con YouTube (OAuth)
           </button>
-        </div>
-      )}
-      {job?.status === "failed" && (
-        <p className="mt-2 text-sm text-red-400">{job.error}</p>
-      )}
-      {error && <p className="mt-2 text-sm text-red-400">{error}</p>}
-      <p className="mt-2 text-xs text-neutral-500">
-        La subida nunca es automática: siempre requiere esta confirmación.
-      </p>
+        ) : job?.status === "done" && uploadedUrl ? (
+          <p className="text-sm text-emerald-400">
+            Publicado ✓{" "}
+            <a href={uploadedUrl} target="_blank" className="underline">
+              {uploadedUrl}
+            </a>
+          </p>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={privacy}
+              onChange={(e) => setPrivacy(e.target.value)}
+              className="input w-auto"
+              aria-label="Privacidad del vídeo"
+            >
+              <option value="private">Privado</option>
+              <option value="unlisted">Oculto</option>
+              <option value="public">Público</option>
+            </select>
+            <button
+              onClick={publish}
+              disabled={publishing}
+              className="btn-danger"
+            >
+              {publishing ? (
+                <Spinner className="border-red-300/40 border-t-red-300" />
+              ) : (
+                <IconYoutube size={15} />
+              )}
+              {publishing ? "Subiendo…" : "Subir vídeo a YouTube"}
+            </button>
+          </div>
+        )}
+        {job?.status === "failed" && (
+          <p className="mt-3 text-sm text-red-400">{job.error}</p>
+        )}
+        {error && (
+          <div className="mt-3">
+            <ErrorBanner>{error}</ErrorBanner>
+          </div>
+        )}
+        <p className="mt-3 text-xs text-zinc-500">
+          La subida nunca es automática: siempre requiere esta confirmación.
+        </p>
+      </div>
     </div>
   );
 }

@@ -5,12 +5,39 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { api, type Project } from "@/lib/api";
 import ProjectForm from "@/components/ProjectForm";
+import {
+  EmptyState,
+  IconFolder,
+  IconPlus,
+  IconSparkles,
+  IconX,
+  LoadingScreen,
+  PageHeader,
+} from "@/components/ui";
 
-const STATUS_LABELS: Record<string, string> = {
-  draft: "Borrador",
-  active: "Activo",
-  archived: "Archivado",
+const STATUS_BADGE: Record<string, { label: string; className: string }> = {
+  draft: { label: "Borrador", className: "badge-neutral" },
+  active: { label: "Activo", className: "badge-success" },
+  archived: { label: "Archivado", className: "badge-neutral" },
 };
+
+const LEVEL_LABELS: Record<string, string> = {
+  introductorio: "Introductorio",
+  intermedio: "Intermedio",
+  avanzado: "Avanzado",
+};
+
+function relativeDate(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 1) return "hace un momento";
+  if (minutes < 60) return `hace ${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `hace ${hours} h`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `hace ${days} d`;
+  return new Date(iso).toLocaleDateString("es");
+}
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -25,61 +52,37 @@ export default function DashboardPage() {
     load().catch(() => {});
   }, [load]);
 
-  async function logout() {
-    await api.logout();
-    router.push("/login");
-  }
-
   return (
-    <main className="mx-auto max-w-4xl p-6">
-      <header className="mb-8 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">AI Learning Factory</h1>
-          <p className="text-sm text-neutral-400">Tus proyectos educativos</p>
-        </div>
-        <div className="flex gap-2">
-          <Link
-            href="/ideation"
-            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium hover:bg-indigo-500"
-          >
-            💡 Nueva idea (asistente)
-          </Link>
-          <button
-            onClick={() => setShowForm((v) => !v)}
-            className="rounded-lg border border-neutral-700 px-4 py-2 text-sm text-neutral-300 hover:bg-neutral-900"
-          >
-            {showForm ? "Cancelar" : "Proyecto manual"}
-          </button>
-          <Link
-            href="/improvements"
-            className="rounded-lg border border-neutral-700 px-4 py-2 text-sm text-neutral-300 hover:bg-neutral-900"
-          >
-            Mejora continua
-          </Link>
-          <Link
-            href="/workflows"
-            className="rounded-lg border border-neutral-700 px-4 py-2 text-sm text-neutral-300 hover:bg-neutral-900"
-          >
-            Workflows
-          </Link>
-          <Link
-            href="/profiles"
-            className="rounded-lg border border-neutral-700 px-4 py-2 text-sm text-neutral-300 hover:bg-neutral-900"
-          >
-            Perfiles
-          </Link>
-          <button
-            onClick={logout}
-            className="rounded-lg border border-neutral-700 px-4 py-2 text-sm text-neutral-300 hover:bg-neutral-900"
-          >
-            Salir
-          </button>
-        </div>
-      </header>
+    <div className="mx-auto max-w-6xl px-6 py-8">
+      <PageHeader
+        title="Proyectos"
+        description="Cada proyecto es un curso en fabricación: desde la investigación inicial hasta el vídeo publicado."
+        actions={
+          <>
+            <button
+              onClick={() => setShowForm((v) => !v)}
+              className="btn-secondary"
+            >
+              {showForm ? <IconX size={15} /> : <IconPlus size={15} />}
+              {showForm ? "Cancelar" : "Proyecto manual"}
+            </button>
+            <Link href="/ideation" className="btn-primary">
+              <IconSparkles size={15} />
+              Nueva idea con asistente
+            </Link>
+          </>
+        }
+      />
 
       {showForm && (
-        <section className="mb-8 rounded-xl border border-neutral-800 bg-neutral-900/50 p-5">
-          <h2 className="mb-4 text-lg font-medium">Nuevo proyecto</h2>
+        <section className="card animate-in mb-8 p-6">
+          <h2 className="mb-1 text-base font-semibold text-zinc-100">
+            Nuevo proyecto manual
+          </h2>
+          <p className="mb-5 text-sm text-zinc-400">
+            Si ya tienes clara la idea, define aquí el curso directamente. Si
+            prefieres afinarla conversando, usa el asistente de ideación.
+          </p>
           <ProjectForm
             submitLabel="Crear proyecto"
             onSubmit={async (input) => {
@@ -92,43 +95,58 @@ export default function DashboardPage() {
       )}
 
       {projects === null ? (
-        <p className="text-neutral-400">Cargando…</p>
+        <LoadingScreen label="Cargando proyectos…" />
       ) : projects.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-neutral-800 p-10 text-center text-neutral-400">
-          <p className="mb-2">Todavía no tienes proyectos.</p>
-          <p className="text-sm">
-            Crea uno para empezar a fabricar tu primer curso.
-          </p>
-        </div>
+        <EmptyState
+          icon={<IconFolder size={22} />}
+          title="Todavía no tienes proyectos"
+          description="Empieza con el asistente de ideación: convierte una idea vaga en un brief listo para fabricar el curso."
+          action={
+            <Link href="/ideation" className="btn-primary">
+              <IconSparkles size={15} />
+              Empezar con una idea
+            </Link>
+          }
+        />
       ) : (
-        <ul className="space-y-3">
-          {projects.map((p) => (
-            <li key={p.id}>
-              <Link
-                href={`/projects/${p.id}`}
-                className="block rounded-xl border border-neutral-800 p-4 transition hover:border-neutral-600"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="font-medium">{p.title}</span>
-                  <span className="rounded-full border border-neutral-700 px-2 py-0.5 text-xs text-neutral-400">
-                    {STATUS_LABELS[p.status] ?? p.status}
-                  </span>
-                </div>
-                {p.topic && (
-                  <p className="mt-1 line-clamp-2 text-sm text-neutral-400">
-                    {p.topic}
+        <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {projects.map((p, i) => {
+            const badge = STATUS_BADGE[p.status] ?? {
+              label: p.status,
+              className: "badge-neutral",
+            };
+            return (
+              <li key={p.id} className="animate-in" style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}>
+                <Link
+                  href={`/projects/${p.id}`}
+                  className="card card-hover flex h-full flex-col p-5"
+                >
+                  <div className="mb-2 flex items-start justify-between gap-3">
+                    <span className="min-w-0 truncate text-[15px] font-semibold text-zinc-100">
+                      {p.title}
+                    </span>
+                    <span className={`${badge.className} shrink-0`}>{badge.label}</span>
+                  </div>
+                  <p className="mb-4 line-clamp-2 min-h-10 flex-1 text-sm leading-relaxed text-zinc-400">
+                    {p.topic || "Sin descripción del tema."}
                   </p>
-                )}
-                <p className="mt-2 text-xs text-neutral-500">
-                  {p.audience && <>Audiencia: {p.audience} · </>}
-                  {p.level && <>Nivel: {p.level} · </>}
-                  Actualizado: {new Date(p.updated_at).toLocaleString("es")}
-                </p>
-              </Link>
-            </li>
-          ))}
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-white/[0.06] pt-3 text-xs text-zinc-500">
+                    {p.audience && (
+                      <span className="min-w-0 truncate" title={p.audience}>
+                        {p.audience}
+                      </span>
+                    )}
+                    {p.level && <span>{LEVEL_LABELS[p.level] ?? p.level}</span>}
+                    <span className="ml-auto shrink-0">
+                      {relativeDate(p.updated_at)}
+                    </span>
+                  </div>
+                </Link>
+              </li>
+            );
+          })}
         </ul>
       )}
-    </main>
+    </div>
   );
 }

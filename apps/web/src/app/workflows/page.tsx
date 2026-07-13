@@ -4,6 +4,13 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { api, type Workflow } from "@/lib/api";
+import {
+  EmptyState,
+  IconPlus,
+  IconWorkflow,
+  LoadingScreen,
+  PageHeader,
+} from "@/components/ui";
 
 export default function WorkflowsPage() {
   const router = useRouter();
@@ -34,47 +41,51 @@ export default function WorkflowsPage() {
   const own = workflows?.filter((w) => !w.is_template) ?? [];
 
   return (
-    <main className="mx-auto max-w-4xl p-6">
-      <div className="mb-6 flex items-center justify-between">
-        <Link href="/" className="text-sm text-indigo-400 hover:underline">
-          ← Volver al panel
-        </Link>
-        <button
-          onClick={createNew}
-          className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium hover:bg-indigo-500"
-        >
-          Nuevo workflow
-        </button>
-      </div>
-      <h1 className="mb-1 text-2xl font-semibold">Workflows</h1>
-      <p className="mb-8 text-sm text-neutral-400">
-        Cadenas de agentes con puntos de aprobación humana. Usa una plantilla tal
-        cual, duplícala para personalizarla, o crea la tuya.
-      </p>
+    <div className="mx-auto max-w-4xl px-6 py-8">
+      <PageHeader
+        title="Workflows"
+        description="Cadenas de agentes con puntos de aprobación humana. Usa una plantilla tal cual, duplícala para personalizarla, o crea la tuya desde cero."
+        actions={
+          <button onClick={createNew} className="btn-primary">
+            <IconPlus size={15} />
+            Nuevo workflow
+          </button>
+        }
+      />
 
       {workflows === null ? (
-        <p className="text-neutral-400">Cargando…</p>
+        <LoadingScreen label="Cargando workflows…" />
       ) : (
         <>
-          <h2 className="mb-3 text-lg font-medium">Plantillas</h2>
-          <ul className="mb-8 space-y-2">
+          <h2 className="mb-3 text-base font-semibold tracking-tight text-zinc-100">
+            Plantillas
+          </h2>
+          <ul className="mb-10 space-y-2">
             {templates.map((w) => (
               <li
                 key={w.id}
-                className="flex items-center justify-between rounded-lg border border-neutral-800 p-3 text-sm"
+                className="card card-hover flex items-center gap-4 p-4"
               >
-                <div className="min-w-0">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-indigo-500/[0.12] text-indigo-300">
+                  <IconWorkflow size={17} />
+                </span>
+                <div className="min-w-0 flex-1">
                   <Link
                     href={`/workflows/${w.id}`}
-                    className="font-medium hover:underline"
+                    className="text-sm font-semibold text-zinc-100 hover:underline"
                   >
                     {w.name}
                   </Link>
-                  <p className="text-xs text-neutral-500">{w.description}</p>
+                  <p className="truncate text-xs text-zinc-500">
+                    {w.description || `${w.steps.length} pasos`}
+                  </p>
                 </div>
+                <span className="badge-neutral shrink-0">
+                  {w.steps.length} pasos
+                </span>
                 <button
                   onClick={() => duplicate(w)}
-                  className="ml-3 shrink-0 rounded-lg border border-neutral-700 px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-900"
+                  className="btn-secondary btn-sm shrink-0"
                 >
                   Duplicar
                 </button>
@@ -82,21 +93,37 @@ export default function WorkflowsPage() {
             ))}
           </ul>
 
-          <h2 className="mb-3 text-lg font-medium">Mis workflows</h2>
+          <h2 className="mb-3 text-base font-semibold tracking-tight text-zinc-100">
+            Mis workflows
+          </h2>
           {own.length === 0 ? (
-            <p className="text-sm text-neutral-500">
-              Todavía no tienes workflows propios.
-            </p>
+            <EmptyState
+              icon={<IconWorkflow size={22} />}
+              title="Todavía no tienes workflows propios"
+              description="Duplica una plantilla o crea uno nuevo para personalizar la cadena de agentes."
+            />
           ) : (
             <ul className="space-y-2">
               {own.map((w) => (
                 <li key={w.id}>
                   <Link
                     href={`/workflows/${w.id}`}
-                    className="flex items-center justify-between rounded-lg border border-neutral-800 p-3 text-sm transition hover:border-neutral-600"
+                    className="card card-hover flex items-center gap-4 p-4 text-sm"
                   >
-                    <span>{w.name}</span>
-                    <span className="text-xs text-neutral-500">
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/[0.05] text-zinc-400">
+                      <IconWorkflow size={17} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-semibold text-zinc-100">
+                        {w.name}
+                      </span>
+                      {w.description && (
+                        <span className="block truncate text-xs text-zinc-500">
+                          {w.description}
+                        </span>
+                      )}
+                    </span>
+                    <span className="badge-neutral shrink-0">
                       {w.steps.length} pasos
                     </span>
                   </Link>
@@ -106,6 +133,6 @@ export default function WorkflowsPage() {
           )}
         </>
       )}
-    </main>
+    </div>
   );
 }
