@@ -253,6 +253,7 @@ def run_curator_job(job_id: str, payload: dict) -> dict:
         workspace_dir=str(workspace),
         soul_md=payload.get("soul_md", ""),
         agents_md=payload.get("agents_md", ""),
+        recursion_limit=settings.agent_recursion_limit,
         callbacks=_budget_callbacks(job_id),
     ):
         if event.type == "result":
@@ -332,6 +333,7 @@ def run_lessons_job(job_id: str, payload: dict) -> dict:
             workspace_dir=str(settings.data_dir / "runs" / job_id / f"lesson-{mi}-{li}"),
             soul_md=payload.get("soul_md", ""),
             agents_md=payload.get("agents_md", ""),
+            recursion_limit=settings.agent_recursion_limit,
             callbacks=_budget_callbacks(job_id),
         ):
             if event.type == "result":

@@ -100,6 +100,7 @@ def run_curator(
     workspace_dir: str,
     soul_md: str = "",
     agents_md: str = "",
+    recursion_limit: int | None = None,
     callbacks: list | None = None,
 ) -> Iterator[RunEvent]:
     tools = build_research_tools(tavily_api_key)
@@ -112,5 +113,6 @@ def run_curator(
         soul_md=soul_md or DEFAULT_SOUL,
         agents_md=agents_md or DEFAULT_AGENTS_MD,
         tools=tools,
+        recursion_limit=recursion_limit if recursion_limit is not None else 200,
         callbacks=callbacks,
     )

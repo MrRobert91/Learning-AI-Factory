@@ -89,6 +89,7 @@ def run_lesson(
     workspace_dir: str,
     soul_md: str = "",
     agents_md: str = "",
+    recursion_limit: int | None = None,
     callbacks: list | None = None,
 ) -> Iterator[RunEvent]:
     yield from run_task_agent(
@@ -100,5 +101,6 @@ def run_lesson(
         soul_md=soul_md or DEFAULT_SOUL,
         agents_md=agents_md or DEFAULT_AGENTS_MD,
         tools=[build_sandbox_tool()],
+        recursion_limit=recursion_limit if recursion_limit is not None else 200,
         callbacks=callbacks,
     )
