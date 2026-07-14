@@ -93,7 +93,7 @@ def run_task_agent(
     soul_md: str = "",
     agents_md: str = "",
     tools: list[Any] | None = None,
-    recursion_limit: int = 80,
+    recursion_limit: int = 200,
     callbacks: list[Any] | None = None,
 ) -> Iterator[RunEvent]:
     """Run a task agent to completion, yielding progress events.

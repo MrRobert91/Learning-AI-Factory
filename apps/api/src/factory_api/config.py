@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     tts_voice: str = "nova"
     tts_model: str = "gpt-4o-mini-tts"
 
+    # Max LangGraph super-steps per task-agent run (agent node + tool node
+    # count as 2 steps per ReAct loop, so this caps the model↔tool round trips
+    # at roughly half this value). Bounds runaway loops; raise it for agents
+    # that iterate a lot (e.g. lessons verifying every code block).
+    agent_recursion_limit: int = 200
+
     # Per-run spend firewall (rough estimate from token counts; 0 disables)
     budget_usd_per_run: float = 5.0
     budget_price_per_mtok_usd: float = 0.6
