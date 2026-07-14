@@ -10,6 +10,12 @@ import {
   type WorkflowStep,
 } from "@/lib/api";
 import WorkflowCanvas from "@/components/WorkflowCanvas";
+import {
+  ErrorBanner,
+  IconChevronLeft,
+  IconPlus,
+  LoadingScreen,
+} from "@/components/ui";
 
 const AGENTS = [
   "curator",
@@ -50,7 +56,8 @@ export default function WorkflowEditorPage() {
   const [steps, setSteps] = useState<WorkflowStep[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
   const [profiles, setProfiles] = useState<Record<string, AgentProfile[]>>({});
-  const [message, setMessage] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     api
@@ -68,6 +75,11 @@ export default function WorkflowEditorPage() {
   }, [id]);
 
   const readOnly = workflow?.is_template ?? false;
+  const dirty =
+    workflow !== null &&
+    (name !== workflow.name ||
+      description !== workflow.description ||
+      JSON.stringify(steps) !== JSON.stringify(workflow.steps));
 
   function updateStep(index: number, patch: Partial<WorkflowStep>) {
     setSteps((prev) =>
@@ -87,14 +99,14 @@ export default function WorkflowEditorPage() {
   }
 
   async function save() {
-    setMessage(null);
+    setError(null);
     try {
       const updated = await api.updateWorkflow(id, { name, description, steps });
       setWorkflow(updated);
-      setMessage("Guardado ✓");
-      setTimeout(() => setMessage(null), 2000);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Error al guardar");
+      setError(err instanceof Error ? err.message : "Error al guardar");
     }
   }
 
@@ -114,38 +126,35 @@ export default function WorkflowEditorPage() {
   }
 
   if (!workflow) {
-    return (
-      <main className="mx-auto max-w-4xl p-6 text-neutral-400">Cargando…</main>
-    );
+    return <LoadingScreen label="Cargando workflow…" />;
   }
 
   const step = selected !== null ? steps[selected] : null;
 
   return (
-    <main className="mx-auto max-w-4xl p-6">
-      <div className="mb-6 flex items-center justify-between">
-        <Link href="/workflows" className="text-sm text-indigo-400 hover:underline">
-          ← Workflows
+    <div className="mx-auto max-w-4xl px-6 py-8">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+        <Link
+          href="/workflows"
+          className="inline-flex items-center gap-1 text-sm text-zinc-500 transition-colors hover:text-zinc-300"
+        >
+          <IconChevronLeft size={15} />
+          Workflows
         </Link>
-        <div className="flex gap-2">
-          <button
-            onClick={duplicate}
-            className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm text-neutral-300 hover:bg-neutral-900"
-          >
+        <div className="flex items-center gap-2">
+          {dirty && !readOnly && (
+            <span className="badge-warning">Cambios sin guardar</span>
+          )}
+          {saved && <span className="badge-success">Guardado ✓</span>}
+          <button onClick={duplicate} className="btn-secondary btn-sm">
             Duplicar
           </button>
           {!readOnly && (
             <>
-              <button
-                onClick={remove}
-                className="rounded-lg border border-red-900 px-3 py-1.5 text-sm text-red-400 hover:bg-red-950"
-              >
+              <button onClick={remove} className="btn-danger btn-sm">
                 Eliminar
               </button>
-              <button
-                onClick={save}
-                className="rounded-lg bg-indigo-600 px-4 py-1.5 text-sm font-medium hover:bg-indigo-500"
-              >
+              <button onClick={save} disabled={!dirty} className="btn-primary btn-sm">
                 Guardar
               </button>
             </>
@@ -154,7 +163,7 @@ export default function WorkflowEditorPage() {
       </div>
 
       {readOnly && (
-        <p className="mb-4 rounded-lg border border-amber-900/60 bg-amber-950/30 p-3 text-sm text-amber-300">
+        <p className="badge-warning mb-4 px-3 py-2 text-xs">
           Esto es una plantilla de fábrica (solo lectura). Duplícala para editarla.
         </p>
       )}
@@ -163,14 +172,14 @@ export default function WorkflowEditorPage() {
         value={name}
         onChange={(e) => setName(e.target.value)}
         disabled={readOnly}
-        className="mb-1 w-full rounded-lg border border-transparent bg-transparent text-2xl font-semibold outline-none focus:border-neutral-700 disabled:opacity-100"
+        className="mb-1 w-full rounded-lg border border-transparent bg-transparent text-2xl font-semibold tracking-tight text-zinc-50 outline-none focus:border-white/[0.15] disabled:opacity-100"
       />
       <input
         value={description}
         onChange={(e) => setDescription(e.target.value)}
         disabled={readOnly}
         placeholder="Descripción"
-        className="mb-6 w-full rounded-lg border border-transparent bg-transparent text-sm text-neutral-400 outline-none focus:border-neutral-700"
+        className="mb-6 w-full rounded-lg border border-transparent bg-transparent text-sm text-zinc-400 outline-none placeholder:text-zinc-600 focus:border-white/[0.15]"
       />
 
       <WorkflowCanvas
@@ -178,7 +187,7 @@ export default function WorkflowEditorPage() {
         selectedIndex={selected}
         onSelect={(i) => setSelected(i)}
       />
-      {message && <p className="mt-2 text-sm text-emerald-400">{message}</p>}
+      <ErrorBanner>{error}</ErrorBanner>
 
       {!readOnly && (
         <div className="mt-4 flex flex-wrap gap-2">
@@ -189,58 +198,59 @@ export default function WorkflowEditorPage() {
                 setSteps((prev) => [...prev, { agent: a }]);
                 setSelected(steps.length);
               }}
-              className="rounded-lg border border-dashed border-neutral-700 px-3 py-1.5 text-xs text-neutral-300 hover:border-indigo-500"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-white/[0.15] px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:border-indigo-400/60 hover:bg-indigo-500/[0.06] hover:text-indigo-200"
             >
-              + {AGENT_NAMES[a]}
+              <IconPlus size={12} />
+              {AGENT_NAMES[a]}
             </button>
           ))}
         </div>
       )}
 
-      {step && (
-        <section className="mt-6 rounded-xl border border-neutral-800 bg-neutral-900/50 p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-medium">
-              Paso {selected! + 1}: {AGENT_NAMES[step.agent] ?? step.agent}
+      {step ? (
+        <section className="card animate-in mt-6 p-5">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-sm font-semibold text-zinc-100">
+              Paso {selected! + 1} · {AGENT_NAMES[step.agent] ?? step.agent}
             </h2>
             {!readOnly && (
-              <div className="flex gap-2 text-xs">
+              <div className="flex gap-2">
                 <button
                   onClick={() => moveStep(selected!, -1)}
-                  className="rounded border border-neutral-700 px-2 py-1 hover:bg-neutral-900"
+                  disabled={selected === 0}
+                  className="btn-secondary btn-sm"
                 >
-                  ← mover
+                  ← Mover
                 </button>
                 <button
                   onClick={() => moveStep(selected!, 1)}
-                  className="rounded border border-neutral-700 px-2 py-1 hover:bg-neutral-900"
+                  disabled={selected === steps.length - 1}
+                  className="btn-secondary btn-sm"
                 >
-                  mover →
+                  Mover →
                 </button>
                 <button
                   onClick={() => {
                     setSteps((prev) => prev.filter((_s, i) => i !== selected));
                     setSelected(null);
                   }}
-                  className="rounded border border-red-900 px-2 py-1 text-red-400 hover:bg-red-950"
+                  className="btn-danger btn-sm"
                 >
-                  quitar
+                  Quitar
                 </button>
               </div>
             )}
           </div>
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-5 sm:grid-cols-2">
             <div>
-              <label className="mb-1 block text-xs text-neutral-400">
-                Perfil del agente
-              </label>
+              <label className="label">Perfil del agente</label>
               <select
                 value={step.profile_id ?? ""}
                 onChange={(e) =>
                   updateStep(selected!, { profile_id: e.target.value || null })
                 }
                 disabled={readOnly}
-                className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-2 py-1.5 text-sm outline-none"
+                className="input"
               >
                 <option value="">Perfil por defecto</option>
                 {(profiles[step.agent] ?? []).map((p) => (
@@ -250,8 +260,8 @@ export default function WorkflowEditorPage() {
                 ))}
               </select>
             </div>
-            <div className="space-y-2">
-              <label className="flex items-center gap-2 text-sm text-neutral-300">
+            <div className="space-y-3">
+              <label className="flex items-start gap-2.5 text-sm text-zinc-300">
                 <input
                   type="checkbox"
                   checked={Boolean(step.approval_after)}
@@ -259,11 +269,16 @@ export default function WorkflowEditorPage() {
                     updateStep(selected!, { approval_after: e.target.checked })
                   }
                   disabled={readOnly}
-                  className="h-4 w-4"
+                  className="mt-0.5 h-4 w-4 accent-indigo-500"
                 />
-                Pausar para aprobación humana tras este paso
+                <span>
+                  Pausar para aprobación humana tras este paso
+                  <span className="block text-xs text-zinc-500">
+                    El workflow espera tu revisión antes de continuar.
+                  </span>
+                </span>
               </label>
-              <label className="flex items-center gap-2 text-sm text-neutral-300">
+              <label className="flex items-start gap-2.5 text-sm text-zinc-300">
                 <input
                   type="checkbox"
                   checked={Boolean(step.evaluate)}
@@ -271,15 +286,24 @@ export default function WorkflowEditorPage() {
                     updateStep(selected!, { evaluate: e.target.checked })
                   }
                   disabled={readOnly}
-                  className="h-4 w-4"
+                  className="mt-0.5 h-4 w-4 accent-indigo-500"
                 />
-                Evaluación automática (revisa y corrige hasta 2 veces, luego
-                escala a ti)
+                <span>
+                  Evaluación automática
+                  <span className="block text-xs text-zinc-500">
+                    Un juez LLM revisa el resultado y pide correcciones hasta 2
+                    veces; después escala a ti.
+                  </span>
+                </span>
               </label>
             </div>
           </div>
         </section>
+      ) : (
+        <p className="mt-4 text-sm text-zinc-500">
+          Haz clic en un paso del diagrama para configurarlo.
+        </p>
       )}
-    </main>
+    </div>
   );
 }

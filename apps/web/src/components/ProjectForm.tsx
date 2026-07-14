@@ -2,8 +2,13 @@
 
 import { useState } from "react";
 import type { ProjectInput } from "@/lib/api";
+import { ErrorBanner, Spinner } from "@/components/ui";
 
-const LEVELS = ["introductorio", "intermedio", "avanzado"];
+const LEVELS = [
+  { value: "introductorio", label: "Introductorio" },
+  { value: "intermedio", label: "Intermedio" },
+  { value: "avanzado", label: "Avanzado" },
+];
 const FORMATS = [
   { value: "video", label: "Vídeo completo" },
   { value: "slides", label: "Solo diapositivas" },
@@ -15,9 +20,6 @@ interface Props {
   submitLabel: string;
   onSubmit: (input: ProjectInput) => Promise<void>;
 }
-
-const inputClass =
-  "w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none focus:border-indigo-500";
 
 export default function ProjectForm({ initial, submitLabel, onSubmit }: Props) {
   const [form, setForm] = useState<ProjectInput>({
@@ -50,72 +52,68 @@ export default function ProjectForm({ initial, submitLabel, onSubmit }: Props) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
+    <form onSubmit={handleSubmit} className="space-y-5">
       <div>
-        <label className="mb-1 block text-sm text-neutral-300">Título *</label>
+        <label className="label">Título *</label>
         <input
           value={form.title}
           onChange={(e) => set("title", e.target.value)}
           required
           placeholder="Introducción a los LLMs"
-          className={inputClass}
+          className="input"
         />
       </div>
       <div>
-        <label className="mb-1 block text-sm text-neutral-300">Tema</label>
+        <label className="label">Tema</label>
         <textarea
           value={form.topic}
           onChange={(e) => set("topic", e.target.value)}
           rows={2}
           placeholder="Qué quieres enseñar y con qué enfoque"
-          className={inputClass}
+          className="input resize-y"
         />
       </div>
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid gap-5 sm:grid-cols-2">
         <div>
-          <label className="mb-1 block text-sm text-neutral-300">
-            Audiencia
-          </label>
+          <label className="label">Audiencia</label>
           <input
             value={form.audience}
             onChange={(e) => set("audience", e.target.value)}
             placeholder="Perfiles técnicos sin ML"
-            className={inputClass}
+            className="input"
           />
         </div>
         <div>
-          <label className="mb-1 block text-sm text-neutral-300">Nivel</label>
+          <label className="label">Nivel</label>
           <select
             value={form.level}
             onChange={(e) => set("level", e.target.value)}
-            className={inputClass}
+            className="input"
           >
             {LEVELS.map((l) => (
-              <option key={l} value={l}>
-                {l}
+              <option key={l.value} value={l.value}>
+                {l.label}
               </option>
             ))}
           </select>
         </div>
         <div>
-          <label className="mb-1 block text-sm text-neutral-300">Idioma</label>
+          <label className="label">Idioma</label>
           <select
             value={form.language}
             onChange={(e) => set("language", e.target.value)}
-            className={inputClass}
+            className="input"
           >
             <option value="es">Español</option>
             <option value="en">Inglés</option>
           </select>
         </div>
         <div>
-          <label className="mb-1 block text-sm text-neutral-300">
-            Formato de salida
-          </label>
+          <label className="label">Formato de salida</label>
           <select
             value={form.output_format}
             onChange={(e) => set("output_format", e.target.value)}
-            className={inputClass}
+            className="input"
           >
             {FORMATS.map((f) => (
               <option key={f.value} value={f.value}>
@@ -126,20 +124,17 @@ export default function ProjectForm({ initial, submitLabel, onSubmit }: Props) {
         </div>
       </div>
       <div>
-        <label className="mb-1 block text-sm text-neutral-300">Estilo</label>
+        <label className="label">Estilo</label>
         <input
           value={form.style}
           onChange={(e) => set("style", e.target.value)}
           placeholder="Práctico, con ejemplos de código"
-          className={inputClass}
+          className="input"
         />
       </div>
-      {error && <p className="text-sm text-red-400">{error}</p>}
-      <button
-        type="submit"
-        disabled={saving}
-        className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium hover:bg-indigo-500 disabled:opacity-50"
-      >
+      <ErrorBanner>{error}</ErrorBanner>
+      <button type="submit" disabled={saving} className="btn-primary">
+        {saving && <Spinner className="border-white/40 border-t-white" />}
         {saving ? "Guardando…" : submitLabel}
       </button>
     </form>

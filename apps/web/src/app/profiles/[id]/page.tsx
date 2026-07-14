@@ -4,9 +4,12 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { api, type AgentProfile, type ProfileVersion } from "@/lib/api";
-
-const areaClass =
-  "w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 font-mono text-sm outline-none focus:border-indigo-500";
+import {
+  ErrorBanner,
+  IconChevronLeft,
+  IconStar,
+  LoadingScreen,
+} from "@/components/ui";
 
 export default function ProfileEditorPage() {
   const { id } = useParams<{ id: string }>();
@@ -19,7 +22,8 @@ export default function ProfileEditorPage() {
   const [model, setModel] = useState("");
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function load() {
     const p = await api.getProfile(id);
@@ -36,23 +40,45 @@ export default function ProfileEditorPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  // Only the fields that actually changed are sent, so saving never creates
+  // spurious versions nor overwrites config the user didn't touch.
+  function buildPatch() {
+    if (!profile) return null;
+    const patch: {
+      name?: string;
+      soul_md?: string;
+      agents_md?: string;
+      model?: string;
+      note?: string;
+    } = {};
+    if (name !== profile.name) patch.name = name;
+    if (soul !== profile.soul_md) patch.soul_md = soul;
+    if (agentsMd !== profile.agents_md) patch.agents_md = agentsMd;
+    // An empty string clears the model override (back to the system default).
+    if (model.trim() !== (profile.model ?? "")) patch.model = model.trim();
+    return patch;
+  }
+
+  const patch = buildPatch();
+  const dirty = patch !== null && Object.keys(patch).length > 0;
+  const contentChanged =
+    patch !== null &&
+    (patch.soul_md !== undefined ||
+      patch.agents_md !== undefined ||
+      patch.model !== undefined);
+
   async function save() {
+    if (!patch || !dirty) return;
     setSaving(true);
-    setMessage(null);
+    setError(null);
     try {
-      await api.updateProfile(id, {
-        name,
-        soul_md: soul,
-        agents_md: agentsMd,
-        model: model || undefined,
-        note,
-      });
+      await api.updateProfile(id, { ...patch, note });
       setNote("");
       await load();
-      setMessage("Guardado ✓");
-      setTimeout(() => setMessage(null), 2000);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Error al guardar");
+      setError(err instanceof Error ? err.message : "Error al guardar");
     } finally {
       setSaving(false);
     }
@@ -70,30 +96,27 @@ export default function ProfileEditorPage() {
   }
 
   if (!profile) {
-    return (
-      <main className="mx-auto max-w-3xl p-6 text-neutral-400">Cargando…</main>
-    );
+    return <LoadingScreen label="Cargando perfil…" />;
   }
 
   return (
-    <main className="mx-auto max-w-3xl p-6">
-      <div className="mb-6 flex items-center justify-between">
-        <Link href="/profiles" className="text-sm text-indigo-400 hover:underline">
-          ← Perfiles
+    <div className="mx-auto max-w-3xl px-6 py-8">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+        <Link
+          href="/profiles"
+          className="inline-flex items-center gap-1 text-sm text-zinc-500 transition-colors hover:text-zinc-300"
+        >
+          <IconChevronLeft size={15} />
+          Agentes y perfiles
         </Link>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
           {!profile.is_default && (
             <>
-              <button
-                onClick={makeDefault}
-                className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm text-neutral-300 hover:bg-neutral-900"
-              >
+              <button onClick={makeDefault} className="btn-secondary btn-sm">
+                <IconStar size={13} />
                 Hacer por defecto
               </button>
-              <button
-                onClick={remove}
-                className="rounded-lg border border-red-900 px-3 py-1.5 text-sm text-red-400 hover:bg-red-950"
-              >
+              <button onClick={remove} className="btn-danger btn-sm">
                 Eliminar
               </button>
             </>
@@ -105,93 +128,108 @@ export default function ProfileEditorPage() {
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          className="flex-1 rounded-lg border border-transparent bg-transparent text-2xl font-semibold outline-none focus:border-neutral-700"
+          className="flex-1 rounded-lg border border-transparent bg-transparent text-2xl font-semibold tracking-tight text-zinc-50 outline-none focus:border-white/[0.15]"
         />
-        <span className="text-sm text-neutral-500">v{profile.version}</span>
+        <span className="badge-neutral shrink-0">v{profile.version}</span>
       </div>
-      <p className="mb-6 text-sm text-neutral-500">
-        Agente: {profile.agent_type}
-        {profile.is_default && " · perfil por defecto"}
+      <p className="mb-6 text-sm text-zinc-500">
+        Agente: <span className="text-zinc-400">{profile.agent_type}</span>
+        {profile.is_default && (
+          <span className="badge-info ml-2 align-middle">
+            <IconStar size={10} />
+            perfil por defecto
+          </span>
+        )}
       </p>
 
       <div className="space-y-5">
-        <div>
-          <label className="mb-1 block text-sm font-medium text-neutral-300">
-            soul.md — personalidad y criterio
-          </label>
+        <div className="card p-5">
+          <label className="label">soul.md — personalidad y criterio</label>
+          <p className="mb-2 text-xs text-zinc-500">
+            Cómo piensa y qué prioriza el agente: tono, gustos, criterio
+            editorial.
+          </p>
           <textarea
             value={soul}
             onChange={(e) => setSoul(e.target.value)}
             rows={8}
-            className={areaClass}
+            className="input resize-y font-mono text-[13px]"
           />
         </div>
-        <div>
-          <label className="mb-1 block text-sm font-medium text-neutral-300">
-            agents.md — instrucciones operativas
-          </label>
+        <div className="card p-5">
+          <label className="label">agents.md — instrucciones operativas</label>
+          <p className="mb-2 text-xs text-zinc-500">
+            Reglas concretas de trabajo: formato, longitudes, restricciones,
+            checklist.
+          </p>
           <textarea
             value={agentsMd}
             onChange={(e) => setAgentsMd(e.target.value)}
             rows={8}
-            className={areaClass}
+            className="input resize-y font-mono text-[13px]"
           />
         </div>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid gap-5 sm:grid-cols-2">
           <div>
-            <label className="mb-1 block text-sm text-neutral-300">
-              Modelo (opcional, slug de OpenRouter)
-            </label>
+            <label className="label">Modelo (slug de OpenRouter)</label>
             <input
               value={model}
               onChange={(e) => setModel(e.target.value)}
-              placeholder="por defecto del sistema"
-              className={areaClass}
+              placeholder="vacío = modelo por defecto del sistema"
+              className="input font-mono text-[13px]"
             />
+            <p className="mt-1.5 text-xs text-zinc-500">
+              Deja el campo vacío para volver al modelo por defecto.
+            </p>
           </div>
           <div>
-            <label className="mb-1 block text-sm text-neutral-300">
-              Nota de esta versión
-            </label>
+            <label className="label">Nota de esta versión</label>
             <input
               value={note}
               onChange={(e) => setNote(e.target.value)}
               placeholder="qué has cambiado y por qué"
-              className={areaClass}
+              className="input"
             />
           </div>
         </div>
+        <ErrorBanner>{error}</ErrorBanner>
         <div className="flex items-center gap-3">
-          <button
-            onClick={save}
-            disabled={saving}
-            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium hover:bg-indigo-500 disabled:opacity-50"
-          >
-            {saving ? "Guardando…" : "Guardar (nueva versión)"}
+          <button onClick={save} disabled={saving || !dirty} className="btn-primary">
+            {saving
+              ? "Guardando…"
+              : contentChanged
+                ? "Guardar (crea nueva versión)"
+                : "Guardar"}
           </button>
-          {message && <span className="text-sm text-emerald-400">{message}</span>}
+          {dirty && !saving && (
+            <span className="badge-warning">Cambios sin guardar</span>
+          )}
+          {saved && <span className="badge-success">Guardado ✓</span>}
         </div>
       </div>
 
-      <section className="mt-10">
-        <h2 className="mb-3 text-lg font-medium">Historial de versiones</h2>
-        <ul className="space-y-2">
+      <section className="mt-12">
+        <h2 className="mb-3 text-base font-semibold tracking-tight text-zinc-100">
+          Historial de versiones
+        </h2>
+        <ul className="space-y-1.5">
           {versions.map((v) => (
-            <li
-              key={v.version}
-              className="rounded-lg border border-neutral-800 p-3 text-sm"
-            >
-              <div className="flex items-center justify-between">
-                <span className="font-medium">v{v.version}</span>
-                <span className="text-xs text-neutral-500">
+            <li key={v.version} className="card px-4 py-3 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-semibold text-zinc-200">v{v.version}</span>
+                <span className="text-xs text-zinc-500">
                   {new Date(v.created_at).toLocaleString("es")}
                 </span>
               </div>
-              {v.note && <p className="mt-1 text-neutral-400">{v.note}</p>}
+              {v.note && (
+                <p className="mt-1 text-sm leading-relaxed text-zinc-400">
+                  {v.note}
+                </p>
+              )}
             </li>
           ))}
         </ul>
       </section>
-    </main>
+    </div>
   );
 }

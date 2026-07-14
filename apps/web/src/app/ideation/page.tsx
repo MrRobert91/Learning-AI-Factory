@@ -4,6 +4,27 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { api, type IdeationSessionSummary } from "@/lib/api";
+import {
+  EmptyState,
+  ErrorBanner,
+  IconLightbulb,
+  IconSparkles,
+  LoadingScreen,
+  PageHeader,
+  Spinner,
+} from "@/components/ui";
+
+const STATUS_BADGE: Record<string, { label: string; className: string }> = {
+  finalized: { label: "Proyecto creado", className: "badge-success" },
+  brief: { label: "Brief listo", className: "badge-info" },
+  active: { label: "En curso", className: "badge-neutral" },
+};
+
+function sessionBadge(s: IdeationSessionSummary) {
+  if (s.status === "finalized") return STATUS_BADGE.finalized;
+  if (s.has_brief) return STATUS_BADGE.brief;
+  return STATUS_BADGE.active;
+}
 
 export default function IdeationListPage() {
   const router = useRouter();
@@ -32,68 +53,76 @@ export default function IdeationListPage() {
   }
 
   return (
-    <main className="mx-auto max-w-3xl p-6">
-      <div className="mb-6">
-        <Link href="/" className="text-sm text-indigo-400 hover:underline">
-          ← Volver al panel
-        </Link>
-      </div>
-      <h1 className="mb-1 text-2xl font-semibold">Asistente de ideación</h1>
-      <p className="mb-6 text-sm text-neutral-400">
-        Cuéntale tu idea aunque sea vaga: te hará preguntas para afinarla hasta
-        tener un brief listo para fabricar el curso.
-      </p>
+    <div className="mx-auto max-w-3xl px-6 py-8">
+      <PageHeader
+        title="Asistente de ideación"
+        description="Cuéntale tu idea aunque sea vaga: te hará preguntas para afinarla hasta tener un brief listo para fabricar el curso."
+      />
 
-      <form
-        onSubmit={start}
-        className="mb-10 rounded-xl border border-neutral-800 bg-neutral-900/50 p-5"
-      >
+      <form onSubmit={start} className="card mb-10 p-6">
+        <label className="label" htmlFor="idea">
+          ¿Sobre qué quieres crear un curso?
+        </label>
         <textarea
+          id="idea"
           value={idea}
           onChange={(e) => setIdea(e.target.value)}
           rows={3}
           required
           placeholder='Ej.: "algo de computación cuántica para gente técnica" o "un curso corto de RAG"'
-          className="mb-3 w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none focus:border-indigo-500"
+          className="input mb-4 resize-y"
         />
-        {error && <p className="mb-3 text-sm text-red-400">{error}</p>}
+        <ErrorBanner>{error}</ErrorBanner>
         <button
           type="submit"
           disabled={starting || !idea.trim()}
-          className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium hover:bg-indigo-500 disabled:opacity-50"
+          className="btn-primary"
         >
+          {starting ? (
+            <Spinner className="border-white/40 border-t-white" />
+          ) : (
+            <IconSparkles size={15} />
+          )}
           {starting ? "Pensando…" : "Empezar a idear"}
         </button>
       </form>
 
-      <h2 className="mb-3 text-lg font-medium">Sesiones anteriores</h2>
+      <h2 className="mb-3 text-base font-semibold tracking-tight text-zinc-100">
+        Sesiones anteriores
+      </h2>
       {sessions === null ? (
-        <p className="text-neutral-400">Cargando…</p>
+        <LoadingScreen label="Cargando sesiones…" />
       ) : sessions.length === 0 ? (
-        <p className="text-sm text-neutral-500">Todavía no hay sesiones.</p>
+        <EmptyState
+          icon={<IconLightbulb size={22} />}
+          title="Todavía no hay sesiones"
+          description="Tu primera conversación con el asistente aparecerá aquí."
+        />
       ) : (
         <ul className="space-y-2">
-          {sessions.map((s) => (
-            <li key={s.id}>
-              <Link
-                href={`/ideation/${s.id}`}
-                className="block rounded-lg border border-neutral-800 p-3 text-sm transition hover:border-neutral-600"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="line-clamp-1">{s.initial_idea}</span>
-                  <span className="ml-3 shrink-0 rounded-full border border-neutral-700 px-2 py-0.5 text-xs text-neutral-400">
-                    {s.status === "finalized"
-                      ? "Proyecto creado"
-                      : s.has_brief
-                        ? "Brief listo"
-                        : "En curso"}
+          {sessions.map((s) => {
+            const badge = sessionBadge(s);
+            return (
+              <li key={s.id}>
+                <Link
+                  href={`/ideation/${s.id}`}
+                  className="card card-hover flex items-center gap-3 px-4 py-3 text-sm"
+                >
+                  <span className="min-w-0 flex-1 truncate text-zinc-200">
+                    {s.initial_idea}
                   </span>
-                </div>
-              </Link>
-            </li>
-          ))}
+                  <span className="shrink-0 text-xs text-zinc-600">
+                    {new Date(s.updated_at).toLocaleDateString("es")}
+                  </span>
+                  <span className={`${badge.className} shrink-0`}>
+                    {badge.label}
+                  </span>
+                </Link>
+              </li>
+            );
+          })}
         </ul>
       )}
-    </main>
+    </div>
   );
 }
