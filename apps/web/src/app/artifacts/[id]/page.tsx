@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { api, type Artifact } from "@/lib/api";
 import YouTubePublish from "@/components/YouTubePublish";
+import Markdown from "@/components/Markdown";
+import SlideDeck from "@/components/SlideDeck";
 import {
   EmptyState,
   IconChevronLeft,
@@ -12,6 +14,14 @@ import {
   IconFileText,
   LoadingScreen,
 } from "@/components/ui";
+
+const MARKDOWN_TYPES = new Set([
+  "research_brief",
+  "performance_report",
+  "lesson_content",
+  "teaching_script",
+  "voice_script",
+]);
 
 const TYPE_LABELS: Record<string, string> = {
   research_brief: "Research brief",
@@ -120,15 +130,16 @@ export default function ArtifactViewerPage() {
           className="card mb-6 aspect-video w-full bg-black"
         />
       )}
-      {artifact.renders.includes("html") && (
-        <iframe
-          src={`/api/artifacts/${artifact.id}/render/html`}
-          title="Vista previa de slides"
-          className="card mb-6 aspect-video w-full bg-white"
-        />
-      )}
-      {artifact.content !== null ? (
-        <article className="card whitespace-pre-wrap p-6 font-mono text-[13px] leading-relaxed text-zinc-300">
+      {artifact.type === "slide_deck" && artifact.content !== null ? (
+        <div className="card mb-6 p-4 sm:p-6">
+          <SlideDeck markdown={artifact.content} />
+        </div>
+      ) : MARKDOWN_TYPES.has(artifact.type) && artifact.content !== null ? (
+        <article className="card notebook-sheet p-6 sm:p-8">
+          <Markdown>{artifact.content}</Markdown>
+        </article>
+      ) : artifact.content !== null ? (
+        <article className="card whitespace-pre-wrap p-6 font-mono text-[13px] leading-relaxed text-zinc-700">
           {artifact.content}
         </article>
       ) : (

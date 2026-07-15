@@ -9,6 +9,7 @@ by appending JobEvents, which the SSE endpoint streams to the UI.
 import asyncio
 import json
 import logging
+import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -197,7 +198,11 @@ def _save_artifact(
 ) -> str:
     settings = get_settings()
     ext = {"markdown": "md", "json": "json"}.get(format_, "txt")
-    rel_path = f"artifacts/{project_id}/{type_}-{job_id}.{ext}"
+    # A single job can emit several artifacts of the same type (e.g. one deck
+    # per lesson), so the path must be unique per artifact — otherwise every
+    # deck (and its Marp renders) would overwrite the previous one and only the
+    # last lesson would be downloadable.
+    rel_path = f"artifacts/{project_id}/{type_}-{job_id}-{uuid.uuid4().hex[:8]}.{ext}"
     abs_path = settings.data_dir / rel_path
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     abs_path.write_text(content, encoding="utf-8")

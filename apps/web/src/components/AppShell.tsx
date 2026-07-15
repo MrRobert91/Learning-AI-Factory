@@ -66,13 +66,13 @@ export default function AppShell({ children }: { children: ReactNode }) {
       <Link
         key={item.href}
         href={item.href}
-        className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+        className={`flex items-center gap-3 rounded-md border-2 px-3 py-2 text-sm font-semibold transition-all ${
           active
-            ? "bg-indigo-500/[0.12] text-indigo-200 shadow-[0_0_0_1px_rgba(129,140,248,0.25)_inset]"
-            : "text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"
+            ? "border-[#241d18] bg-[var(--rust)] text-[#fbf6ea] shadow-[2px_2px_0_0_var(--shadow)]"
+            : "border-transparent text-zinc-400 hover:border-[#241d18] hover:bg-[#f2e9d8] hover:text-zinc-100"
         }`}
       >
-        <Icon size={17} className={active ? "text-indigo-300" : "text-zinc-500"} />
+        <Icon size={17} className={active ? "text-[#fbf6ea]" : "text-zinc-500"} />
         <span className="hidden lg:inline">{item.label}</span>
       </Link>
     );
@@ -81,22 +81,22 @@ export default function AppShell({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-screen">
       {/* Sidebar (desktop) */}
-      <aside className="sticky top-0 hidden h-screen w-16 shrink-0 flex-col border-r border-white/[0.06] bg-black/20 px-3 py-5 backdrop-blur-sm sm:flex lg:w-60">
+      <aside className="sticky top-0 hidden h-screen w-16 shrink-0 flex-col border-r-2 border-[#241d18] bg-[var(--paper-sheet)] px-3 py-5 sm:flex lg:w-60">
         <Link href="/" className="mb-8 flex items-center gap-3 px-1">
           <BrandMark />
           <span className="hidden min-w-0 lg:block">
-            <span className="block truncate text-sm font-semibold tracking-tight text-zinc-50">
-              AI Learning Factory
+            <span className="block truncate text-sm font-extrabold tracking-tight text-zinc-50">
+              RustyRoboz Labs
             </span>
-            <span className="block text-[11px] text-zinc-500">
-              Estudio de cursos con IA
+            <span className="block text-[11px] font-medium text-zinc-500">
+              AI Learning Factory
             </span>
           </span>
         </Link>
-        <nav className="flex flex-1 flex-col gap-1">{nav}</nav>
+        <nav className="flex flex-1 flex-col gap-1.5">{nav}</nav>
         <button
           onClick={logout}
-          className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-zinc-500 transition-colors hover:bg-white/[0.05] hover:text-zinc-300"
+          className="flex items-center gap-3 rounded-md border-2 border-transparent px-3 py-2 text-sm font-semibold text-zinc-500 transition-all hover:border-[#241d18] hover:bg-[#f2e9d8] hover:text-zinc-200"
         >
           <IconLogout size={17} />
           <span className="hidden lg:inline">Cerrar sesión</span>
@@ -105,7 +105,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
       {/* Mobile top bar */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-20 flex items-center gap-2 overflow-x-auto border-b border-white/[0.06] bg-[#0a0c10]/85 px-4 py-3 backdrop-blur-md sm:hidden">
+        <header className="sticky top-0 z-20 flex items-center gap-2 overflow-x-auto border-b-2 border-[#241d18] bg-[var(--paper-sheet)] px-4 py-3 sm:hidden">
           <BrandMark size={28} />
           <nav className="flex items-center gap-1">{nav}</nav>
           <button
