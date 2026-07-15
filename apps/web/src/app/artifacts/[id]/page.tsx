@@ -7,6 +7,7 @@ import { api, type Artifact } from "@/lib/api";
 import YouTubePublish from "@/components/YouTubePublish";
 import Markdown from "@/components/Markdown";
 import SlideDeck from "@/components/SlideDeck";
+import JsonViewer from "@/components/JsonViewer";
 import {
   EmptyState,
   IconChevronLeft,
@@ -130,7 +131,11 @@ export default function ArtifactViewerPage() {
           className="card mb-6 aspect-video w-full bg-black"
         />
       )}
-      {artifact.type === "slide_deck" && artifact.content !== null ? (
+      {artifact.format === "json" && artifact.content !== null ? (
+        <article className="card mb-6 p-4 sm:p-6">
+          <JsonViewer source={artifact.content} />
+        </article>
+      ) : artifact.type === "slide_deck" && artifact.content !== null ? (
         <div className="card mb-6 p-4 sm:p-6">
           <SlideDeck markdown={artifact.content} />
         </div>

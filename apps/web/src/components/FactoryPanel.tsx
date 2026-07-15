@@ -15,12 +15,17 @@ import {
   IconBrain,
   IconCheck,
   IconFileText,
+  IconCaptions,
   IconFlask,
   IconHand,
   IconImage,
+  IconListTree,
+  IconMic,
+  IconPackage,
   IconMessage,
   IconPlay,
   IconSearch,
+  IconPresentation,
   IconSparkles,
   IconTrendingUp,
   IconUpload,
@@ -197,11 +202,18 @@ function EventLine({ event, artifactHref }: { event: JobEvent; artifactHref?: st
 }
 
 function artifactIcon(type: string) {
-  if (type === "video") return <IconVideo size={15} />;
-  if (type === "thumbnail") return <IconImage size={15} />;
-  if (type === "research_brief" || type === "performance_report")
-    return <IconSearch size={15} />;
-  return <IconFileText size={15} />;
+  if (type === "course_plan") return <IconListTree size={16} />;
+  if (type === "lesson_content") return <IconBrain size={16} />;
+  if (type === "slide_deck") return <IconPresentation size={16} />;
+  if (type === "teaching_script") return <IconMessage size={16} />;
+  if (type === "voice_script") return <IconMic size={16} />;
+  if (type === "video") return <IconVideo size={16} />;
+  if (type === "subtitles") return <IconCaptions size={16} />;
+  if (type === "publication_package") return <IconPackage size={16} />;
+  if (type === "thumbnail") return <IconImage size={16} />;
+  if (type === "research_brief") return <IconSearch size={16} />;
+  if (type === "performance_report") return <IconTrendingUp size={16} />;
+  return <IconFileText size={16} />;
 }
 
 const ACTIVE_STATUSES: Job["status"][] = ["queued", "running", "waiting_approval"];
@@ -228,6 +240,7 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
   const [now, setNow] = useState(() => Date.now());
   const [showHistory, setShowHistory] = useState(false);
   const sourceRef = useRef<EventSource | null>(null);
+  const [artifactFilter, setArtifactFilter] = useState("all");
   const fileRef = useRef<HTMLInputElement>(null);
   const eventsEndRef = useRef<HTMLLIElement>(null);
 
@@ -411,6 +424,14 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
   const artifactTypes = new Set(artifacts.map((a) => a.type));
   const doneCount = STAGES.filter((s) => artifactTypes.has(s.produces)).length;
   const lastEvent = events.length > 0 ? events[events.length - 1] : null;
+  const artifactFilterOptions = [...artifactTypes].sort((a, b) =>
+    (TYPE_LABELS[a] ?? a).localeCompare(TYPE_LABELS[b] ?? b, "es"),
+  );
+  const filteredArtifacts =
+    artifactFilter === "all"
+      ? artifacts
+      : artifacts.filter((artifact) => artifact.type === artifactFilter);
+
   const canCancel =
     activeRun?.status === "queued" || activeRun?.status === "waiting_approval";
   const statusBadge = activeRun ? STATUS_BADGE[activeRun.status] : null;
@@ -593,8 +614,8 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
           )}
 
           {activeRun.status === "waiting_approval" && (
-            <div className="border-b border-amber-400/15 bg-amber-500/[0.06] px-4 py-4">
-              <p className="mb-3 flex items-center gap-2 text-sm font-medium text-amber-200">
+            <div className="border-b-2 border-indigo-400/30 bg-[#fbf6ea] px-4 py-4">
+              <p className="mb-3 flex items-center gap-2 text-sm font-semibold text-[#241d18]">
                 <IconHand size={16} />
                 El workflow está en pausa esperando tu revisión. Comprueba el
                 último artefacto generado y decide.
@@ -696,20 +717,35 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
           Artefactos
           {artifacts.length > 0 && (
             <span className="ml-2 text-sm font-normal text-zinc-500">
-              {artifacts.length}
+              {filteredArtifacts.length === artifacts.length
+                ? artifacts.length
+                : `${filteredArtifacts.length} de ${artifacts.length}`}
             </span>
           )}
         </h3>
         <div className="flex items-center gap-2">
+          <select
+            value={artifactFilter}
+            onChange={(e) => setArtifactFilter(e.target.value)}
+            className="input w-auto px-2 py-1.5 text-xs"
+            aria-label="Filtrar artefactos por tipo"
+          >
+            <option value="all">Todos los tipos</option>
+            {artifactFilterOptions.map((type) => (
+              <option key={type} value={type}>
+                {TYPE_LABELS[type] ?? type}
+              </option>
+            ))}
+          </select>
           <select
             value={uploadType}
             onChange={(e) => setUploadType(e.target.value)}
             className="input w-auto px-2 py-1.5 text-xs"
             aria-label="Tipo del artefacto a subir"
           >
-            {UPLOAD_TYPES.map((t) => (
-              <option key={t} value={t}>
-                {TYPE_LABELS[t]}
+            {UPLOAD_TYPES.map((type) => (
+              <option key={type} value={type}>
+                {TYPE_LABELS[type]}
               </option>
             ))}
           </select>
@@ -736,15 +772,19 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
             Todavía no hay artefactos: ejecuta el Curador o sube material propio.
           </p>
         </div>
+      ) : filteredArtifacts.length === 0 ? (
+        <div className="card border-dashed p-6 text-center text-sm text-zinc-500">
+          No hay artefactos del tipo seleccionado.
+        </div>
       ) : (
         <ul className="grid gap-2 sm:grid-cols-2">
-          {artifacts.map((a) => (
+          {filteredArtifacts.map((a) => (
             <li key={a.id}>
               <Link
                 href={`/artifacts/${a.id}`}
                 className="card card-hover flex items-center gap-3 px-4 py-3 text-sm"
               >
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/[0.05] text-zinc-400">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-zinc-300 bg-[#f4ead7] text-indigo-500">
                   {artifactIcon(a.type)}
                 </span>
                 <span className="min-w-0 flex-1">

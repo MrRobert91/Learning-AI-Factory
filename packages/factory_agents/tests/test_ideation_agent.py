@@ -35,7 +35,9 @@ def _tool_call(name, args, call_id="tc1"):
 def test_plain_text_turn():
     client = FakeClient([_response(content="Cuéntame más sobre tu idea.")])
     events = run_ideation_turn(client, "test-model", [])
-    assert [e.kind for e in events] == ["text"]
+    assert [e.kind for e in events] == ["text", "question"]
+    assert len(events[-1].payload["options"]) >= 3
+    assert client.requests[0]["tool_choice"] == "required"
 
 
 def test_question_ends_turn():
@@ -102,7 +104,7 @@ def test_web_search_continues_turn(monkeypatch):
         ]
     )
     events = run_ideation_turn(client, "test-model", [])
-    assert [e.kind for e in events] == ["search", "text"]
+    assert [e.kind for e in events] == ["search", "text", "question"]
     assert events[0].payload["query"] == "cursos de cuántica"
 
 

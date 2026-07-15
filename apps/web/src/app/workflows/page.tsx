@@ -11,6 +11,7 @@ import {
   LoadingScreen,
   PageHeader,
 } from "@/components/ui";
+import { validateWorkflowSteps } from "@/lib/workflowRules";
 
 export default function WorkflowsPage() {
   const router = useRouter();
@@ -86,6 +87,11 @@ export default function WorkflowsPage() {
                 <button
                   onClick={() => duplicate(w)}
                   className="btn-secondary btn-sm shrink-0"
+                  disabled={validateWorkflowSteps(w.steps).length > 0}
+                  title={
+                    validateWorkflowSteps(w.steps)[0] ??
+                    "Duplicar esta plantilla"
+                  }
                 >
                   Duplicar
                 </button>

@@ -121,6 +121,53 @@ export const IconFileText = (p: IconProps) => (
   </Icon>
 );
 
+export const IconListTree = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M8 6h13" />
+    <path d="M8 12h13" />
+    <path d="M8 18h13" />
+    <path d="M3 6h.01" />
+    <path d="M3 12h.01" />
+    <path d="M3 18h.01" />
+  </Icon>
+);
+
+export const IconPresentation = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M2 3h20" />
+    <path d="M4 3v13a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V3" />
+    <path d="m8 21 4-3 4 3" />
+    <path d="M8 9h8" />
+    <path d="M8 13h5" />
+  </Icon>
+);
+
+export const IconMic = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x="9" y="2" width="6" height="12" rx="3" />
+    <path d="M5 10a7 7 0 0 0 14 0" />
+    <path d="M12 19v3" />
+  </Icon>
+);
+
+export const IconCaptions = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x="2" y="5" width="20" height="14" rx="2" />
+    <path d="M7 15h4" />
+    <path d="M14 15h3" />
+    <path d="M7 11h2" />
+    <path d="M12 11h5" />
+  </Icon>
+);
+
+export const IconPackage = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="m7.5 4.27 9 5.15" />
+    <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
+    <path d="M3.3 7 12 12l8.7-5" />
+    <path d="M12 22V12" />
+  </Icon>
+);
 export const IconVideo = (p: IconProps) => (
   <Icon {...p}>
     <path d="m16 13 5.2 3.1a.5.5 0 0 0 .8-.4V8.3a.5.5 0 0 0-.8-.4L16 11" />
