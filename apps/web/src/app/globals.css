@@ -1,50 +1,105 @@
 @import "tailwindcss";
 
+/* ============================================================
+   RustyRobozLabs — brutalist notebook theme
+   Light ruled paper · rust-red accents · hard borders & shadows
+   The whole palette is driven from here: we remap Tailwind's token
+   scale so the existing `text-zinc-*` / `*-indigo-*` utilities used
+   across the app become dark ink / rust-red automatically.
+   ============================================================ */
+
+@theme {
+  /* Ink scale — was light-on-dark, now dark ink on paper. */
+  --color-zinc-50: #241d18;
+  --color-zinc-100: #2a2119;
+  --color-zinc-200: #33281f;
+  --color-zinc-300: #40342a;
+  --color-zinc-400: #6d5e4f;
+  --color-zinc-500: #8a7a68;
+  --color-zinc-600: #9c8b78;
+
+  /* Brand — indigo/violet → rust terracotta. */
+  --color-indigo-200: #b24a35;
+  --color-indigo-300: #ab4130;
+  --color-indigo-400: #b0392a;
+  --color-indigo-500: #b23a26;
+  --color-indigo-600: #8f2c1c;
+  --color-violet-600: #762313;
+
+  /* Semantic colours kept readable on paper. */
+  --color-emerald-300: #0d7a4d;
+  --color-emerald-400: #0b6a43;
+  --color-emerald-500: #0b6a43;
+  --color-emerald-600: #095737;
+  --color-amber-300: #a05a00;
+  --color-amber-400: #8f5100;
+  --color-red-300: #a41d15;
+  --color-red-400: #911711;
+  --color-red-500: #a41d15;
+}
+
 :root {
-  color-scheme: dark;
-  --bg: #0a0c10;
-  --surface: rgba(255, 255, 255, 0.03);
-  --surface-strong: rgba(255, 255, 255, 0.055);
-  --line: rgba(255, 255, 255, 0.08);
-  --line-strong: rgba(255, 255, 255, 0.16);
+  color-scheme: light;
+  --paper: #efe6d5;
+  --paper-sheet: #fbf6ea;
+  --ink: #241d18;
+  --ink-soft: #6d5e4f;
+  --rust: #b23a26;
+  --rust-deep: #8f2c1c;
+  --line: rgba(36, 29, 24, 0.14);
+  --rule: rgba(36, 29, 24, 0.07);
+  --shadow: rgba(36, 29, 24, 0.9);
 }
 
 body {
-  @apply bg-[#0a0c10] text-zinc-100 antialiased;
-  background-image:
-    radial-gradient(1200px 500px at 50% -220px, rgba(99, 102, 241, 0.14), transparent 70%),
-    radial-gradient(900px 420px at 90% -180px, rgba(168, 85, 247, 0.08), transparent 70%);
-  background-repeat: no-repeat;
+  @apply text-zinc-100 antialiased;
+  background-color: var(--paper);
+  /* Faint horizontal ruled lines across the whole app — a notebook. */
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 31px,
+    var(--rule) 31px,
+    var(--rule) 32px
+  );
+  background-attachment: fixed;
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
 }
 
 ::selection {
-  background: rgba(99, 102, 241, 0.4);
+  background: rgba(178, 58, 38, 0.28);
 }
 
 *::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
 }
 *::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
-  border-radius: 8px;
+  background: var(--ink);
+  border: 2px solid var(--paper);
+  border-radius: 0;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--rust);
 }
 *::-webkit-scrollbar-track {
   background: transparent;
 }
 
-/* ---------- Shared component classes ---------- */
+/* ---------- Shared component classes (brutalist) ---------- */
 
 .card {
-  @apply rounded-2xl border border-white/[0.07] bg-white/[0.025];
+  @apply rounded-md border-2 bg-[var(--paper-sheet)];
+  border-color: var(--ink);
+  box-shadow: 3px 3px 0 0 var(--shadow);
 }
 
 .card-hover {
-  @apply transition-all duration-200 hover:border-white/[0.16] hover:bg-white/[0.045] hover:shadow-[0_8px_30px_rgba(0,0,0,0.35)];
+  @apply transition-all duration-150;
+}
+.card-hover:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 5px 5px 0 0 var(--shadow);
 }
 
 .btn-primary,
@@ -52,48 +107,90 @@ body {
 .btn-ghost,
 .btn-danger,
 .btn-success {
-  @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all duration-150 outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/60 disabled:cursor-not-allowed disabled:opacity-45;
+  @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-md border-2 px-4 py-2 text-sm font-semibold transition-all duration-100 outline-none disabled:cursor-not-allowed disabled:opacity-45;
+  border-color: var(--ink);
+  box-shadow: 3px 3px 0 0 var(--shadow);
+}
+.btn-primary:active,
+.btn-secondary:active,
+.btn-danger:active,
+.btn-success:active {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0 0 var(--shadow);
+}
+.btn-primary:focus-visible,
+.btn-secondary:focus-visible,
+.btn-danger:focus-visible,
+.btn-success:focus-visible {
+  box-shadow: 3px 3px 0 0 var(--shadow), 0 0 0 3px rgba(178, 58, 38, 0.35);
 }
 
 .btn-primary {
-  @apply border border-indigo-400/20 bg-gradient-to-b from-indigo-500 to-indigo-600 text-white shadow-[0_1px_0_rgba(255,255,255,0.15)_inset,0_4px_16px_rgba(79,70,229,0.35)] hover:from-indigo-400 hover:to-indigo-600 active:translate-y-px;
+  background: var(--rust);
+  color: #fbf6ea;
+}
+.btn-primary:hover {
+  background: var(--rust-deep);
 }
 
 .btn-secondary {
-  @apply border border-white/[0.1] bg-white/[0.04] text-zinc-200 hover:border-white/[0.2] hover:bg-white/[0.08] active:translate-y-px;
+  background: var(--paper-sheet);
+  color: var(--ink);
+}
+.btn-secondary:hover {
+  background: #f2e9d8;
 }
 
 .btn-ghost {
-  @apply border border-transparent text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-200;
+  @apply border-transparent text-zinc-400 shadow-none;
+  box-shadow: none;
+}
+.btn-ghost:hover {
+  color: var(--ink);
+  background: rgba(36, 29, 24, 0.06);
 }
 
 .btn-danger {
-  @apply border border-red-500/25 bg-red-500/[0.08] text-red-300 hover:border-red-500/45 hover:bg-red-500/[0.16];
+  background: #f6e3df;
+  color: var(--color-red-500);
+}
+.btn-danger:hover {
+  background: #efd2cc;
 }
 
 .btn-success {
-  @apply border border-emerald-400/20 bg-gradient-to-b from-emerald-500 to-emerald-600 text-white shadow-[0_1px_0_rgba(255,255,255,0.15)_inset,0_4px_16px_rgba(5,150,105,0.3)] hover:from-emerald-400 hover:to-emerald-600;
+  background: var(--color-emerald-500);
+  color: #fbf6ea;
+}
+.btn-success:hover {
+  background: var(--color-emerald-600);
 }
 
 /* Size modifier: declared after the variants so it wins the cascade. */
 .btn-sm {
-  @apply px-3 py-1.5 text-xs;
+  @apply gap-1.5 rounded px-3 py-1.5 text-xs;
 }
 
 .input {
-  @apply w-full rounded-lg border border-white/[0.1] bg-white/[0.03] px-3 py-2 text-sm text-zinc-100 shadow-[0_1px_2px_rgba(0,0,0,0.3)_inset] outline-none transition-colors placeholder:text-zinc-500 focus:border-indigo-400/60 focus:bg-white/[0.05] focus:ring-2 focus:ring-indigo-400/20 disabled:opacity-60;
+  @apply w-full rounded-md border-2 bg-[var(--paper-sheet)] px-3 py-2 text-sm outline-none transition-colors placeholder:text-zinc-500 disabled:opacity-60;
+  border-color: var(--ink);
+  color: var(--ink);
+}
+.input:focus {
+  border-color: var(--rust);
+  box-shadow: 0 0 0 3px rgba(178, 58, 38, 0.2);
 }
 
 select.input {
-  @apply cursor-pointer appearance-none bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2212%22%20height%3D%2212%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23a1a1aa%22%20stroke-width%3D%222.5%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22m6%209%206%206%206-6%22%2F%3E%3C%2Fsvg%3E')] bg-[length:12px] bg-[position:right_10px_center] bg-no-repeat pr-8;
+  @apply cursor-pointer appearance-none bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2212%22%20height%3D%2212%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23241d18%22%20stroke-width%3D%222.5%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22m6%209%206%206%206-6%22%2F%3E%3C%2Fsvg%3E')] bg-[length:12px] bg-[position:right_10px_center] bg-no-repeat pr-8;
 }
 
 select.input option {
-  @apply bg-zinc-900 text-zinc-100;
+  @apply bg-[#fbf6ea] text-zinc-100;
 }
 
 .label {
-  @apply mb-1.5 block text-xs font-medium tracking-wide text-zinc-400;
+  @apply mb-1.5 block text-xs font-bold tracking-wide text-zinc-300 uppercase;
 }
 
 .badge-neutral,
@@ -101,27 +198,210 @@ select.input option {
 .badge-warning,
 .badge-danger,
 .badge-info {
-  @apply inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-medium;
+  @apply inline-flex items-center gap-1.5 rounded border-2 px-2 py-0.5 text-[11px] font-bold tracking-wide uppercase;
+  border-color: var(--ink);
 }
 
 .badge-neutral {
-  @apply border-white/[0.1] bg-white/[0.04] text-zinc-400;
+  background: #ece2d0;
+  color: var(--ink-soft);
 }
 
 .badge-success {
-  @apply border-emerald-400/25 bg-emerald-400/[0.08] text-emerald-300;
+  background: #cfe9db;
+  color: var(--color-emerald-600);
 }
 
 .badge-warning {
-  @apply border-amber-400/25 bg-amber-400/[0.08] text-amber-300;
+  background: #f4e4c3;
+  color: var(--color-amber-400);
 }
 
 .badge-danger {
-  @apply border-red-400/25 bg-red-400/[0.08] text-red-300;
+  background: #f4dcd7;
+  color: var(--color-red-500);
 }
 
 .badge-info {
-  @apply border-indigo-400/25 bg-indigo-400/[0.08] text-indigo-300;
+  background: #f2d9d2;
+  color: var(--rust-deep);
+}
+
+/* ---------- Notebook sheet (lessons, notes, briefs) ---------- */
+
+.notebook-sheet {
+  position: relative;
+  background-color: var(--paper-sheet);
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 27px,
+    rgba(36, 29, 24, 0.08) 27px,
+    rgba(36, 29, 24, 0.08) 28px
+  );
+  background-position: 0 6px;
+}
+.notebook-sheet::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2.25rem;
+  width: 2px;
+  background: rgba(178, 58, 38, 0.5);
+  pointer-events: none;
+}
+.notebook-sheet .md {
+  padding-left: 1.5rem;
+}
+
+/* ---------- Markdown renderer ---------- */
+
+.md {
+  @apply text-[15px] leading-relaxed text-zinc-200;
+}
+.md > * + * {
+  margin-top: 0.85rem;
+}
+.md-h1 {
+  @apply text-2xl font-extrabold tracking-tight text-zinc-50;
+  margin-top: 1.5rem;
+}
+.md-h2 {
+  @apply text-xl font-bold tracking-tight text-zinc-50;
+  margin-top: 1.35rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 2px solid var(--line);
+}
+.md-h3 {
+  @apply text-lg font-bold text-zinc-100;
+  margin-top: 1.15rem;
+}
+.md-h4,
+.md-h5,
+.md-h6 {
+  @apply text-base font-bold text-zinc-100;
+  margin-top: 1rem;
+}
+.md-p {
+  @apply text-zinc-200;
+}
+.md-ul {
+  @apply list-disc space-y-1 pl-6 text-zinc-200 marker:text-[var(--rust)];
+}
+.md-ol {
+  @apply list-decimal space-y-1 pl-6 text-zinc-200 marker:font-bold marker:text-[var(--rust)];
+}
+.md-quote {
+  @apply rounded-r border-l-4 py-1 pl-4 text-zinc-300 italic;
+  border-color: var(--rust);
+  background: rgba(178, 58, 38, 0.06);
+}
+.md-code-inline {
+  @apply rounded px-1.5 py-0.5 font-mono text-[0.85em];
+  background: #e9dcc4;
+  color: var(--rust-deep);
+  border: 1px solid var(--line);
+}
+.md-pre {
+  @apply overflow-x-auto rounded-md border-2 p-4 font-mono text-[13px] leading-relaxed;
+  border-color: var(--ink);
+  background: #2a2119;
+  color: #f2e9d8;
+  box-shadow: 3px 3px 0 0 var(--shadow);
+}
+.md-pre code {
+  @apply bg-transparent text-inherit;
+}
+.md-link {
+  @apply font-semibold underline decoration-2 underline-offset-2;
+  color: var(--rust);
+}
+.md-link:hover {
+  color: var(--rust-deep);
+}
+.md-hr {
+  border: none;
+  border-top: 2px dashed var(--line);
+  margin: 1.25rem 0;
+}
+.md-table-wrap {
+  @apply overflow-x-auto;
+}
+.md-table {
+  @apply w-full border-collapse text-sm;
+}
+.md-table th,
+.md-table td {
+  border: 2px solid var(--ink);
+  @apply px-3 py-1.5 text-left text-zinc-200;
+}
+.md-table th {
+  background: #ece2d0;
+  @apply font-bold text-zinc-100;
+}
+
+/* ---------- Slide deck preview ---------- */
+
+.slide-stage {
+  position: relative;
+}
+.slide-canvas {
+  aspect-ratio: 16 / 9;
+  overflow-y: auto;
+  border: 2px solid var(--ink);
+  border-radius: 0.375rem;
+  background: var(--paper-sheet);
+  box-shadow: 4px 4px 0 0 var(--shadow);
+  padding: clamp(1rem, 3.5vw, 2.5rem);
+  container-type: inline-size;
+}
+.slide-canvas .slide-md {
+  @apply text-zinc-100;
+  font-size: clamp(0.8rem, 2.4cqw, 1.35rem);
+}
+.slide-canvas .slide-md .md-h1 {
+  font-size: clamp(1.3rem, 5cqw, 2.6rem);
+  margin-top: 0;
+  color: var(--rust-deep);
+}
+.slide-canvas .slide-md .md-h2 {
+  font-size: clamp(1.1rem, 4cqw, 2rem);
+  border: none;
+  margin-top: 0;
+}
+.slide-page {
+  position: absolute;
+  right: 0.75rem;
+  bottom: 0.75rem;
+  @apply rounded border-2 px-2 py-0.5 text-[11px] font-bold tabular-nums;
+  border-color: var(--ink);
+  background: var(--rust);
+  color: #fbf6ea;
+}
+.slide-dot {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--ink);
+  background: var(--paper-sheet);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.slide-dot:hover {
+  background: #e9dcc4;
+}
+.slide-dot-active {
+  background: var(--rust);
+}
+.slide-notes {
+  @apply mt-4 rounded-md border-2 p-4;
+  border-color: var(--ink);
+  border-style: dashed;
+  background: rgba(178, 58, 38, 0.05);
+}
+.slide-notes-label {
+  @apply mb-2 text-xs font-bold tracking-wide uppercase;
+  color: var(--rust-deep);
 }
 
 /* ---------- Animations ---------- */
@@ -155,7 +435,8 @@ select.input option {
 }
 
 .typing-dot {
-  @apply inline-block h-1.5 w-1.5 rounded-full bg-zinc-400;
+  @apply inline-block h-1.5 w-1.5 rounded-full;
+  background: var(--rust);
   animation: typing-dot 1.2s infinite ease-in-out;
 }
 .typing-dot:nth-child(2) {
@@ -168,14 +449,15 @@ select.input option {
 @keyframes glow-pulse {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.5);
+    box-shadow: 0 0 0 0 rgba(178, 58, 38, 0.5);
   }
   50% {
-    box-shadow: 0 0 0 5px rgba(99, 102, 241, 0);
+    box-shadow: 0 0 0 5px rgba(178, 58, 38, 0);
   }
 }
 
 .dot-live {
-  @apply h-2 w-2 rounded-full bg-indigo-400;
+  @apply h-2 w-2 rounded-full;
+  background: var(--rust);
   animation: glow-pulse 1.6s infinite;
 }

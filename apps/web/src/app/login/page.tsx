@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
-import { BrandMark, ErrorBanner, Spinner } from "@/components/ui";
+import { BrandMark, ErrorBanner, IconFlask, Spinner } from "@/components/ui";
 
 const PIPELINE = [
   "Ideación asistida",
@@ -40,34 +40,29 @@ export default function LoginPage() {
 
   return (
     <main className="flex min-h-screen items-center justify-center p-6">
-      <div className="grid w-full max-w-4xl overflow-hidden rounded-3xl border border-white/[0.08] bg-white/[0.02] shadow-[0_20px_70px_rgba(0,0,0,0.5)] md:grid-cols-2">
+      <div className="card grid w-full max-w-4xl overflow-hidden !p-0 md:grid-cols-2">
         {/* Brand panel */}
-        <div className="relative hidden flex-col justify-between overflow-hidden bg-gradient-to-br from-indigo-600/25 via-violet-600/15 to-transparent p-10 md:flex">
-          <div
-            className="pointer-events-none absolute inset-0 opacity-40"
-            style={{
-              backgroundImage:
-                "radial-gradient(circle at 20% 15%, rgba(129,140,248,0.35), transparent 45%), radial-gradient(circle at 85% 85%, rgba(167,139,250,0.25), transparent 45%)",
-            }}
-          />
+        <div className="relative hidden flex-col justify-between overflow-hidden border-r-2 border-[#241d18] bg-[var(--rust)] p-10 text-[#fbf6ea] md:flex">
           <div className="relative flex items-center gap-3">
-            <BrandMark size={40} />
+            <span className="flex h-10 w-10 items-center justify-center rounded-md border-2 border-[#241d18] bg-[#fbf6ea] text-[var(--rust)] shadow-[3px_3px_0_0_var(--shadow)]">
+              <IconFlask size={22} />
+            </span>
             <div>
-              <p className="text-base font-semibold tracking-tight text-zinc-50">
-                AI Learning Factory
+              <p className="text-base font-extrabold tracking-tight text-[#fbf6ea]">
+                RustyRoboz Labs
               </p>
-              <p className="text-xs text-zinc-400">Estudio de cursos con IA</p>
+              <p className="text-xs text-[#fbf6ea]/80">AI Learning Factory</p>
             </div>
           </div>
           <div className="relative">
-            <p className="mb-5 text-lg font-medium leading-snug text-zinc-100">
+            <p className="mb-5 text-lg font-bold leading-snug text-[#fbf6ea]">
               De una idea vaga a un curso completo publicado, con agentes
               especializados y tu aprobación en cada hito.
             </p>
             <ol className="space-y-2">
               {PIPELINE.map((step, i) => (
-                <li key={step} className="flex items-center gap-3 text-sm text-zinc-300">
-                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white/[0.08] text-[10px] font-semibold text-indigo-300">
+                <li key={step} className="flex items-center gap-3 text-sm font-medium text-[#fbf6ea]">
+                  <span className="flex h-6 w-6 items-center justify-center rounded border-2 border-[#241d18] bg-[#fbf6ea] text-[11px] font-bold text-[var(--rust-deep)]">
                     {i + 1}
                   </span>
                   {step}
@@ -78,14 +73,14 @@ export default function LoginPage() {
         </div>
 
         {/* Form */}
-        <div className="flex flex-col justify-center p-8 sm:p-12">
+        <div className="flex flex-col justify-center bg-[var(--paper-sheet)] p-8 sm:p-12">
           <div className="mb-8 flex items-center gap-3 md:hidden">
             <BrandMark size={36} />
             <div>
-              <p className="text-base font-semibold text-zinc-50">
-                AI Learning Factory
+              <p className="text-base font-extrabold text-zinc-50">
+                RustyRoboz Labs
               </p>
-              <p className="text-xs text-zinc-400">Estudio de cursos con IA</p>
+              <p className="text-xs text-zinc-400">AI Learning Factory</p>
             </div>
           </div>
           <h1 className="mb-1 text-xl font-semibold tracking-tight text-zinc-50">

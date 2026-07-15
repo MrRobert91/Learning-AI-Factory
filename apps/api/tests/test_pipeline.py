@@ -100,6 +100,35 @@ def test_stage_by_stage_chain(auth_client, monkeypatch):
     assert types == ["course_plan", "lesson_content", "research_brief", "slide_deck"]
 
 
+def test_slide_decks_are_stored_in_distinct_files(auth_client, monkeypatch):
+    """Regression: each lesson's deck must have its own file, otherwise every
+    slide_deck artifact points at the last lesson's deck and only the last one
+    is downloadable."""
+    _patch_all(monkeypatch)
+
+    counter = {"n": 0}
+
+    def _distinct_slides(task_input, **kwargs):
+        counter["n"] += 1
+        return f"---\nmarp: true\ntheme: default\npaginate: true\n---\n\n# Deck {counter['n']}\n"
+
+    monkeypatch.setattr("factory_agents.agents.slides.run_slides", _distinct_slides)
+
+    project = _create_project(auth_client)
+    assert _run_agent(auth_client, project["id"], "curator")["status"] == "done"
+    assert _run_agent(auth_client, project["id"], "planner")["status"] == "done"
+    assert _run_agent(auth_client, project["id"], "lessons")["status"] == "done"
+
+    slides_job = _run_agent(auth_client, project["id"], "slides")
+    ids = slides_job["result"]["artifact_ids"]
+    assert len(ids) == 2
+
+    downloads = [auth_client.get(f"/api/artifacts/{aid}/download").text for aid in ids]
+    assert downloads[0] != downloads[1]
+    assert "# Deck 1" in downloads[0]
+    assert "# Deck 2" in downloads[1]
+
+
 def test_full_pipeline_run(auth_client, monkeypatch):
     _patch_all(monkeypatch)
     project = _create_project(auth_client)

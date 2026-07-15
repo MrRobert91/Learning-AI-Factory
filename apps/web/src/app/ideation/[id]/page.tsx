@@ -330,7 +330,7 @@ export default function IdeationSessionPage() {
                 e.preventDefault();
                 send(input);
               }}
-              className="sticky bottom-4 mt-6 flex gap-2 rounded-2xl border border-white/[0.08] bg-[#0d0f15]/95 p-2 shadow-[0_8px_30px_rgba(0,0,0,0.4)] backdrop-blur"
+              className="card sticky bottom-4 mt-6 flex gap-2 p-2"
             >
               <input
                 value={input}

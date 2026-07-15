@@ -244,10 +244,10 @@ export function Spinner({ className = "" }: { className?: string }) {
 export function BrandMark({ size = 34 }: { size?: number }) {
   return (
     <span
-      className="flex shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 via-indigo-600 to-violet-600 text-white shadow-[0_4px_14px_rgba(99,102,241,0.4)]"
+      className="flex shrink-0 items-center justify-center rounded-md border-2 border-[#241d18] bg-[var(--rust)] text-[#fbf6ea] shadow-[3px_3px_0_0_var(--shadow)]"
       style={{ width: size, height: size }}
     >
-      <IconSparkles size={Math.round(size * 0.55)} />
+      <IconFlask size={Math.round(size * 0.55)} />
     </span>
   );
 }
@@ -288,7 +288,7 @@ export function EmptyState({
   return (
     <div className="card flex flex-col items-center justify-center border-dashed px-6 py-14 text-center">
       {icon && (
-        <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-white/[0.08] bg-white/[0.04] text-zinc-400">
+        <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-md border-2 border-[#241d18] bg-[var(--paper-sheet)] text-[var(--rust)] shadow-[3px_3px_0_0_var(--shadow)]">
           {icon}
         </div>
       )}
