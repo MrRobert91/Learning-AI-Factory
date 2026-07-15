@@ -224,16 +224,27 @@ class JobRead(BaseModel):
     events: list[JobEventRead] = []
 
 
+class ArtifactVersionRead(BaseModel):
+    id: str
+    version: int
+    is_selected: bool
+    created_at: datetime
+
+
 class ArtifactRead(BaseModel):
     id: str
     project_id: str
     type: str
     format: str
     title: str
+    logical_key: str
+    version: int
+    is_selected: bool
     created_by_job_id: str | None
     created_at: datetime
     content: str | None = None
     renders: list[str] = []
+    versions: list[ArtifactVersionRead] = []
 
 
 class ProjectRead(BaseModel):

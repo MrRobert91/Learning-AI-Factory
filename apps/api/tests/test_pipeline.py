@@ -63,9 +63,11 @@ def _run_agent(auth_client, project_id, agent):
 def test_planner_requires_research_brief(auth_client, monkeypatch):
     _patch_all(monkeypatch)
     project = _create_project(auth_client)
-    job = _run_agent(auth_client, project["id"], "planner")
-    assert job["status"] == "failed"
-    assert "research_brief" in job["error"]
+    response = auth_client.post(
+        f"/api/projects/{project['id']}/agent-runs", json={"agent": "planner"}
+    )
+    assert response.status_code == 409
+    assert "research_brief" in response.json()["detail"]
 
 
 def test_stage_by_stage_chain(auth_client, monkeypatch):
@@ -169,3 +171,47 @@ def test_upload_external_artifact(auth_client):
         data={"type": "video"},
     )
     assert resp.status_code == 422
+
+
+def test_artifact_versions_can_be_selected_and_deleted(auth_client, monkeypatch):
+    _patch_all(monkeypatch)
+    project = _create_project(auth_client)
+
+    ids = []
+    for index, content in enumerate((b"# Version uno", b"# Version dos"), start=1):
+        response = auth_client.post(
+            f"/api/projects/{project['id']}/artifacts",
+            files={"file": ("brief.md", content, "text/markdown")},
+            data={"type": "research_brief", "title": f"Brief con título {index}"},
+        )
+        assert response.status_code == 201
+        ids.append(response.json()["id"])
+
+    artifacts = auth_client.get(f"/api/projects/{project['id']}/artifacts").json()
+    assert len(artifacts) == 1
+    assert artifacts[0]["id"] == ids[1]
+    assert artifacts[0]["version"] == 2
+    assert len(artifacts[0]["versions"]) == 2
+
+    selected = auth_client.post(f"/api/artifacts/{ids[0]}/select").json()
+    assert selected["is_selected"] is True
+    assert selected["version"] == 1
+    artifacts = auth_client.get(f"/api/projects/{project['id']}/artifacts").json()
+    assert artifacts[0]["id"] == ids[0]
+
+    seen = {}
+
+    def capture_planner(task_input, **kwargs):
+        seen["task_input"] = task_input
+        return FAKE_PLAN
+
+    monkeypatch.setattr("factory_agents.agents.planner.run_planner", capture_planner)
+    assert _run_agent(auth_client, project["id"], "planner")["status"] == "done"
+    assert "Version uno" in seen["task_input"]
+    assert "Version dos" not in seen["task_input"]
+
+    assert auth_client.delete(f"/api/artifacts/{ids[0]}").status_code == 204
+    artifacts = auth_client.get(f"/api/projects/{project['id']}/artifacts").json()
+    brief = next(artifact for artifact in artifacts if artifact["type"] == "research_brief")
+    assert brief["id"] == ids[1]
+    assert brief["is_selected"] is True

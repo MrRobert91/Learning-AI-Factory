@@ -109,6 +109,9 @@ export default function ArtifactViewerPage() {
           {TYPE_LABELS[artifact.type] ?? artifact.type}
         </span>
         <span className="badge-neutral">{artifact.format}</span>
+        <span className={artifact.is_selected ? "badge-success" : "badge-neutral"}>
+          v{artifact.version} {artifact.is_selected ? "· activa" : "· histórica"}
+        </span>
         <span>{new Date(artifact.created_at).toLocaleString("es")}</span>
       </p>
 

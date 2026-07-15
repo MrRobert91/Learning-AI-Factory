@@ -8,6 +8,7 @@ import ProjectForm from "@/components/ProjectForm";
 import FactoryPanel from "@/components/FactoryPanel";
 import WikiPanel from "@/components/WikiPanel";
 import {
+  ConfirmDialog,
   EmptyState,
   IconChevronLeft,
   IconFolder,
@@ -33,6 +34,8 @@ export default function ProjectDetailPage() {
   const [notFound, setNotFound] = useState(false);
   const [saved, setSaved] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     api
@@ -42,9 +45,7 @@ export default function ProjectDetailPage() {
   }, [id]);
 
   async function handleDelete() {
-    if (!confirm("¿Eliminar este proyecto? Esta acción no se puede deshacer.")) {
-      return;
-    }
+    setDeleting(true);
     await api.deleteProject(id);
     router.push("/");
   }
@@ -111,7 +112,7 @@ export default function ProjectDetailPage() {
           >
             {showSettings ? "Ocultar configuración" : "Editar configuración"}
           </button>
-          <button onClick={handleDelete} className="btn-danger btn-sm">
+          <button onClick={() => setConfirmDelete(true)} className="btn-danger btn-sm">
             Eliminar
           </button>
         </div>
@@ -151,6 +152,14 @@ export default function ProjectDetailPage() {
 
       <FactoryPanel projectId={id} />
       <WikiPanel projectId={id} />
+      <ConfirmDialog
+        open={confirmDelete}
+        title="Eliminar proyecto"
+        description={`Se eliminará «${project.title}» junto con sus ejecuciones y artefactos. Esta acción no se puede deshacer.`}
+        busy={deleting}
+        onCancel={() => setConfirmDelete(false)}
+        onConfirm={handleDelete}
+      />
     </div>
   );
 }

@@ -112,3 +112,26 @@ def test_ideation_without_api_key(auth_client, monkeypatch):
     resp = auth_client.post("/api/ideation", json={"idea": "algo"})
     assert resp.status_code == 503
     assert "OPENROUTER_API_KEY" in resp.json()["detail"]
+
+
+def test_ideation_stream_reports_progress(auth_client, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test")
+
+    def fake_turn(client, model, history, **kwargs):
+        kwargs["on_progress"](
+            "tool_call",
+            "Consultando fuentes sobre: agentes",
+            {"tool": "web_search"},
+        )
+        return [AgentEvent(kind="text", content="He terminado la comprobación.")]
+
+    monkeypatch.setattr("factory_api.routers.ideation.run_ideation_turn", fake_turn)
+    monkeypatch.setattr(
+        "factory_api.routers.ideation.get_llm_client", lambda key: object()
+    )
+
+    response = auth_client.post("/api/ideation/stream", json={"idea": "curso de agentes"})
+    assert response.status_code == 200
+    assert "event: progress" in response.text
+    assert "Consultando fuentes" in response.text
+    assert "event: result" in response.text

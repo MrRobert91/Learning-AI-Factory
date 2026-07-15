@@ -4,7 +4,6 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { api, type AgentProfile, type AgentSpec } from "@/lib/api";
 import {
-  IconBot,
   IconPlus,
   IconStar,
   LoadingScreen,
@@ -27,6 +26,36 @@ const TYPE_LABELS: Record<string, string> = {
   thumbnail: "miniatura",
 };
 
+const EXECUTION_ORDER = [
+  "ideation",
+  "curator",
+  "planner",
+  "lessons",
+  "slides",
+  "script",
+  "voice",
+  "video",
+  "publisher",
+  "analyst",
+];
+
+const VIDEO_STAGE: AgentSpec = {
+  name: "video",
+  display_name: "Montaje de vídeo",
+  description:
+    "Sintetiza la narración, renderiza las slides y monta el vídeo con subtítulos.",
+  kind: "automatic",
+  tool_names: ["TTS", "Marp", "ffmpeg"],
+  consumes: ["voice_script", "slide_deck"],
+  produces: ["video", "subtitles"],
+};
+
+const SOURCE_INPUTS: Record<string, string> = {
+  ideation: "Idea inicial del usuario",
+  curator: "Brief de idea y datos del proyecto",
+  analyst: "Métricas y comentarios de YouTube",
+};
+
 export default function ProfilesPage() {
   const [agents, setAgents] = useState<AgentSpec[] | null>(null);
   const [profiles, setProfiles] = useState<Record<string, AgentProfile[]>>({});
@@ -34,10 +63,13 @@ export default function ProfilesPage() {
   const [newName, setNewName] = useState("");
 
   const load = useCallback(async () => {
-    const specs = await api.listAgents();
+    const specs = [...(await api.listAgents()), VIDEO_STAGE].sort(
+      (left, right) =>
+        EXECUTION_ORDER.indexOf(left.name) - EXECUTION_ORDER.indexOf(right.name),
+    );
     const byType: Record<string, AgentProfile[]> = {};
     await Promise.all(
-      specs.map(async (s) => {
+      specs.filter((s) => s.kind !== "automatic").map(async (s) => {
         byType[s.name] = await api.listProfiles(s.name);
       }),
     );
@@ -74,12 +106,12 @@ export default function ProfilesPage() {
       {agents === null ? (
         <LoadingScreen label="Cargando agentes…" />
       ) : (
-        agents.map((agent) => (
+        agents.map((agent, index) => (
           <section key={agent.name} className="card mb-5 p-5">
             <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
               <div className="flex min-w-0 items-start gap-3">
                 <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-indigo-500/[0.12] text-indigo-300">
-                  <IconBot size={17} />
+                  <span className="text-xs font-bold">{index + 1}</span>
                 </span>
                 <div className="min-w-0">
                   <h2 className="text-base font-semibold text-zinc-100">
@@ -88,32 +120,57 @@ export default function ProfilesPage() {
                   <p className="text-sm leading-relaxed text-zinc-400">
                     {agent.description}
                   </p>
-                  {(agent.consumes.length > 0 || agent.produces.length > 0) && (
-                    <p className="mt-1.5 flex flex-wrap gap-1.5 text-xs">
-                      {agent.consumes.map((c) => (
-                        <span key={`c-${c}`} className="badge-neutral">
-                          lee: {TYPE_LABELS[c] ?? c}
-                        </span>
-                      ))}
-                      {agent.produces.map((p) => (
-                        <span key={`p-${p}`} className="badge-info">
-                          produce: {TYPE_LABELS[p] ?? p}
-                        </span>
-                      ))}
+                  <div className="mt-2 grid gap-2 text-xs sm:grid-cols-2">
+                    <div>
+                      <span className="font-semibold uppercase tracking-wide text-zinc-500">
+                        Input
+                      </span>
+                      <p className="mt-1 flex flex-wrap gap-1.5">
+                        {agent.consumes.length > 0 ? (
+                          agent.consumes.map((item) => (
+                            <span key={item} className="badge-neutral">
+                              {TYPE_LABELS[item] ?? item}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="text-zinc-500">
+                            {SOURCE_INPUTS[agent.name] ?? "Datos del proyecto"}
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                    <div>
+                      <span className="font-semibold uppercase tracking-wide text-zinc-500">
+                        Output esperado
+                      </span>
+                      <p className="mt-1 flex flex-wrap gap-1.5">
+                        {agent.produces.map((item) => (
+                          <span key={item} className="badge-info">
+                            {TYPE_LABELS[item] ?? item}
+                          </span>
+                        ))}
+                      </p>
+                    </div>
+                  </div>
+                  {agent.tool_names.length > 0 && (
+                    <p className="mt-2 text-xs text-zinc-500">
+                      Herramientas: {agent.tool_names.join(", ")}
                     </p>
                   )}
                 </div>
               </div>
-              <button
-                onClick={() => {
-                  setCreating(creating === agent.name ? null : agent.name);
-                  setNewName("");
-                }}
-                className="btn-secondary btn-sm shrink-0"
-              >
-                <IconPlus size={13} />
-                Nuevo perfil
-              </button>
+              {agent.kind !== "automatic" && (
+                <button
+                  onClick={() => {
+                    setCreating(creating === agent.name ? null : agent.name);
+                    setNewName("");
+                  }}
+                  className="btn-secondary btn-sm shrink-0"
+                >
+                  <IconPlus size={13} />
+                  Nuevo perfil
+                </button>
+              )}
             </div>
             {creating === agent.name && (
               <form
@@ -135,29 +192,35 @@ export default function ProfilesPage() {
                 </button>
               </form>
             )}
-            <ul className="space-y-1.5">
-              {(profiles[agent.name] ?? []).map((p) => (
-                <li key={p.id}>
-                  <Link
-                    href={`/profiles/${p.id}`}
-                    className="card card-hover flex items-center gap-3 px-4 py-2.5 text-sm"
-                  >
-                    <span className="min-w-0 flex-1 truncate font-medium text-zinc-200">
-                      {p.name}
-                    </span>
-                    {p.is_default && (
-                      <span className="badge-info shrink-0">
-                        <IconStar size={10} />
-                        por defecto
+            {agent.kind === "automatic" ? (
+              <p className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-4 py-3 text-xs text-zinc-500">
+                Etapa automática sin perfil configurable.
+              </p>
+            ) : (
+              <ul className="space-y-1.5">
+                {(profiles[agent.name] ?? []).map((p) => (
+                  <li key={p.id}>
+                    <Link
+                      href={`/profiles/${p.id}`}
+                      className="card card-hover flex items-center gap-3 px-4 py-2.5 text-sm"
+                    >
+                      <span className="min-w-0 flex-1 truncate font-medium text-zinc-200">
+                        {p.name}
                       </span>
-                    )}
-                    <span className="shrink-0 text-xs text-zinc-500">
-                      v{p.version}
-                    </span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
+                      {p.is_default && (
+                        <span className="badge-info shrink-0">
+                          <IconStar size={10} />
+                          por defecto
+                        </span>
+                      )}
+                      <span className="shrink-0 text-xs text-zinc-500">
+                        v{p.version}
+                      </span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
         ))
       )}

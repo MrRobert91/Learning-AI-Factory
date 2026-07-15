@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 
+from factory_api.artifact_versions import add_artifact_version, selected_artifact
 from factory_api.config import get_settings
 from factory_api.db import SessionLocal
 from factory_api.models import Artifact, Job, JobEvent
@@ -79,9 +80,9 @@ class JobRunner:
             if isinstance(result, dict) and result.get("__waiting__"):
                 self._set_waiting(job_id)
             else:
-                self._finish(job_id, result=result)
                 if kind in MEMORY_KINDS:
                     consolidate_memory(job_id)
+                self._finish(job_id, result=result)
         except Exception as exc:
             logger.exception("Job %s failed", job_id)
             self._finish(job_id, error=str(exc))
@@ -207,15 +208,15 @@ def _save_artifact(
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     abs_path.write_text(content, encoding="utf-8")
     with SessionLocal() as db:
-        artifact = Artifact(
+        artifact = add_artifact_version(
+            db,
             project_id=project_id,
-            type=type_,
-            format=format_,
+            type_=type_,
+            format_=format_,
             title=title,
             path=rel_path,
             created_by_job_id=job_id,
         )
-        db.add(artifact)
         db.commit()
         return artifact.id
 
@@ -224,12 +225,7 @@ def _latest_artifact_content(project_id: str, type_: str) -> tuple[str | None, s
     """Return (artifact_id, content) of the newest artifact of a type."""
     settings = get_settings()
     with SessionLocal() as db:
-        artifact = db.scalars(
-            select(Artifact)
-            .where(Artifact.project_id == project_id, Artifact.type == type_)
-            .order_by(Artifact.created_at.desc())
-            .limit(1)
-        ).first()
+        artifact = selected_artifact(db, project_id, type_)
         if artifact is None:
             return None, None
         path = settings.data_dir / artifact.path
@@ -241,6 +237,25 @@ def _require_artifact(project_id: str, type_: str, hint: str) -> str:
     if not content:
         raise RuntimeError(f"Falta el artefacto '{type_}': {hint}")
     return content
+
+
+def _deactivate_unproduced(
+    project_id: str, type_: str, keep_ids: list[str]
+) -> None:
+    """Replace a generated collection, hiding families absent from the new run."""
+    keep = set(keep_ids)
+    with SessionLocal() as db:
+        selected = db.scalars(
+            select(Artifact).where(
+                Artifact.project_id == project_id,
+                Artifact.type == type_,
+                Artifact.is_selected.is_(True),
+            )
+        ).all()
+        for artifact in selected:
+            if artifact.id not in keep:
+                artifact.is_selected = False
+        db.commit()
 
 
 def run_curator_job(job_id: str, payload: dict) -> dict:
@@ -353,6 +368,7 @@ def run_lessons_job(job_id: str, payload: dict) -> dict:
         artifact_ids.append(artifact_id)
         append_event(job_id, "artifact", f"Lección {label} lista", {"artifact_id": artifact_id})
 
+    _deactivate_unproduced(payload["project_id"], "lesson_content", artifact_ids)
     return {"artifact_ids": artifact_ids}
 
 
@@ -374,6 +390,7 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
             .where(
                 Artifact.project_id == payload["project_id"],
                 Artifact.type == "lesson_content",
+                Artifact.is_selected.is_(True),
             )
             .order_by(Artifact.created_at)
         ).all()
@@ -421,6 +438,7 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
             {"artifact_id": artifact_id},
         )
 
+    _deactivate_unproduced(payload["project_id"], "slide_deck", artifact_ids)
     return {"artifact_ids": artifact_ids}
 
 
@@ -457,15 +475,15 @@ def _register_artifact_file(
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(src_path, dst)
     with SessionLocal() as db:
-        artifact = Artifact(
+        artifact = add_artifact_version(
+            db,
             project_id=project_id,
-            type=type_,
-            format=format_,
+            type_=type_,
+            format_=format_,
             title=title,
             path=rel_path,
             created_by_job_id=job_id,
         )
-        db.add(artifact)
         db.commit()
         return artifact.id
 
@@ -487,14 +505,18 @@ def _latest_by_base(project_id: str, type_: str) -> dict[str, "Artifact"]:
     with SessionLocal() as db:
         artifacts = db.scalars(
             select(Artifact)
-            .where(Artifact.project_id == project_id, Artifact.type == type_)
+            .where(
+                Artifact.project_id == project_id,
+                Artifact.type == type_,
+                Artifact.is_selected.is_(True),
+            )
             .order_by(Artifact.created_at)
         ).all()
         db.expunge_all()
     result: dict[str, Artifact] = {}
     for artifact in artifacts:
         base = artifact.title.removeprefix(prefix)
-        result[base] = artifact  # later (newer) wins
+        result[base] = artifact
     return result
 
 
@@ -533,6 +555,7 @@ def run_script_job(job_id: str, payload: dict) -> dict:
         )
         artifact_ids.append(artifact_id)
         append_event(job_id, "artifact", f"Guion de {base} listo", {"artifact_id": artifact_id})
+    _deactivate_unproduced(payload["project_id"], "teaching_script", artifact_ids)
     return {"artifact_ids": artifact_ids}
 
 
@@ -574,6 +597,7 @@ def run_voice_job(job_id: str, payload: dict) -> dict:
             f"Guion de voz de {base} listo ({len(voice_script.segments)} segmentos)",
             {"artifact_id": artifact_id},
         )
+    _deactivate_unproduced(payload["project_id"], "voice_script", artifact_ids)
     return {"artifact_ids": artifact_ids}
 
 
@@ -602,6 +626,7 @@ def run_video_job(job_id: str, payload: dict) -> dict:
     workdir_root = settings.data_dir / "runs" / job_id
 
     video_ids: list[str] = []
+    subtitle_ids: list[str] = []
     for base, voice_artifact in voices.items():
         deck = decks.get(base)
         if deck is None:
@@ -643,6 +668,7 @@ def run_video_job(job_id: str, payload: dict) -> dict:
             format_="text",
         )
         video_ids.append(video_id)
+        subtitle_ids.append(srt_id)
         duration = sum(d for _t, d in srt_segments)
         append_event(
             job_id,
@@ -650,6 +676,8 @@ def run_video_job(job_id: str, payload: dict) -> dict:
             f"Vídeo de {base} listo ({duration / 60:.1f} min)",
             {"artifact_id": video_id, "subtitles_id": srt_id},
         )
+    _deactivate_unproduced(payload["project_id"], "video", video_ids)
+    _deactivate_unproduced(payload["project_id"], "subtitles", subtitle_ids)
     return {"artifact_ids": video_ids}
 
 
@@ -788,6 +816,7 @@ def run_publisher_job(job_id: str, payload: dict) -> dict:
     language = payload.get("project", {}).get("language", "es")
 
     artifact_ids: list[str] = []
+    thumbnail_ids: list[str] = []
     for base, _video in videos.items():
         append_event(job_id, "stage", f"Preparando publicación de {base}…")
         srt_artifact = subtitles.get(base)
@@ -835,6 +864,7 @@ def run_publisher_job(job_id: str, payload: dict) -> dict:
             thumb_id = _register_artifact_file(
                 job_id, payload["project_id"], "thumbnail", f"Miniatura — {base}", thumb, "image"
             )
+            thumbnail_ids.append(thumb_id)
             append_event(
                 job_id, "artifact", f"Miniatura de {base} lista", {"artifact_id": thumb_id}
             )
@@ -848,6 +878,8 @@ def run_publisher_job(job_id: str, payload: dict) -> dict:
             f"Paquete de publicación de {base} listo",
             {"artifact_id": package_id},
         )
+    _deactivate_unproduced(payload["project_id"], "publication_package", artifact_ids)
+    _deactivate_unproduced(payload["project_id"], "thumbnail", thumbnail_ids)
     return {"artifact_ids": artifact_ids}
 
 
@@ -940,7 +972,7 @@ def evaluate_stage(job_id: str, agent: str, result: dict | None) -> tuple[str, s
         job_id,
         "evaluation",
         f"{icon} Evaluación de {agent}: {evaluation.verdict} (nota {evaluation.score}/10)"
-        + (f" — {evaluation.feedback[:300]}" if evaluation.feedback else ""),
+        + (f" — {evaluation.feedback}" if evaluation.feedback else ""),
         {"agent": agent, "verdict": evaluation.verdict, "score": evaluation.score},
     )
     return evaluation.verdict, evaluation.feedback

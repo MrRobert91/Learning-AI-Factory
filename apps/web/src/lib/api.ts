@@ -57,7 +57,7 @@ export interface IdeationMessage {
   id: string;
   seq: number;
   role: "user" | "assistant";
-  kind: "text" | "question" | "answer" | "search" | "brief";
+  kind: "text" | "question" | "answer" | "search" | "brief" | "progress";
   content: string;
   payload: { options?: IdeationOption[]; query?: string } | Record<
     string,
@@ -65,6 +65,14 @@ export interface IdeationMessage {
   > | null;
   created_at: string;
 }
+
+export type IdeationProgress = IdeationMessage & {
+  kind: "progress";
+  payload: ({
+    phase?: "stage" | "tool_call" | "tool_result" | "review";
+    tool?: string;
+  } & Record<string, unknown>) | null;
+};
 
 export interface CourseIdeaBrief {
   working_title: string;
@@ -99,7 +107,7 @@ export interface AgentSpec {
   name: string;
   display_name: string;
   description: string;
-  kind: "task" | "conversational";
+  kind: "task" | "conversational" | "automatic";
   tool_names: string[];
   consumes: string[];
   produces: string[];
@@ -130,7 +138,12 @@ export interface JobEvent {
   seq: number;
   type: string;
   summary: string;
-  data: { tool?: string; artifact_id?: string } | null;
+  data: {
+    tool?: string;
+    artifact_id?: string;
+    agent?: string;
+    step?: number;
+  } | null;
   created_at: string;
 }
 
@@ -191,10 +204,68 @@ export interface Artifact {
   type: string;
   format: string;
   title: string;
+  logical_key: string;
+  version: number;
+  is_selected: boolean;
   created_by_job_id: string | null;
   created_at: string;
   content: string | null;
   renders: string[];
+  versions: {
+    id: string;
+    version: number;
+    is_selected: boolean;
+    created_at: string;
+  }[];
+}
+
+async function streamIdeation(
+  path: string,
+  body: Record<string, string>,
+  onProgress: (event: IdeationProgress) => void,
+): Promise<IdeationSession> {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok || !response.body) {
+    const payload = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new ApiError(response.status, payload.detail ?? response.statusText);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result: IdeationSession | null = null;
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done }).replace(/\r\n/g, "\n");
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary >= 0) {
+      const block = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      const event = block
+        .split("\n")
+        .find((line) => line.startsWith("event: "))
+        ?.slice(7);
+      const data = block
+        .split("\n")
+        .filter((line) => line.startsWith("data: "))
+        .map((line) => line.slice(6))
+        .join("\n");
+      if (data) {
+        const payload = JSON.parse(data);
+        if (event === "progress") onProgress(payload as IdeationProgress);
+        if (event === "result") result = payload as IdeationSession;
+        if (event === "error") throw new ApiError(502, payload.detail ?? "Error de ideación");
+      }
+      boundary = buffer.indexOf("\n\n");
+    }
+    if (done) break;
+  }
+  if (!result) throw new ApiError(502, "La sesión terminó sin respuesta");
+  return result;
 }
 
 export const api = {
@@ -223,6 +294,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ idea }),
     }),
+  createIdeationStream: (
+    idea: string,
+    onProgress: (event: IdeationProgress) => void,
+  ) => streamIdeation("/api/ideation/stream", { idea }, onProgress),
   listIdeations: () => request<IdeationSessionSummary[]>("/api/ideation"),
   getIdeation: (id: string) => request<IdeationSession>(`/api/ideation/${id}`),
   sendIdeationMessage: (id: string, content: string) =>
@@ -230,6 +305,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ content }),
     }),
+  sendIdeationMessageStream: (
+    id: string,
+    content: string,
+    onProgress: (event: IdeationProgress) => void,
+  ) => streamIdeation(`/api/ideation/${id}/messages/stream`, { content }, onProgress),
   finalizeIdeation: (id: string) =>
     request<Project>(`/api/ideation/${id}/finalize`, { method: "POST" }),
   deleteIdeation: (id: string) =>
@@ -291,6 +371,10 @@ export const api = {
   listProjectArtifacts: (projectId: string) =>
     request<Artifact[]>(`/api/projects/${projectId}/artifacts`),
   getArtifact: (id: string) => request<Artifact>(`/api/artifacts/${id}`),
+  selectArtifact: (id: string) =>
+    request<Artifact>(`/api/artifacts/${id}/select`, { method: "POST" }),
+  deleteArtifact: (id: string) =>
+    request<void>(`/api/artifacts/${id}`, { method: "DELETE" }),
   listWorkflows: () => request<Workflow[]>("/api/workflows"),
   getWorkflow: (id: string) => request<Workflow>(`/api/workflows/${id}`),
   createWorkflow: (input: {

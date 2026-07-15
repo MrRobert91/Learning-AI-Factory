@@ -65,9 +65,11 @@ def test_script_and_voice_chain(auth_client, monkeypatch):
 def test_script_requires_slides(auth_client, monkeypatch):
     _patch_media(monkeypatch)
     project = _create_project(auth_client)
-    job = _run(auth_client, project["id"], "script")
-    assert job["status"] == "failed"
-    assert "slide_deck" in job["error"]
+    response = auth_client.post(
+        f"/api/projects/{project['id']}/agent-runs", json={"agent": "script"}
+    )
+    assert response.status_code == 409
+    assert "slide_deck" in response.json()["detail"]
 
 
 def test_video_job_with_mocked_media_tools(auth_client, monkeypatch, tmp_path):
@@ -131,6 +133,8 @@ def test_video_job_with_mocked_media_tools(auth_client, monkeypatch, tmp_path):
 def test_video_requires_voice_script(auth_client, monkeypatch):
     _patch_media(monkeypatch)
     project = _create_project(auth_client)
-    job = _run(auth_client, project["id"], "video")
-    assert job["status"] == "failed"
-    assert "voice_script" in job["error"]
+    response = auth_client.post(
+        f"/api/projects/{project['id']}/agent-runs", json={"agent": "video"}
+    )
+    assert response.status_code == 409
+    assert "voice_script" in response.json()["detail"]

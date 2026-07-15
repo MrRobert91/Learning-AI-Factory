@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { api, type AgentProfile, type ProfileVersion } from "@/lib/api";
 import {
+  ConfirmDialog,
   ErrorBanner,
   IconChevronLeft,
   IconStar,
@@ -24,6 +25,8 @@ export default function ProfileEditorPage() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   async function load() {
     const p = await api.getProfile(id);
@@ -90,7 +93,7 @@ export default function ProfileEditorPage() {
   }
 
   async function remove() {
-    if (!confirm("¿Eliminar este perfil?")) return;
+    setDeleting(true);
     await api.deleteProfile(id);
     router.push("/profiles");
   }
@@ -116,7 +119,7 @@ export default function ProfileEditorPage() {
                 <IconStar size={13} />
                 Hacer por defecto
               </button>
-              <button onClick={remove} className="btn-danger btn-sm">
+              <button onClick={() => setConfirmDelete(true)} className="btn-danger btn-sm">
                 Eliminar
               </button>
             </>
@@ -230,6 +233,14 @@ export default function ProfileEditorPage() {
           ))}
         </ul>
       </section>
+      <ConfirmDialog
+        open={confirmDelete}
+        title="Eliminar perfil"
+        description={`Se eliminará el perfil «${profile.name}» y su historial de versiones.`}
+        busy={deleting}
+        onCancel={() => setConfirmDelete(false)}
+        onConfirm={remove}
+      />
     </div>
   );
 }

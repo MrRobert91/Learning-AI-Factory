@@ -101,9 +101,11 @@ def test_publisher_requires_video(auth_client, monkeypatch):
     from test_runs import _create_project
 
     project = _create_project(auth_client)
-    job = _run(auth_client, project["id"], "publisher")
-    assert job["status"] == "failed"
-    assert "video" in job["error"]
+    response = auth_client.post(
+        f"/api/projects/{project['id']}/agent-runs", json={"agent": "publisher"}
+    )
+    assert response.status_code == 409
+    assert "video" in response.json()["detail"]
 
 
 def test_youtube_status_and_publish_guardrails(auth_client, monkeypatch):

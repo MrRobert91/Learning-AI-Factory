@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from factory_api.auth import CurrentUser
 from factory_api.db import get_db
-from factory_api.models import Job, Project, Workflow
+from factory_api.models import Artifact, Job, Project, Workflow
 from factory_api.routers.agents import get_default_profile
 from factory_api.routers.runs import _base_payload, _job_read, _profile_fields
 from factory_api.runner import append_event, runner
@@ -19,7 +19,7 @@ from factory_api.schemas import (
     WorkflowRunCreate,
     WorkflowUpdate,
 )
-from factory_api.workflow_engine import validate_definition
+from factory_api.workflow_engine import missing_workflow_inputs, validate_definition
 
 router = APIRouter(prefix="/api", tags=["workflows"])
 
@@ -209,6 +209,20 @@ def create_workflow_run(
         raise HTTPException(status_code=404, detail="Workflow no encontrado")
 
     definition = json.loads(workflow.definition_json)
+    available = set(
+        db.scalars(
+            select(Artifact.type).where(
+                Artifact.project_id == project_id,
+                Artifact.is_selected.is_(True),
+            )
+        ).all()
+    )
+    missing = missing_workflow_inputs(definition, available)
+    if missing:
+        raise HTTPException(
+            status_code=409,
+            detail="El workflow requiere artefactos previos: " + ", ".join(missing),
+        )
     # Freeze per-step profile content into the definition so the run is
     # reproducible even if profiles change later.
     from factory_api.models import AgentProfile

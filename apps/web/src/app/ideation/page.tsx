@@ -3,7 +3,11 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { api, type IdeationSessionSummary } from "@/lib/api";
+import {
+  api,
+  type IdeationProgress,
+  type IdeationSessionSummary,
+} from "@/lib/api";
 import {
   EmptyState,
   ErrorBanner,
@@ -34,6 +38,7 @@ export default function IdeationListPage() {
   const [idea, setIdea] = useState("");
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<IdeationProgress[]>([]);
 
   useEffect(() => {
     api.listIdeations().then(setSessions).catch(() => {});
@@ -43,8 +48,11 @@ export default function IdeationListPage() {
     e.preventDefault();
     setError(null);
     setStarting(true);
+    setProgress([]);
     try {
-      const session = await api.createIdeation(idea);
+      const session = await api.createIdeationStream(idea, (event) =>
+        setProgress((previous) => [...previous, event]),
+      );
       router.push(`/ideation/${session.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo crear la sesión");
@@ -85,6 +93,19 @@ export default function IdeationListPage() {
           )}
           {starting ? "Pensando…" : "Empezar a idear"}
         </button>
+        {starting && progress.length > 0 && (
+          <div className="mt-4 space-y-1.5 border-t border-white/[0.06] pt-4">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+              Actividad del agente
+            </p>
+            {progress.map((event) => (
+              <p key={event.id} className="flex gap-2 text-xs leading-relaxed text-zinc-400">
+                <IconSparkles size={12} className="mt-0.5 shrink-0 text-indigo-300" />
+                {event.content}
+              </p>
+            ))}
+          </div>
+        )}
       </form>
 
       <h2 className="mb-3 text-base font-semibold tracking-tight text-zinc-100">
