@@ -47,6 +47,23 @@ def test_workflow_crud_and_validation(auth_client):
         "/api/workflows", json={"name": "Malo", "steps": [{"agent": "nope"}]}
     )
     assert resp.status_code == 422
+    resp = auth_client.post(
+        "/api/workflows",
+        json={"name": "Inicio invalido", "steps": [{"agent": "voice"}]},
+    )
+    assert resp.status_code == 422
+    assert "empezar por Curador" in resp.json()["detail"]
+
+    resp = auth_client.post(
+        "/api/workflows",
+        json={
+            "name": "Salto invalido",
+            "steps": [{"agent": "curator"}, {"agent": "voice"}],
+        },
+    )
+    assert resp.status_code == 422
+    assert "teaching_script" in resp.json()["detail"]
+
 
     template_id = _template_id(auth_client, "Investigación y plan")
     assert auth_client.patch(
