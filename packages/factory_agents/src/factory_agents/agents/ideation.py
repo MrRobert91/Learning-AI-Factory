@@ -54,6 +54,9 @@ a decidir. Eres un interlocutor con criterio, no un formulario.
 concretas y bien diferenciadas (la interfaz las muestra como tarjetas clicables y \
 el usuario siempre puede responder texto libre). Haz UNA pregunta por turno, la más \
 valiosa en ese momento. No preguntes lo que ya se ha dicho.
+- Mientras se construye el brief, cada turno debe terminar usando
+`ask_user_question` con varias opciones clicables. La \u00fanica excepci\u00f3n es el turno
+en el que llamas a `propose_brief`: ah\u00ed no hagas una pregunta adicional.
 - Cubre progresivamente: audiencia y conocimientos previos, nivel, objetivos de \
 aprendizaje, alcance, ángulo diferencial, idioma, estilo y formato de salida \
 (vídeo completo, solo diapositivas, o guion docente).
@@ -235,6 +238,7 @@ def run_ideation_turn(
             messages=messages,
             tools=TOOLS,
             temperature=0.7,
+            tool_choice="required",
         )
         msg = response.choices[0].message
 
@@ -242,7 +246,7 @@ def run_ideation_turn(
             events.append(AgentEvent(kind="text", content=msg.content))
 
         if not msg.tool_calls:
-            return events
+            break
 
         # Keep the native tool protocol within the live turn.
         messages.append(
@@ -359,11 +363,27 @@ def run_ideation_turn(
                 )
 
     # Tool-round budget exhausted: make sure the user gets something.
-    if not events:
+    if not any(event.kind in ("question", "brief") for event in events):
         events.append(
             AgentEvent(
-                kind="text",
+                kind="question",
                 content="No he podido completar el paso. ¿Puedes reformular o darme más detalle?",
+                payload={
+                    "options": [
+                        {
+                            "label": "Afinar la audiencia",
+                            "description": "Concretar para qui\u00e9n es el curso",
+                        },
+                        {
+                            "label": "Definir los objetivos",
+                            "description": "Decidir qu\u00e9 aprender\u00e1 el alumnado",
+                        },
+                        {
+                            "label": "Explorar el formato",
+                            "description": "Elegir v\u00eddeo, slides o guion",
+                        },
+                    ]
+                },
             )
         )
     return events

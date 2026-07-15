@@ -43,30 +43,30 @@ function StepNode({ data }: NodeProps) {
         ? "border-indigo-500/70"
         : d.status === "failed"
           ? "border-red-500/60"
-          : "border-white/[0.14]";
+          : "border-zinc-300";
   return (
     <div
-      className={`min-w-40 rounded-xl border-2 ${border} bg-[#12141c] px-4 py-3 text-sm text-zinc-100 shadow-[0_4px_16px_rgba(0,0,0,0.4)] transition-shadow`}
+      className={`min-w-48 rounded-md border-2 ${border} bg-[#fbf6ea] px-4 py-3 text-sm text-[#241d18] shadow-[3px_3px_0_rgba(36,29,24,0.85)] transition-shadow`}
     >
       <Handle type="target" position={Position.Left} className="!bg-zinc-500" />
       <div className="flex items-center gap-2">
-        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white/[0.07] text-[10px] font-semibold text-zinc-400">
+        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#ece2d0] text-[10px] font-semibold text-zinc-700">
           {d.index + 1}
         </span>
         <span className="font-medium">{d.label}</span>
       </div>
       {d.evaluate && (
-        <div className="mt-1.5 text-[11px] font-medium text-violet-300">
+        <div className="mt-1.5 text-[11px] font-medium text-indigo-600">
           Evaluación automática
         </div>
       )}
       {d.approval && (
-        <div className="mt-1 text-[11px] font-medium text-amber-300">
+        <div className="mt-1 text-[11px] font-medium text-amber-700">
           Aprobación humana
         </div>
       )}
       {d.status && d.status !== "pending" && (
-        <div className="mt-1 text-[11px] text-zinc-400">{d.status}</div>
+        <div className="mt-1 text-[11px] text-zinc-600">{d.status}</div>
       )}
       <Handle type="source" position={Position.Right} className="!bg-zinc-500" />
     </div>
@@ -108,13 +108,13 @@ export default function WorkflowCanvas({
       source: String(i),
       target: String(i + 1),
       animated: statuses?.[i + 1] === "running",
-      style: { stroke: "rgba(255,255,255,0.25)" },
+      style: { stroke: "rgba(36,29,24,0.38)", strokeWidth: 2 },
     }));
     return { nodes, edges };
   }, [steps, selectedIndex, statuses]);
 
   return (
-    <div className="card h-52 w-full overflow-hidden">
+    <div className="card h-[min(68vh,720px)] min-h-[480px] w-full overflow-hidden">
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -125,12 +125,12 @@ export default function WorkflowCanvas({
         nodesConnectable={false}
         elementsSelectable={Boolean(onSelect)}
         panOnDrag
-        zoomOnScroll={false}
+        zoomOnScroll
         preventScrolling={false}
-        colorMode="dark"
+        colorMode="light"
         style={{ background: "transparent" }}
       >
-        <Background gap={18} color="rgba(255,255,255,0.06)" />
+        <Background gap={22} color="rgba(36,29,24,0.12)" />
       </ReactFlow>
     </div>
   );

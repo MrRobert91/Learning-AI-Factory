@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type WikiPage } from "@/lib/api";
 import { ConfirmDialog, IconBook, IconPlus } from "@/components/ui";
+import Markdown from "@/components/Markdown";
 
 export default function WikiPanel({ projectId }: { projectId: string }) {
   const [pages, setPages] = useState<WikiPage[]>([]);
@@ -111,9 +112,11 @@ export default function WikiPanel({ projectId }: { projectId: string }) {
                 </button>
               </div>
             ) : (
-              <pre className="mt-2 whitespace-pre-wrap font-sans text-sm leading-relaxed text-zinc-400">
+              <article className="notebook-sheet mt-3 rounded-md border border-zinc-300 p-4">
+                <Markdown>
                 {page.content_md || "(vacía)"}
-              </pre>
+                </Markdown>
+              </article>
             )}
           </li>
         ))}

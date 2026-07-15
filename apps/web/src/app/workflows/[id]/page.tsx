@@ -17,17 +17,12 @@ import {
   IconPlus,
   LoadingScreen,
 } from "@/components/ui";
+import {
+  unavailableReason,
+  validateWorkflowSteps,
+  WORKFLOW_AGENTS,
+} from "@/lib/workflowRules";
 
-const AGENTS = [
-  "curator",
-  "planner",
-  "lessons",
-  "slides",
-  "script",
-  "voice",
-  "video",
-  "publisher",
-];
 const PROFILE_AGENTS = [
   "curator",
   "planner",
@@ -90,19 +85,33 @@ export default function WorkflowEditorPage() {
     );
   }
 
+  function reorderedSteps(index: number, delta: number): WorkflowStep[] | null {
+    const target = index + delta;
+    if (target < 0 || target >= steps.length) return null;
+    const next = [...steps];
+    [next[index], next[target]] = [next[target], next[index]];
+    return next;
+  }
+
   function moveStep(index: number, delta: number) {
-    const j = index + delta;
-    if (j < 0 || j >= steps.length) return;
-    setSteps((prev) => {
-      const next = [...prev];
-      [next[index], next[j]] = [next[j], next[index]];
-      return next;
-    });
-    setSelected(j);
+    const next = reorderedSteps(index, delta);
+    if (!next || validateWorkflowSteps(next).length > 0) return;
+    setSteps(next);
+    setSelected(index + delta);
+  }
+
+  function canMoveStep(index: number, delta: number): boolean {
+    const next = reorderedSteps(index, delta);
+    return next !== null && validateWorkflowSteps(next).length === 0;
   }
 
   async function save() {
     setError(null);
+    const problems = validateWorkflowSteps(steps);
+    if (problems.length > 0) {
+      setError(problems[0]);
+      return;
+    }
     try {
       const updated = await api.updateWorkflow(id, { name, description, steps });
       setWorkflow(updated);
@@ -140,8 +149,9 @@ export default function WorkflowEditorPage() {
 
   const step = selected !== null ? steps[selected] : null;
 
+  const workflowProblems = validateWorkflowSteps(steps);
   return (
-    <div className="mx-auto max-w-4xl px-6 py-8">
+    <div className="mx-auto max-w-[1600px] px-6 py-8">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <Link
           href="/workflows"
@@ -155,7 +165,12 @@ export default function WorkflowEditorPage() {
             <span className="badge-warning">Cambios sin guardar</span>
           )}
           {saved && <span className="badge-success">Guardado ✓</span>}
-          <button onClick={duplicate} className="btn-secondary btn-sm">
+          <button
+            onClick={duplicate}
+            disabled={workflowProblems.length > 0}
+            title={workflowProblems[0]}
+            className="btn-secondary btn-sm"
+          >
             Duplicar
           </button>
           {!readOnly && (
@@ -163,7 +178,11 @@ export default function WorkflowEditorPage() {
               <button onClick={() => setConfirmDelete(true)} className="btn-danger btn-sm">
                 Eliminar
               </button>
-              <button onClick={save} disabled={!dirty} className="btn-primary btn-sm">
+              <button
+                onClick={save}
+                disabled={!dirty || workflowProblems.length > 0}
+                className="btn-primary btn-sm"
+              >
                 Guardar
               </button>
             </>
@@ -191,29 +210,73 @@ export default function WorkflowEditorPage() {
         className="mb-6 w-full rounded-lg border border-transparent bg-transparent text-sm text-zinc-400 outline-none placeholder:text-zinc-600 focus:border-white/[0.15]"
       />
 
+      <section className="card mb-4 grid gap-3 p-4 md:grid-cols-[auto_1fr]">
+        <span className="flex h-8 w-8 items-center justify-center rounded-md border-2 border-zinc-300 bg-[#f4ead7] text-sm font-bold text-indigo-500">
+          ?
+        </span>
+        <div>
+          <h2 className="text-sm font-semibold text-zinc-100">
+            C&oacute;mo construir el workflow
+          </h2>
+          <p className="mt-1 text-sm leading-relaxed text-zinc-400">
+            Empieza por Curador y a&ntilde;ade agentes desde la gu&iacute;a inferior. Solo se
+            puede elegir un agente cuando los pasos anteriores ya producen todos
+            los materiales que necesita. Haz clic en un nodo para configurar su
+            perfil, evaluaci&oacute;n o pausa de aprobaci&oacute;n.
+          </p>
+        </div>
+      </section>
       <WorkflowCanvas
         steps={steps}
         selectedIndex={selected}
         onSelect={(i) => setSelected(i)}
       />
-      <ErrorBanner>{error}</ErrorBanner>
+      <ErrorBanner>{error ?? (!readOnly ? workflowProblems[0] : null)}</ErrorBanner>
 
       {!readOnly && (
-        <div className="mt-4 flex flex-wrap gap-2">
-          {AGENTS.map((a) => (
-            <button
-              key={a}
-              onClick={() => {
-                setSteps((prev) => [...prev, { agent: a }]);
-                setSelected(steps.length);
-              }}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-white/[0.15] px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:border-indigo-400/60 hover:bg-indigo-500/[0.06] hover:text-indigo-200"
-            >
-              <IconPlus size={12} />
-              {AGENT_NAMES[a]}
-            </button>
-          ))}
-        </div>
+        <section className="card mt-4 p-4">
+          <div className="mb-3">
+            <h2 className="text-sm font-semibold text-zinc-100">
+              A&ntilde;adir el siguiente agente
+            </h2>
+            <p className="mt-1 text-xs text-zinc-500">
+              Los agentes en gris todav&iacute;a no son compatibles. Pasa el cursor
+              sobre ellos para ver qu&eacute; material necesitan.
+            </p>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            {WORKFLOW_AGENTS.map((agent) => {
+              const reason = unavailableReason(agent, steps);
+              const available = reason === null;
+              return (
+                <button
+                  key={agent}
+                  disabled={!available}
+                  title={reason ?? `A\u00f1adir ${AGENT_NAMES[agent]}`}
+                  onClick={() => {
+                    setSteps((prev) => [...prev, { agent }]);
+                    setSelected(steps.length);
+                  }}
+                  className={
+                    available
+                      ? "flex min-h-20 items-start gap-2 rounded-md border-2 border-indigo-400 bg-[#f8eee0] p-3 text-left transition-colors hover:bg-[#f1dfca]"
+                      : "flex min-h-20 cursor-not-allowed items-start gap-2 rounded-md border-2 border-zinc-300 bg-zinc-500/10 p-3 text-left opacity-55"
+                  }
+                >
+                  <IconPlus size={14} className="mt-0.5 shrink-0" />
+                  <span className="min-w-0">
+                    <span className="block text-xs font-bold text-[#241d18]">
+                      {AGENT_NAMES[agent]}
+                    </span>
+                    <span className="mt-1 block text-[11px] leading-snug text-zinc-700">
+                      {reason ?? "Disponible como siguiente paso"}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
       )}
 
       {step ? (
@@ -226,23 +289,24 @@ export default function WorkflowEditorPage() {
               <div className="flex gap-2">
                 <button
                   onClick={() => moveStep(selected!, -1)}
-                  disabled={selected === 0}
+                  disabled={!canMoveStep(selected!, -1)}
                   className="btn-secondary btn-sm"
                 >
                   ← Mover
                 </button>
                 <button
                   onClick={() => moveStep(selected!, 1)}
-                  disabled={selected === steps.length - 1}
+                  disabled={!canMoveStep(selected!, 1)}
                   className="btn-secondary btn-sm"
                 >
                   Mover →
                 </button>
                 <button
                   onClick={() => {
-                    setSteps((prev) => prev.filter((_s, i) => i !== selected));
-                    setSelected(null);
+                    setSteps((prev) => prev.slice(0, -1));
+                    setSelected(steps.length > 1 ? steps.length - 2 : null);
                   }}
+                  disabled={selected !== steps.length - 1}
                   className="btn-danger btn-sm"
                 >
                   Quitar

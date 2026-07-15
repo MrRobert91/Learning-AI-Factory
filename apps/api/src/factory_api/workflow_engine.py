@@ -28,7 +28,6 @@ VALID_AGENTS = (
     "video",
     "publisher",
 )
-
 AGENT_INPUTS: dict[str, tuple[str, ...]] = {
     "curator": (),
     "planner": ("research_brief",),
@@ -90,10 +89,25 @@ def validate_definition(definition: dict) -> list[str]:
     steps = definition.get("steps")
     if not isinstance(steps, list) or not steps:
         return ["El workflow debe tener al menos un paso"]
+    available = {"course_idea_brief"}
+    seen: set[str] = set()
     for i, step in enumerate(steps):
         agent = step.get("agent")
         if agent not in VALID_AGENTS:
             problems.append(f"Paso {i + 1}: agente inválido '{agent}'")
+            continue
+        if i == 0 and agent != "curator":
+            problems.append("Paso 1: el workflow debe empezar por Curador")
+        if agent in seen:
+            problems.append(f"Paso {i + 1}: el agente '{agent}' ya est\u00e1 incluido")
+        missing = set(AGENT_INPUTS[agent]) - available
+        if missing:
+            names = ", ".join(sorted(missing))
+            problems.append(
+                f"Paso {i + 1}: '{agent}' necesita artefactos que a\u00fan no existen: {names}"
+            )
+        seen.add(agent)
+        available.update(AGENT_OUTPUTS[agent])
     return problems
 
 
