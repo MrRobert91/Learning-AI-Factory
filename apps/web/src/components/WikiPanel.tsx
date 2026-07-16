@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, type WikiPage } from "@/lib/api";
-import { IconBook, IconPlus } from "@/components/ui";
+import { ConfirmDialog, IconBook, IconPlus } from "@/components/ui";
 import Markdown from "@/components/Markdown";
 
 export default function WikiPanel({ projectId }: { projectId: string }) {
@@ -10,6 +10,8 @@ export default function WikiPanel({ projectId }: { projectId: string }) {
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [newSlug, setNewSlug] = useState("");
+  const [deletePage, setDeletePage] = useState<WikiPage | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(async () => {
     setPages(await api.listProjectWiki(projectId));
@@ -37,6 +39,15 @@ export default function WikiPanel({ projectId }: { projectId: string }) {
       content_md: "",
     });
     setNewSlug("");
+    await load();
+  }
+
+  async function removePage() {
+    if (!deletePage) return;
+    setDeleting(true);
+    await api.deleteWikiPage(projectId, deletePage.slug);
+    setDeletePage(null);
+    setDeleting(false);
     await load();
   }
 
@@ -78,12 +89,7 @@ export default function WikiPanel({ projectId }: { projectId: string }) {
                   {editing === page.slug ? "Cancelar" : "Editar"}
                 </button>
                 <button
-                  onClick={async () => {
-                    if (confirm(`¿Eliminar la página «${page.title}»?`)) {
-                      await api.deleteWikiPage(projectId, page.slug);
-                      await load();
-                    }
-                  }}
+                  onClick={() => setDeletePage(page)}
                   className="btn-danger btn-sm"
                 >
                   Eliminar
@@ -138,6 +144,14 @@ export default function WikiPanel({ projectId }: { projectId: string }) {
           Añadir
         </button>
       </form>
+      <ConfirmDialog
+        open={deletePage !== null}
+        title="Eliminar página de memoria"
+        description={deletePage ? `Se eliminará «${deletePage.title}».` : ""}
+        busy={deleting}
+        onCancel={() => setDeletePage(null)}
+        onConfirm={removePage}
+      />
     </section>
   );
 }

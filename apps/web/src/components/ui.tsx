@@ -199,6 +199,16 @@ export const IconDownload = (p: IconProps) => (
   </Icon>
 );
 
+export const IconTrash = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M3 6h18" />
+    <path d="M8 6V4h8v2" />
+    <path d="M19 6l-1 14H6L5 6" />
+    <path d="M10 11v5" />
+    <path d="M14 11v5" />
+  </Icon>
+);
+
 export const IconChevronLeft = (p: IconProps) => (
   <Icon {...p}>
     <path d="m15 18-6-6 6-6" />
@@ -363,6 +373,63 @@ export function ErrorBanner({ children }: { children: ReactNode }) {
     <div className="animate-in mb-4 flex items-start gap-2.5 rounded-xl border border-red-400/25 bg-red-500/[0.07] px-4 py-3 text-sm text-red-300">
       <IconAlert size={16} className="mt-0.5 shrink-0" />
       <span className="min-w-0 break-words">{children}</span>
+    </div>
+  );
+}
+
+export function ConfirmDialog({
+  open,
+  title,
+  description,
+  confirmLabel = "Eliminar",
+  busy = false,
+  onConfirm,
+  onCancel,
+}: {
+  open: boolean;
+  title: string;
+  description: string;
+  confirmLabel?: string;
+  busy?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  if (!open) return null;
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 px-4 backdrop-blur-sm"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !busy) onCancel();
+      }}
+    >
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="confirm-dialog-title"
+        aria-describedby="confirm-dialog-description"
+        className="card animate-in w-full max-w-md overflow-hidden border-red-400/25 shadow-2xl"
+      >
+        <div className="border-b border-red-400/15 bg-red-500/[0.07] px-5 py-4">
+          <h2 id="confirm-dialog-title" className="font-semibold text-zinc-50">
+            {title}
+          </h2>
+        </div>
+        <p
+          id="confirm-dialog-description"
+          className="px-5 py-4 text-sm leading-relaxed text-zinc-300"
+        >
+          {description}
+        </p>
+        <div className="flex justify-end gap-2 border-t border-white/[0.06] px-5 py-4">
+          <button disabled={busy} onClick={onCancel} className="btn-secondary">
+            Cancelar
+          </button>
+          <button disabled={busy} onClick={onConfirm} className="btn-danger">
+            {busy ? "Eliminando…" : confirmLabel}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

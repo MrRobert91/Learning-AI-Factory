@@ -136,6 +136,7 @@ def publish_video(body: YouTubePublishRequest, user: CurrentUser, db: DB):
             Artifact.project_id == package.project_id,
             Artifact.type == "video",
             Artifact.title == f"{PREFIXES['video']}{base}",
+            Artifact.is_selected.is_(True),
         )
         .order_by(Artifact.created_at.desc())
         .limit(1)

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api, type Job } from "@/lib/api";
-import { ErrorBanner, IconYoutube, Spinner } from "@/components/ui";
+import { ConfirmDialog, ErrorBanner, IconYoutube, Spinner } from "@/components/ui";
 
 export default function YouTubePublish({
   packageArtifactId,
@@ -17,6 +17,7 @@ export default function YouTubePublish({
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [publishing, setPublishing] = useState(false);
+  const [confirmPublish, setConfirmPublish] = useState(false);
 
   useEffect(() => {
     api.youtubeStatus().then(setStatus).catch(() => {});
@@ -32,13 +33,7 @@ export default function YouTubePublish({
   }
 
   async function publish() {
-    if (
-      !confirm(
-        `Vas a subir este vídeo a YouTube con privacidad «${privacy}». ¿Confirmas?`,
-      )
-    ) {
-      return;
-    }
+    setConfirmPublish(false);
     setPublishing(true);
     setError(null);
     try {
@@ -104,7 +99,7 @@ export default function YouTubePublish({
               <option value="public">Público</option>
             </select>
             <button
-              onClick={publish}
+              onClick={() => setConfirmPublish(true)}
               disabled={publishing}
               className="btn-danger"
             >
@@ -129,6 +124,14 @@ export default function YouTubePublish({
           La subida nunca es automática: siempre requiere esta confirmación.
         </p>
       </div>
+      <ConfirmDialog
+        open={confirmPublish}
+        title="Publicar en YouTube"
+        description={`Vas a subir este vídeo con privacidad «${privacy}». La publicación se realizará en tu canal conectado.`}
+        confirmLabel="Confirmar publicación"
+        onCancel={() => setConfirmPublish(false)}
+        onConfirm={publish}
+      />
     </div>
   );
 }

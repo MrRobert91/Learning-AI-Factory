@@ -28,27 +28,43 @@ VALID_AGENTS = (
     "video",
     "publisher",
 )
-AGENT_INPUTS = {
-    "curator": {"course_idea_brief"},
-    "planner": {"research_brief"},
-    "lessons": {"research_brief", "course_plan"},
-    "slides": {"lesson_content"},
-    "script": {"slide_deck"},
-    "voice": {"teaching_script"},
-    "video": {"slide_deck", "voice_script"},
-    "publisher": {"video", "subtitles", "teaching_script"},
+AGENT_INPUTS: dict[str, tuple[str, ...]] = {
+    "curator": (),
+    "planner": ("research_brief",),
+    "lessons": ("research_brief", "course_plan"),
+    "slides": ("course_plan", "lesson_content"),
+    "script": ("slide_deck",),
+    "voice": ("teaching_script",),
+    "video": ("voice_script", "slide_deck"),
+    "publisher": ("video",),
 }
 
-AGENT_OUTPUTS = {
-    "curator": {"research_brief"},
-    "planner": {"course_plan"},
-    "lessons": {"lesson_content"},
-    "slides": {"slide_deck"},
-    "script": {"teaching_script"},
-    "voice": {"voice_script"},
-    "video": {"video", "subtitles"},
-    "publisher": {"publication_package", "thumbnail"},
+AGENT_OUTPUTS: dict[str, tuple[str, ...]] = {
+    "curator": ("research_brief",),
+    "planner": ("course_plan",),
+    "lessons": ("lesson_content",),
+    "slides": ("slide_deck",),
+    "script": ("teaching_script",),
+    "voice": ("voice_script",),
+    "video": ("video", "subtitles"),
+    "publisher": ("publication_package", "thumbnail"),
 }
+
+
+def missing_agent_inputs(agent: str, available: set[str]) -> list[str]:
+    return [type_ for type_ in AGENT_INPUTS.get(agent, ()) if type_ not in available]
+
+
+def missing_workflow_inputs(definition: dict, available: set[str]) -> list[str]:
+    """Inputs a workflow cannot produce itself before they are needed."""
+    simulated = set(available)
+    missing: list[str] = []
+    for step in definition.get("steps", []):
+        for type_ in missing_agent_inputs(step.get("agent", ""), simulated):
+            if type_ not in missing:
+                missing.append(type_)
+        simulated.update(AGENT_OUTPUTS.get(step.get("agent", ""), ()))
+    return missing
 
 
 class WorkflowRejected(Exception):
@@ -84,7 +100,7 @@ def validate_definition(definition: dict) -> list[str]:
             problems.append("Paso 1: el workflow debe empezar por Curador")
         if agent in seen:
             problems.append(f"Paso {i + 1}: el agente '{agent}' ya est\u00e1 incluido")
-        missing = AGENT_INPUTS[agent] - available
+        missing = set(AGENT_INPUTS[agent]) - available
         if missing:
             names = ", ".join(sorted(missing))
             problems.append(
@@ -127,7 +143,10 @@ def build_workflow_graph(
         def make_agent_node(step=step, agent=agent, index=i):
             def node(state: WorkflowState) -> WorkflowState:
                 append_event(
-                    job_id, "stage", f"Paso {index + 1}: {agent} — iniciando"
+                    job_id,
+                    "stage",
+                    f"Paso {index + 1}: {agent} — iniciando",
+                    {"agent": agent, "step": index + 1},
                 )
                 stage_payload = {**state["payload"], **step.get("overrides", {})}
                 result = handlers[f"{agent}_run"](job_id, stage_payload)

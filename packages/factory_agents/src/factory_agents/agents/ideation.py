@@ -11,6 +11,7 @@ when the agent asks a question, proposes a brief, or answers with plain text.
 """
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -207,6 +208,7 @@ def run_ideation_turn(
     history: list[HistoryItem],
     soul_md: str = "",
     agents_md: str = "",
+    on_progress: Callable[[str, str, dict[str, Any]], None] | None = None,
 ) -> list[AgentEvent]:
     """Run one agent turn. Returns the events produced (to persist and render)."""
     system = compose_system_prompt(
@@ -218,7 +220,19 @@ def run_ideation_turn(
     messages += _render_history(history)
 
     events: list[AgentEvent] = []
-    for _ in range(MAX_TOOL_ROUNDS):
+    if on_progress:
+        on_progress(
+            "stage",
+            "Analizando la conversación y comprobando qué información falta.",
+            {},
+        )
+    for round_index in range(MAX_TOOL_ROUNDS):
+        if on_progress and round_index > 0:
+            on_progress(
+                "stage",
+                "Integrando el resultado de la herramienta y preparando el siguiente paso.",
+                {"round": round_index + 1},
+            )
         response = client.chat.completions.create(
             model=model,
             messages=messages,
@@ -260,6 +274,18 @@ def run_ideation_turn(
             except json.JSONDecodeError:
                 args = {}
 
+            if on_progress:
+                labels = {
+                    "ask_user_question": "Preparando la pregunta más útil para completar el brief.",
+                    "web_search": f"Consultando fuentes sobre: {args.get('query', '')}",
+                    "propose_brief": "Construyendo y validando el brief estructurado.",
+                }
+                on_progress(
+                    "tool_call",
+                    labels.get(name, f"Llamando a la herramienta {name}."),
+                    {"tool": name, "arguments": args},
+                )
+
             if name == "ask_user_question":
                 options = [o for o in args.get("options", []) if o.get("label")][:4]
                 events.append(
@@ -269,12 +295,26 @@ def run_ideation_turn(
                         payload={"options": options},
                     )
                 )
+                if on_progress:
+                    on_progress(
+                        "review",
+                        "Pregunta revisada: cubre una decisión pendiente "
+                        "y ofrece opciones concretas.",
+                        {"tool": name},
+                    )
                 return events
 
             if name == "propose_brief":
                 try:
                     brief = CourseIdeaBrief.model_validate(args)
                 except ValidationError as exc:
+                    if on_progress:
+                        on_progress(
+                            "review",
+                            "La primera propuesta no pasó la validación; "
+                            "corrigiendo su estructura.",
+                            {"tool": name},
+                        )
                     messages.append(
                         {
                             "role": "tool",
@@ -290,6 +330,12 @@ def run_ideation_turn(
                         payload=brief.model_dump(),
                     )
                 )
+                if on_progress:
+                    on_progress(
+                        "review",
+                        "Brief revisado y validado contra el contrato de datos del curso.",
+                        {"tool": name},
+                    )
                 return events
 
             if name == "web_search":
@@ -301,6 +347,12 @@ def run_ideation_turn(
                 messages.append(
                     {"role": "tool", "tool_call_id": tc.id, "content": formatted}
                 )
+                if on_progress:
+                    on_progress(
+                        "tool_result",
+                        "Búsqueda completada; contrastando los resultados con la idea del curso.",
+                        {"tool": name, "query": query},
+                    )
             else:
                 messages.append(
                     {

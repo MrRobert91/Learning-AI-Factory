@@ -1,7 +1,7 @@
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from factory_api.db import Base
@@ -252,6 +252,9 @@ class Artifact(Base):
     type: Mapped[str] = mapped_column(String(50), nullable=False)
     format: Mapped[str] = mapped_column(String(20), default="markdown", nullable=False)
     title: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    logical_key: Mapped[str] = mapped_column(String(320), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    is_selected: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     path: Mapped[str] = mapped_column(Text, nullable=False)  # relative to data_dir
     created_by_job_id: Mapped[str | None] = mapped_column(
         ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True

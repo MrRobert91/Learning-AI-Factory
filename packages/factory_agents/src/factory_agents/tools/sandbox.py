@@ -6,7 +6,7 @@ timeout and CPU/memory rlimits. It is NOT a security boundary against a
 hostile actor — it validates didactic snippets written by our own agents.
 """
 
-import resource
+import os
 import subprocess
 import sys
 import tempfile
@@ -15,6 +15,9 @@ TIMEOUT_SECONDS = 15
 MAX_OUTPUT_CHARS = 4000
 MEMORY_LIMIT_BYTES = 512 * 1024 * 1024
 CPU_SECONDS = 10
+
+if os.name != "nt":
+    import resource
 
 
 def _limits() -> None:
@@ -34,7 +37,7 @@ def run_python_snippet(code: str) -> str:
                 timeout=TIMEOUT_SECONDS,
                 cwd=tmp,
                 env={"PATH": "", "HOME": tmp},
-                preexec_fn=_limits,
+                preexec_fn=_limits if os.name != "nt" else None,
             )
         except subprocess.TimeoutExpired:
             return f"(el código superó el límite de {TIMEOUT_SECONDS}s y fue cancelado)"

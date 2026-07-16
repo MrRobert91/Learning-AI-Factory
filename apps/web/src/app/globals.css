@@ -102,6 +102,17 @@ body {
   box-shadow: 5px 5px 0 0 var(--shadow);
 }
 
+.stage-workflow {
+  border-color: var(--rust);
+  background: #fae9e3;
+}
+
+.stage-workflow-current {
+  border-color: var(--rust-deep);
+  background: #f2d2c9;
+  box-shadow: 4px 4px 0 0 var(--rust-deep);
+}
+
 .btn-primary,
 .btn-secondary,
 .btn-ghost,

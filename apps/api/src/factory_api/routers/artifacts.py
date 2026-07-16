@@ -7,11 +7,16 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from factory_api.artifact_versions import (
+    add_artifact_version,
+    select_artifact_version,
+    select_latest_remaining,
+)
 from factory_api.auth import CurrentUser
 from factory_api.config import get_settings
 from factory_api.db import get_db
 from factory_api.models import Artifact, Project
-from factory_api.schemas import ArtifactRead
+from factory_api.schemas import ArtifactRead, ArtifactVersionRead
 
 router = APIRouter(prefix="/api", tags=["artifacts"])
 
@@ -71,22 +76,42 @@ def _check_owner(db: Session, user_id: str, artifact: Artifact | None) -> Artifa
     return artifact
 
 
-def _artifact_read(artifact: Artifact, include_content: bool) -> ArtifactRead:
+def _artifact_read(db: Session, artifact: Artifact, include_content: bool) -> ArtifactRead:
     path = get_settings().data_dir / artifact.path
     content = None
     if include_content and artifact.format in TEXT_FORMATS and path.is_file():
         content = path.read_text(encoding="utf-8")
     renders = sorted(available_renders(path)) if artifact.type == "slide_deck" else []
+    versions = db.scalars(
+        select(Artifact)
+        .where(
+            Artifact.project_id == artifact.project_id,
+            Artifact.logical_key == artifact.logical_key,
+        )
+        .order_by(Artifact.version.desc())
+    ).all()
     return ArtifactRead(
         id=artifact.id,
         project_id=artifact.project_id,
         type=artifact.type,
         format=artifact.format,
         title=artifact.title,
+        logical_key=artifact.logical_key,
+        version=artifact.version,
+        is_selected=artifact.is_selected,
         created_by_job_id=artifact.created_by_job_id,
         created_at=artifact.created_at,
         content=content,
         renders=renders,
+        versions=[
+            ArtifactVersionRead(
+                id=item.id,
+                version=item.version,
+                is_selected=item.is_selected,
+                created_at=item.created_at,
+            )
+            for item in versions
+        ],
     )
 
 
@@ -96,15 +121,43 @@ def list_project_artifacts(project_id: str, user: CurrentUser, db: DB):
     if project is None or project.owner_id != user.id:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
     artifacts = db.scalars(
-        select(Artifact).where(Artifact.project_id == project_id).order_by(Artifact.created_at)
+        select(Artifact)
+        .where(Artifact.project_id == project_id, Artifact.is_selected.is_(True))
+        .order_by(Artifact.created_at)
     ).all()
-    return [_artifact_read(a, include_content=False) for a in artifacts]
+    return [_artifact_read(db, a, include_content=False) for a in artifacts]
 
 
 @router.get("/artifacts/{artifact_id}", response_model=ArtifactRead)
 def get_artifact(artifact_id: str, user: CurrentUser, db: DB):
     artifact = _check_owner(db, user.id, db.get(Artifact, artifact_id))
-    return _artifact_read(artifact, include_content=True)
+    return _artifact_read(db, artifact, include_content=True)
+
+
+@router.post("/artifacts/{artifact_id}/select", response_model=ArtifactRead)
+def select_artifact(artifact_id: str, user: CurrentUser, db: DB):
+    artifact = _check_owner(db, user.id, db.get(Artifact, artifact_id))
+    select_artifact_version(db, artifact)
+    db.commit()
+    db.refresh(artifact)
+    return _artifact_read(db, artifact, include_content=False)
+
+
+@router.delete("/artifacts/{artifact_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_artifact(artifact_id: str, user: CurrentUser, db: DB):
+    artifact = _check_owner(db, user.id, db.get(Artifact, artifact_id))
+    path = get_settings().data_dir / artifact.path
+    renders = available_renders(path) if artifact.type == "slide_deck" else {}
+    if artifact.is_selected:
+        select_latest_remaining(db, artifact)
+    db.delete(artifact)
+    db.commit()
+    for candidate in [path, *renders.values()]:
+        try:
+            candidate.unlink(missing_ok=True)
+        except OSError:
+            # The DB deletion is authoritative; orphan cleanup is best effort.
+            pass
 
 
 @router.get("/artifacts/{artifact_id}/download")
@@ -166,14 +219,14 @@ async def upload_artifact(
                 status_code=422, detail=f"No se pudo convertir el PPTX: {exc}"
             ) from exc
     abs_path.write_bytes(data)
-    artifact = Artifact(
+    artifact = add_artifact_version(
+        db,
         project_id=project_id,
-        type=type,
-        format=format_,
+        type_=type,
+        format_=format_,
         title=title or (file.filename or type),
         path=rel_path,
     )
-    db.add(artifact)
     db.commit()
     db.refresh(artifact)
-    return _artifact_read(artifact, include_content=False)
+    return _artifact_read(db, artifact, include_content=False)

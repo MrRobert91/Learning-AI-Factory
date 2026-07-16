@@ -10,10 +10,11 @@ from sqlalchemy.orm import Session
 
 from factory_api.auth import CurrentUser
 from factory_api.db import SessionLocal, get_db
-from factory_api.models import AgentProfile, IdeationSession, Job, JobEvent, Project
+from factory_api.models import AgentProfile, Artifact, IdeationSession, Job, JobEvent, Project
 from factory_api.routers.agents import get_default_profile
 from factory_api.runner import runner
 from factory_api.schemas import AgentRunCreate, JobEventRead, JobRead
+from factory_api.workflow_engine import missing_agent_inputs
 
 router = APIRouter(prefix="/api", tags=["runs"])
 
@@ -105,6 +106,15 @@ def create_agent_run(project_id: str, body: AgentRunCreate, user: CurrentUser, d
 
     payload = _base_payload(db, project)
 
+    available = set(
+        db.scalars(
+            select(Artifact.type).where(
+                Artifact.project_id == project_id,
+                Artifact.is_selected.is_(True),
+            )
+        ).all()
+    )
+
     if body.agent == "pipeline":
         payload["stages"] = {
             agent: _profile_fields(get_default_profile(db, agent))
@@ -112,6 +122,12 @@ def create_agent_run(project_id: str, body: AgentRunCreate, user: CurrentUser, d
         }
         kind = "pipeline_run"
     elif body.agent in RUNNABLE_AGENTS:
+        missing = missing_agent_inputs(body.agent, available)
+        if missing:
+            raise HTTPException(
+                status_code=409,
+                detail="Faltan pasos previos: " + ", ".join(missing),
+            )
         if body.profile_id:
             profile = db.get(AgentProfile, body.profile_id)
             if profile is None or profile.agent_type != body.agent:

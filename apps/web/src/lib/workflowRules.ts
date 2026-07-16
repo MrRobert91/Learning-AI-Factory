@@ -25,14 +25,14 @@ export const AGENT_NAMES: Record<WorkflowAgent, string> = {
 };
 
 export const AGENT_INPUTS: Record<WorkflowAgent, string[]> = {
-  curator: ["course_idea_brief"],
+  curator: [],
   planner: ["research_brief"],
   lessons: ["research_brief", "course_plan"],
-  slides: ["lesson_content"],
+  slides: ["course_plan", "lesson_content"],
   script: ["slide_deck"],
   voice: ["teaching_script"],
   video: ["slide_deck", "voice_script"],
-  publisher: ["video", "subtitles", "teaching_script"],
+  publisher: ["video"],
 };
 
 export const AGENT_OUTPUTS: Record<WorkflowAgent, string[]> = {

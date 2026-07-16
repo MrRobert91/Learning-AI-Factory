@@ -60,6 +60,16 @@ def test_evaluator_revise_reruns_agent(auth_client, monkeypatch):
     job = _wait_for_job(auth_client, job_id)
     assert job["status"] == "done"
     assert calls["planner"] == 2  # initial + one revision
+    plans = [
+        artifact
+        for artifact in auth_client.get(
+            f"/api/projects/{project['id']}/artifacts"
+        ).json()
+        if artifact["type"] == "course_plan"
+    ]
+    assert len(plans) == 1
+    assert plans[0]["version"] == 2
+    assert len(plans[0]["versions"]) == 2
 
 
 def test_evaluator_escalates_after_max_revisions(auth_client, monkeypatch):

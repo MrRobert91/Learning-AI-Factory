@@ -11,6 +11,7 @@ import {
 } from "@/lib/api";
 import WorkflowCanvas from "@/components/WorkflowCanvas";
 import {
+  ConfirmDialog,
   ErrorBanner,
   IconChevronLeft,
   IconPlus,
@@ -53,6 +54,8 @@ export default function WorkflowEditorPage() {
   const [profiles, setProfiles] = useState<Record<string, AgentProfile[]>>({});
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     api
@@ -129,9 +132,15 @@ export default function WorkflowEditorPage() {
   }
 
   async function remove() {
-    if (!confirm("¿Eliminar este workflow?")) return;
-    await api.deleteWorkflow(id);
-    router.push("/workflows");
+    setDeleting(true);
+    try {
+      await api.deleteWorkflow(id);
+      router.push("/workflows");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo eliminar");
+      setDeleting(false);
+      setConfirmDelete(false);
+    }
   }
 
   if (!workflow) {
@@ -166,7 +175,7 @@ export default function WorkflowEditorPage() {
           </button>
           {!readOnly && (
             <>
-              <button onClick={remove} className="btn-danger btn-sm">
+              <button onClick={() => setConfirmDelete(true)} className="btn-danger btn-sm">
                 Eliminar
               </button>
               <button
@@ -368,6 +377,14 @@ export default function WorkflowEditorPage() {
           Haz clic en un paso del diagrama para configurarlo.
         </p>
       )}
+      <ConfirmDialog
+        open={confirmDelete}
+        title="Eliminar workflow"
+        description={`Se eliminará «${workflow.name}». Esta acción no se puede deshacer.`}
+        busy={deleting}
+        onCancel={() => setConfirmDelete(false)}
+        onConfirm={remove}
+      />
     </div>
   );
 }

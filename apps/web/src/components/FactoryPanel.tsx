@@ -11,6 +11,7 @@ import {
   type Workflow,
 } from "@/lib/api";
 import {
+  ConfirmDialog,
   ErrorBanner,
   IconBrain,
   IconCheck,
@@ -28,6 +29,7 @@ import {
   IconPresentation,
   IconSparkles,
   IconTrendingUp,
+  IconTrash,
   IconUpload,
   IconVideo,
   IconWrench,
@@ -63,54 +65,63 @@ const STAGES: {
   label: string;
   description: string;
   produces: string;
+  consumes: string[];
 }[] = [
   {
     agent: "curator",
     label: "Curador",
     description: "Investiga el tema y produce un brief documentado",
     produces: "research_brief",
+    consumes: [],
   },
   {
     agent: "planner",
     label: "Plan del curso",
     description: "Estructura el curso en módulos y lecciones",
     produces: "course_plan",
+    consumes: ["research_brief"],
   },
   {
     agent: "lessons",
     label: "Lecciones",
     description: "Redacta el contenido completo de cada lección",
     produces: "lesson_content",
+    consumes: ["research_brief", "course_plan"],
   },
   {
     agent: "slides",
     label: "Slides",
     description: "Convierte cada lección en diapositivas",
     produces: "slide_deck",
+    consumes: ["course_plan", "lesson_content"],
   },
   {
     agent: "script",
     label: "Guion docente",
     description: "Escribe el guion palabra a palabra por lección",
     produces: "teaching_script",
+    consumes: ["slide_deck"],
   },
   {
     agent: "voice",
     label: "Adaptación a voz",
     description: "Adapta el guion a narración por segmentos",
     produces: "voice_script",
+    consumes: ["teaching_script"],
   },
   {
     agent: "video",
     label: "Vídeo",
     description: "Sintetiza la voz y monta el vídeo (TTS + ffmpeg)",
     produces: "video",
+    consumes: ["voice_script", "slide_deck"],
   },
   {
     agent: "publisher",
     label: "Publicación",
     description: "Prepara título, descripción, capítulos y miniatura",
     produces: "publication_package",
+    consumes: ["video"],
   },
 ];
 
@@ -167,20 +178,41 @@ function formatElapsed(fromIso: string, toMs: number): string {
   return `${m}:${String(s).padStart(2, "0")} min`;
 }
 
-function EventLine({ event, artifactHref }: { event: JobEvent; artifactHref?: string }) {
+function EventLine({
+  event,
+  artifactHref,
+}: {
+  event: JobEvent;
+  artifactHref?: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
   const meta = EVENT_META[event.type] ?? {
     label: "Mensaje",
     icon: IconMessage,
     className: "text-zinc-400",
   };
   const EventIcon = meta.icon;
+  const isLong = event.summary.length > 260;
+  const summary =
+    isLong && !expanded
+      ? `${event.summary.slice(0, 260).trimEnd()}…`
+      : event.summary;
   return (
     <li className="animate-in flex items-start gap-3 px-4 py-2 text-sm">
       <span className={`mt-0.5 shrink-0 ${meta.className}`}>
         <EventIcon size={14} />
       </span>
       <span className="min-w-0 flex-1 break-words whitespace-pre-wrap leading-relaxed text-zinc-300">
-        {event.summary}
+        {summary}
+        {isLong && (
+          <button
+            type="button"
+            onClick={() => setExpanded((value) => !value)}
+            className="ml-2 text-xs font-medium text-indigo-300 hover:underline"
+          >
+            {expanded ? "Ver menos" : "Leer completo"}
+          </button>
+        )}
         {artifactHref && (
           <Link
             href={artifactHref}
@@ -237,6 +269,10 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
   const [cancelling, setCancelling] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadType, setUploadType] = useState("slide_deck");
+  const [artifactToDelete, setArtifactToDelete] = useState<Artifact | null>(
+    null,
+  );
+  const [deletingArtifact, setDeletingArtifact] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [showHistory, setShowHistory] = useState(false);
   const sourceRef = useRef<EventSource | null>(null);
@@ -421,7 +457,64 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
     }
   }
 
+  async function chooseArtifact(artifactId: string) {
+    setError(null);
+    try {
+      await api.selectArtifact(artifactId);
+      await refresh();
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "No se pudo cambiar la versión",
+      );
+    }
+  }
+
+  async function removeArtifact() {
+    if (!artifactToDelete) return;
+    setDeletingArtifact(true);
+    setError(null);
+    try {
+      await api.deleteArtifact(artifactToDelete.id);
+      setArtifactToDelete(null);
+      await refresh();
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "No se pudo eliminar el artefacto",
+      );
+    } finally {
+      setDeletingArtifact(false);
+    }
+  }
+
   const artifactTypes = new Set(artifacts.map((a) => a.type));
+  const selectedWorkflow = workflows.find(
+    (workflow) => workflow.id === workflowId,
+  );
+  const workflowAgents = new Set(
+    selectedWorkflow?.steps.map((step) => step.agent) ?? [],
+  );
+  const workflowMissing = (() => {
+    const available = new Set(artifactTypes);
+    const missing = new Set<string>();
+    for (const step of selectedWorkflow?.steps ?? []) {
+      const stage = STAGES.find((item) => item.agent === step.agent);
+      for (const input of stage?.consumes ?? []) {
+        if (!available.has(input)) missing.add(input);
+      }
+      if (stage) available.add(stage.produces);
+    }
+    return [...missing];
+  })();
+  const nextWorkflowAgent = selectedWorkflow?.steps.find((step) => {
+      const stage = STAGES.find((item) => item.agent === step.agent);
+      return stage ? !artifactTypes.has(stage.produces) : false;
+    })?.agent;
+  const activeWorkflowAgent =
+    activeRun?.kind === "workflow_run" &&
+    (running || activeRun.status === "waiting_approval")
+      ? [...events].reverse().find((event) => event.data?.agent)?.data?.agent ??
+        nextWorkflowAgent
+      : nextWorkflowAgent;
   const doneCount = STAGES.filter((s) => artifactTypes.has(s.produces)).length;
   const lastEvent = events.length > 0 ? events[events.length - 1] : null;
   const artifactFilterOptions = [...artifactTypes].sort((a, b) =>
@@ -455,6 +548,7 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
           <select
             value={workflowId}
             onChange={(e) => setWorkflowId(e.target.value)}
+            disabled={running}
             className="input max-w-56 py-2 text-sm"
             aria-label="Workflow a ejecutar"
           >
@@ -466,7 +560,14 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
           </select>
           <button
             onClick={startWorkflow}
-            disabled={running || !workflowId}
+            disabled={running || !workflowId || workflowMissing.length > 0}
+            title={
+              workflowMissing.length > 0
+                ? `Faltan artefactos previos: ${workflowMissing
+                    .map((type) => TYPE_LABELS[type] ?? type)
+                    .join(", ")}`
+                : undefined
+            }
             className="btn-primary"
           >
             <IconPlay size={14} />
@@ -489,11 +590,23 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
         {STAGES.map((stage, i) => {
           const done = artifactTypes.has(stage.produces);
           const profiles = profilesByAgent[stage.agent] ?? [];
+          const missingInputs = stage.consumes.filter(
+            (type) => !artifactTypes.has(type),
+          );
+          const inWorkflow = workflowAgents.has(stage.agent);
+          const isCurrentWorkflowStep =
+            inWorkflow && stage.agent === activeWorkflowAgent;
           return (
             <div
               key={stage.agent}
               className={`card flex flex-col p-4 transition-colors ${
-                done ? "border-emerald-400/20" : ""
+                isCurrentWorkflowStep
+                  ? "stage-workflow-current"
+                  : inWorkflow
+                    ? "stage-workflow"
+                    : done
+                      ? "border-emerald-400/20"
+                      : ""
               }`}
             >
               <div className="mb-1.5 flex items-center gap-2.5">
@@ -539,9 +652,15 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
                 )}
                 <button
                   onClick={() => start(stage.agent)}
-                  disabled={running}
+                  disabled={running || missingInputs.length > 0}
                   className="btn-secondary btn-sm shrink-0"
-                  title={`Ejecutar ${stage.label}`}
+                  title={
+                    missingInputs.length > 0
+                      ? `Antes necesitas: ${missingInputs
+                          .map((type) => TYPE_LABELS[type] ?? type)
+                          .join(", ")}`
+                      : `Ejecutar ${stage.label}`
+                  }
                 >
                   <IconPlay size={12} />
                 </button>
@@ -780,27 +899,68 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
         <ul className="grid gap-2 sm:grid-cols-2">
           {filteredArtifacts.map((a) => (
             <li key={a.id}>
-              <Link
-                href={`/artifacts/${a.id}`}
-                className="card card-hover flex items-center gap-3 px-4 py-3 text-sm"
-              >
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-zinc-300 bg-[#f4ead7] text-indigo-500">
-                  {artifactIcon(a.type)}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate font-medium text-zinc-200">
-                    {a.title || a.type}
+              <div className="card card-hover flex items-center gap-2 px-3 py-3 text-sm">
+                <Link
+                  href={`/artifacts/${a.id}`}
+                  className="flex min-w-0 flex-1 items-center gap-3"
+                >
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-zinc-300 bg-[#f4ead7] text-indigo-500">
+                    {artifactIcon(a.type)}
                   </span>
-                  <span className="block text-xs text-zinc-500">
-                    {TYPE_LABELS[a.type] ?? a.type} ·{" "}
-                    {new Date(a.created_at).toLocaleString("es")}
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-medium text-zinc-200">
+                      {a.title || a.type}
+                    </span>
+                    <span className="block text-xs text-zinc-500">
+                      {TYPE_LABELS[a.type] ?? a.type} ·{" "}
+                      {new Date(a.created_at).toLocaleString("es")}
+                    </span>
                   </span>
-                </span>
-              </Link>
+                </Link>
+                <select
+                  value={a.id}
+                  onChange={(event) => chooseArtifact(event.target.value)}
+                  className="input max-w-32 shrink-0 px-2 py-1.5 text-xs"
+                  aria-label={`Versión activa de ${a.title || a.type}`}
+                  title="La versión elegida será la que consuman los siguientes agentes"
+                >
+                  {a.versions.map((version) => (
+                    <option key={version.id} value={version.id}>
+                      v{version.version}
+                      {version.is_selected ? " · activa" : ""}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => setArtifactToDelete(a)}
+                  className="btn-ghost btn-sm shrink-0 text-red-300 hover:text-red-200"
+                  aria-label={`Eliminar versión ${a.version} de ${a.title || a.type}`}
+                  title={`Eliminar la versión activa v${a.version}`}
+                >
+                  <IconTrash size={14} />
+                </button>
+              </div>
             </li>
           ))}
         </ul>
       )}
+      <ConfirmDialog
+        open={artifactToDelete !== null}
+        title="Eliminar versión del artefacto"
+        description={
+          artifactToDelete
+            ? `Se eliminará la versión v${artifactToDelete.version} de «${artifactToDelete.title || artifactToDelete.type}». ${
+                artifactToDelete.versions.length > 1
+                  ? "Se activará automáticamente la versión más reciente restante."
+                  : "Es la única versión, por lo que desaparecerá la tarjeta."
+              }`
+            : ""
+        }
+        busy={deletingArtifact}
+        onCancel={() => setArtifactToDelete(null)}
+        onConfirm={removeArtifact}
+      />
     </section>
   );
 }

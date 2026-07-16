@@ -8,6 +8,7 @@ import {
   type CourseIdeaBrief,
   type IdeationMessage,
   type IdeationOption,
+  type IdeationProgress,
   type IdeationSession,
 } from "@/lib/api";
 import {
@@ -15,6 +16,8 @@ import {
   IconChevronLeft,
   IconSearch,
   IconSparkles,
+  IconWrench,
+  IconCheck,
   LoadingScreen,
   Spinner,
 } from "@/components/ui";
@@ -25,6 +28,35 @@ function AssistantAvatar() {
     <span className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 text-white">
       <IconSparkles size={13} />
     </span>
+  );
+}
+
+function ProgressLine({ event }: { event: IdeationProgress }) {
+  const phase = event.payload?.phase;
+  const ProgressIcon =
+    phase === "tool_call"
+      ? IconWrench
+      : phase === "tool_result"
+        ? IconSearch
+        : phase === "review"
+          ? IconCheck
+          : IconSparkles;
+  const label =
+    phase === "tool_call"
+      ? "Llamada a herramienta"
+      : phase === "tool_result"
+        ? "Resultado de herramienta"
+        : phase === "review"
+          ? "Revisión"
+          : "Paso actual";
+  return (
+    <div className="ml-10 flex items-start gap-2 rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2 text-xs text-zinc-400">
+      <ProgressIcon size={13} className="mt-0.5 shrink-0 text-indigo-300" />
+      <span className="min-w-0">
+        <span className="font-semibold text-zinc-300">{label}: </span>
+        {event.content}
+      </span>
+    </div>
   );
 }
 
@@ -207,6 +239,7 @@ export default function IdeationSessionPage() {
   const [sending, setSending] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [liveProgress, setLiveProgress] = useState<IdeationProgress[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -221,13 +254,19 @@ export default function IdeationSessionPage() {
     if (!content.trim() || sending) return;
     setError(null);
     setSending(true);
+    setLiveProgress([]);
     setInput("");
     try {
-      setSession(await api.sendIdeationMessage(id, content));
+      setSession(
+        await api.sendIdeationMessageStream(id, content, (event) =>
+          setLiveProgress((previous) => [...previous, event]),
+        ),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error al enviar");
     } finally {
       setSending(false);
+      setLiveProgress([]);
     }
   }
 
@@ -280,6 +319,9 @@ export default function IdeationSessionPage() {
         <section className="flex min-h-[60vh] flex-col">
           <div className="flex-1 space-y-4">
             {session.messages.map((m) => {
+              if (m.kind === "progress") {
+                return <ProgressLine key={m.id} event={m as IdeationProgress} />;
+              }
               if (m.kind === "question") {
                 return (
                   <QuestionCard
@@ -348,12 +390,17 @@ export default function IdeationSessionPage() {
               );
             })}
             {sending && (
-              <div className="flex items-center gap-3">
-                <AssistantAvatar />
-                <div className="flex items-center gap-1 rounded-2xl rounded-tl-sm border border-white/[0.07] bg-white/[0.03] px-4 py-3">
-                  <span className="typing-dot" />
-                  <span className="typing-dot" />
-                  <span className="typing-dot" />
+              <div className="space-y-2">
+                {liveProgress.map((event) => (
+                  <ProgressLine key={event.id} event={event} />
+                ))}
+                <div className="flex items-center gap-3">
+                  <AssistantAvatar />
+                  <div className="flex items-center gap-1 rounded-2xl rounded-tl-sm border border-white/[0.07] bg-white/[0.03] px-4 py-3">
+                    <span className="typing-dot" />
+                    <span className="typing-dot" />
+                    <span className="typing-dot" />
+                  </div>
                 </div>
               </div>
             )}

@@ -1,15 +1,18 @@
+import asyncio
 import json
+from collections.abc import Callable
 from typing import Annotated
 
 from factory_agents.agents.ideation import AgentEvent, HistoryItem, run_ideation_turn
 from factory_agents.llm import MissingApiKeyError, get_llm_client
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from factory_api.auth import CurrentUser
 from factory_api.config import get_settings
-from factory_api.db import get_db
+from factory_api.db import SessionLocal, get_db
 from factory_api.models import IdeationMessage, IdeationSession, Project
 from factory_api.schemas import (
     IdeationCreate,
@@ -67,6 +70,7 @@ def _history(session: IdeationSession) -> list[HistoryItem]:
             payload=json.loads(m.payload_json) if m.payload_json else {},
         )
         for m in session.messages
+        if m.kind != "progress"
     ]
 
 
@@ -86,19 +90,39 @@ def _append(db: Session, session: IdeationSession, role: str, kind: str, content
     return msg
 
 
-def _run_agent(db: Session, session: IdeationSession) -> list[AgentEvent]:
+def _run_agent(
+    db: Session,
+    session: IdeationSession,
+    on_progress: Callable[[IdeationMessageRead], None] | None = None,
+) -> list[AgentEvent]:
     from factory_api.routers.agents import get_default_profile
 
     settings = get_settings()
     profile = get_default_profile(db, "ideation")
     try:
         client = get_llm_client(settings.openrouter_api_key)
+
+        def record_progress(kind: str, summary: str, data: dict) -> None:
+            message = _append(
+                db,
+                session,
+                "assistant",
+                "progress",
+                summary,
+                {"phase": kind, **data},
+            )
+            db.commit()
+            db.refresh(message)
+            if on_progress:
+                on_progress(_message_read(message))
+
         events = run_ideation_turn(
             client,
             session.model,
             _history(session),
             soul_md=profile.soul_md if profile else "",
             agents_md=profile.agents_md if profile else "",
+            on_progress=record_progress,
         )
     except MissingApiKeyError as exc:
         raise HTTPException(
@@ -120,6 +144,52 @@ def _run_agent(db: Session, session: IdeationSession) -> list[AgentEvent]:
     return events
 
 
+def _stream_agent_response(session_id: str, user_id: str) -> StreamingResponse:
+    async def generator():
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[tuple[str, dict]] = asyncio.Queue()
+
+        def emit(message: IdeationMessageRead) -> None:
+            loop.call_soon_threadsafe(
+                queue.put_nowait,
+                ("progress", message.model_dump(mode="json")),
+            )
+
+        def work() -> None:
+            try:
+                with SessionLocal() as worker_db:
+                    session = _get_owned_session(worker_db, user_id, session_id)
+                    _run_agent(worker_db, session, on_progress=emit)
+                    worker_db.refresh(session)
+                    payload = _session_read(session).model_dump(mode="json")
+                loop.call_soon_threadsafe(queue.put_nowait, ("result", payload))
+            except Exception as exc:
+                detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+                loop.call_soon_threadsafe(
+                    queue.put_nowait,
+                    ("error", {"detail": detail or "Error del agente de ideación"}),
+                )
+
+        worker = asyncio.create_task(asyncio.to_thread(work))
+        try:
+            while True:
+                event, payload = await queue.get()
+                yield (
+                    f"event: {event}\n"
+                    f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                )
+                if event in {"result", "error"}:
+                    break
+        finally:
+            await worker
+
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @router.post("", response_model=IdeationSessionRead, status_code=status.HTTP_201_CREATED)
 def create_session(body: IdeationCreate, user: CurrentUser, db: DB):
     settings = get_settings()
@@ -135,6 +205,21 @@ def create_session(body: IdeationCreate, user: CurrentUser, db: DB):
     db.refresh(session)
     _run_agent(db, session)
     return _session_read(session)
+
+
+@router.post("/stream")
+def create_session_stream(body: IdeationCreate, user: CurrentUser, db: DB):
+    settings = get_settings()
+    session = IdeationSession(
+        owner_id=user.id,
+        initial_idea=body.idea,
+        model=settings.openrouter_model,
+    )
+    db.add(session)
+    db.flush()
+    _append(db, session, "user", "text", body.idea)
+    db.commit()
+    return _stream_agent_response(session.id, user.id)
 
 
 @router.get("", response_model=list[IdeationSessionSummary])
@@ -168,13 +253,33 @@ def send_message(session_id: str, body: IdeationMessageCreate, user: CurrentUser
     session = _get_owned_session(db, user.id, session_id)
     if session.status != "active":
         raise HTTPException(status_code=409, detail="La sesión ya está finalizada")
-    last = session.messages[-1] if session.messages else None
+    last = next(
+        (message for message in reversed(session.messages) if message.kind != "progress"),
+        None,
+    )
     kind = "answer" if last is not None and last.kind == "question" else "text"
     _append(db, session, "user", kind, body.content)
     db.commit()
     db.refresh(session)
     _run_agent(db, session)
     return _session_read(session)
+
+
+@router.post("/{session_id}/messages/stream")
+def send_message_stream(
+    session_id: str, body: IdeationMessageCreate, user: CurrentUser, db: DB
+):
+    session = _get_owned_session(db, user.id, session_id)
+    if session.status != "active":
+        raise HTTPException(status_code=409, detail="La sesión ya está finalizada")
+    last = next(
+        (message for message in reversed(session.messages) if message.kind != "progress"),
+        None,
+    )
+    kind = "answer" if last is not None and last.kind == "question" else "text"
+    _append(db, session, "user", kind, body.content)
+    db.commit()
+    return _stream_agent_response(session.id, user.id)
 
 
 @router.post("/{session_id}/finalize", response_model=ProjectRead)
