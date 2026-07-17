@@ -19,6 +19,8 @@ import {
 } from "@/components/ui";
 import {
   unavailableReason,
+  ARTIFACT_NAMES,
+  requiredInitialArtifacts,
   validateWorkflowSteps,
   WORKFLOW_AGENTS,
 } from "@/lib/workflowRules";
@@ -219,10 +221,21 @@ export default function WorkflowEditorPage() {
             C&oacute;mo construir el workflow
           </h2>
           <p className="mt-1 text-sm leading-relaxed text-zinc-400">
-            Empieza por Curador y a&ntilde;ade agentes desde la gu&iacute;a inferior. Solo se
-            puede elegir un agente cuando los pasos anteriores ya producen todos
-            los materiales que necesita. Haz clic en un nodo para configurar su
-            perfil, evaluaci&oacute;n o pausa de aprobaci&oacute;n.
+            Puedes empezar por cualquier agente. Los materiales que necesite el
+            primero se consideran requisitos del proyecto; los pasos siguientes
+            deben consumir resultados ya disponibles. Haz clic en un nodo para
+            configurar su perfil, evaluaci&oacute;n o pausa de aprobaci&oacute;n.
+          </p>
+          {requiredInitialArtifacts(steps).length > 0 && (
+            <p className="mt-2 text-xs font-medium text-amber-300">
+              Para ejecutarlo, el proyecto debe tener:{" "}
+              {requiredInitialArtifacts(steps)
+                .map((type) => ARTIFACT_NAMES[type] ?? type)
+                .join(", ")}
+            </p>
+          )}
+          <p className="mt-1 text-xs text-zinc-500">
+            Si falta alguno, la ejecuci&oacute;n se desactiva e indica el motivo.
           </p>
         </div>
       </section>

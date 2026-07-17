@@ -269,6 +269,7 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
   const [cancelling, setCancelling] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadType, setUploadType] = useState("slide_deck");
+  const [showUpload, setShowUpload] = useState(false);
   const [artifactToDelete, setArtifactToDelete] = useState<Artifact | null>(
     null,
   );
@@ -506,16 +507,38 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
     return [...missing];
   })();
   const nextWorkflowAgent = selectedWorkflow?.steps.find((step) => {
-      const stage = STAGES.find((item) => item.agent === step.agent);
-      return stage ? !artifactTypes.has(stage.produces) : false;
-    })?.agent;
-  const activeWorkflowAgent =
+    const stage = STAGES.find((item) => item.agent === step.agent);
+    return stage ? !artifactTypes.has(stage.produces) : false;
+  })?.agent;
+  let activeWorkflowAgent: string | undefined;
+  if (
     activeRun?.kind === "workflow_run" &&
     (running || activeRun.status === "waiting_approval")
-      ? [...events].reverse().find((event) => event.data?.agent)?.data?.agent ??
-        nextWorkflowAgent
-      : nextWorkflowAgent;
-  const doneCount = STAGES.filter((s) => artifactTypes.has(s.produces)).length;
+  ) {
+    for (const event of events) {
+      if (
+        event.data?.status === "running" ||
+        event.data?.status === "waiting_approval"
+      ) {
+        activeWorkflowAgent = event.data.agent;
+      } else if (
+        event.data?.status === "done" &&
+        event.data.agent === activeWorkflowAgent
+      ) {
+        activeWorkflowAgent = undefined;
+      }
+    }
+    if (running) activeWorkflowAgent ??= nextWorkflowAgent;
+  }
+  const directActiveAgent =
+    running && activeRun?.kind.endsWith("_run")
+      ? activeRun.kind.replace(/_run$/, "")
+      : undefined;
+  const activeStageAgent =
+    activeRun?.kind === "workflow_run" ? activeWorkflowAgent : directActiveAgent;
+  const doneCount = STAGES.filter((stage) =>
+    artifactTypes.has(stage.produces),
+  ).length;
   const lastEvent = events.length > 0 ? events[events.length - 1] : null;
   const artifactFilterOptions = [...artifactTypes].sort((a, b) =>
     (TYPE_LABELS[a] ?? a).localeCompare(TYPE_LABELS[b] ?? b, "es"),
@@ -524,6 +547,12 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
     artifactFilter === "all"
       ? artifacts
       : artifacts.filter((artifact) => artifact.type === artifactFilter);
+  const artifactGroups = artifactFilterOptions
+    .map((type) => ({
+      type,
+      artifacts: filteredArtifacts.filter((artifact) => artifact.type === type),
+    }))
+    .filter((group) => group.artifacts.length > 0);
 
   const canCancel =
     activeRun?.status === "queued" || activeRun?.status === "waiting_approval";
@@ -588,20 +617,24 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
       {/* ------ Pipeline stages ------ */}
       <div className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {STAGES.map((stage, i) => {
-          const done = artifactTypes.has(stage.produces);
+          const isActive = stage.agent === activeStageAgent;
+          const isWaiting =
+            isActive && activeRun?.status === "waiting_approval";
+          const done = !isActive && artifactTypes.has(stage.produces);
           const profiles = profilesByAgent[stage.agent] ?? [];
           const missingInputs = stage.consumes.filter(
             (type) => !artifactTypes.has(type),
           );
           const inWorkflow = workflowAgents.has(stage.agent);
-          const isCurrentWorkflowStep =
-            inWorkflow && stage.agent === activeWorkflowAgent;
+          const isCurrentWorkflowStep = isActive;
           return (
             <div
               key={stage.agent}
               className={`card flex flex-col p-4 transition-colors ${
                 isCurrentWorkflowStep
-                  ? "stage-workflow-current"
+                  ? isWaiting
+                    ? "border-amber-400/50 bg-amber-500/[0.06]"
+                    : "stage-workflow-current"
                   : inWorkflow
                     ? "stage-workflow"
                     : done
@@ -612,16 +645,34 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
               <div className="mb-1.5 flex items-center gap-2.5">
                 <span
                   className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold ${
-                    done
-                      ? "bg-emerald-400/15 text-emerald-300"
-                      : "bg-white/[0.06] text-zinc-400"
+                    isWaiting
+                      ? "bg-amber-400/15 text-amber-300"
+                      : isActive
+                        ? "bg-indigo-400/15 text-indigo-300"
+                      : done
+                        ? "bg-emerald-400/15 text-emerald-300"
+                        : "bg-white/[0.06] text-zinc-400"
                   }`}
                 >
-                  {done ? <IconCheck size={13} /> : i + 1}
+                  {isWaiting ? (
+                    <IconHand size={13} />
+                  ) : isActive ? (
+                    <Spinner className="h-3.5 w-3.5" />
+                  ) : done ? (
+                    <IconCheck size={13} />
+                  ) : (
+                    i + 1
+                  )}
                 </span>
                 <span className="min-w-0 truncate text-sm font-semibold text-zinc-100">
                   {stage.label}
                 </span>
+                {isActive &&
+                  (isWaiting ? (
+                    <span className="badge-warning text-[10px]">En espera</span>
+                  ) : (
+                    <span className="badge-info text-[10px]">En curso</span>
+                  ))}
               </div>
               <p className="mb-3 flex-1 text-xs leading-relaxed text-zinc-500">
                 {stage.description}
@@ -838,14 +889,14 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
             <span className="ml-2 text-sm font-normal text-zinc-500">
               {filteredArtifacts.length === artifacts.length
                 ? artifacts.length
-                : `${filteredArtifacts.length} de ${artifacts.length}`}
+                : [filteredArtifacts.length, artifacts.length].join(" de ")}
             </span>
           )}
         </h3>
         <div className="flex items-center gap-2">
           <select
             value={artifactFilter}
-            onChange={(e) => setArtifactFilter(e.target.value)}
+            onChange={(event) => setArtifactFilter(event.target.value)}
             className="input w-auto px-2 py-1.5 text-xs"
             aria-label="Filtrar artefactos por tipo"
           >
@@ -856,39 +907,121 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
               </option>
             ))}
           </select>
-          <select
-            value={uploadType}
-            onChange={(e) => setUploadType(e.target.value)}
-            className="input w-auto px-2 py-1.5 text-xs"
-            aria-label="Tipo del artefacto a subir"
+          <button
+            type="button"
+            onClick={() => setShowUpload((value) => !value)}
+            className="btn-secondary btn-sm"
           >
-            {UPLOAD_TYPES.map((type) => (
-              <option key={type} value={type}>
-                {TYPE_LABELS[type]}
-              </option>
-            ))}
-          </select>
-          <label className="btn-secondary btn-sm cursor-pointer">
             <IconUpload size={13} />
-            {uploading ? "Subiendo…" : "Subir propio"}
+            Subir propio
+          </button>
+        </div>
+      </div>
+
+      {(artifactTypes.has("slide_deck") ||
+        artifactTypes.has("lesson_content")) && (
+        <div className="card mb-4 flex flex-wrap items-center gap-x-5 gap-y-2 p-3">
+          {artifactTypes.has("slide_deck") && (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-semibold text-zinc-300">Slides:</span>
+              <a
+                href={"/api/projects/" + projectId + "/exports/slides.zip"}
+                className="btn-secondary btn-sm"
+              >
+                ZIP
+              </a>
+              <a
+                href={"/api/projects/" + projectId + "/exports/slides.pdf"}
+                className="btn-secondary btn-sm"
+              >
+                PDF único
+              </a>
+              <a
+                href={"/api/projects/" + projectId + "/exports/slides.pptx"}
+                className="btn-secondary btn-sm"
+              >
+                PPTX único
+              </a>
+            </div>
+          )}
+          {artifactTypes.has("lesson_content") && (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-semibold text-zinc-300">
+                Lecciones:
+              </span>
+              <a
+                href={"/api/projects/" + projectId + "/exports/lessons.zip"}
+                className="btn-secondary btn-sm"
+              >
+                ZIP de PDFs
+              </a>
+              <a
+                href={"/api/projects/" + projectId + "/exports/lessons.pdf"}
+                className="btn-secondary btn-sm"
+              >
+                PDF único
+              </a>
+            </div>
+          )}
+          <span className="ml-auto text-[11px] text-zinc-500">
+            Se incluyen únicamente las versiones activas.
+          </span>
+        </div>
+      )}
+
+      {showUpload && (
+        <div className="card animate-in mb-4 flex flex-wrap items-end gap-3 p-4">
+          <label className="min-w-52 text-xs text-zinc-400">
+            Tipo del artefacto
+            <select
+              value={uploadType}
+              onChange={(event) => setUploadType(event.target.value)}
+              className="input mt-1"
+            >
+              {UPLOAD_TYPES.map((type) => (
+                <option key={type} value={type}>
+                  {TYPE_LABELS[type]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="btn-primary cursor-pointer">
+            <IconUpload size={13} />
+            {uploading ? "Subiendo…" : "Elegir fichero"}
             <input
               ref={fileRef}
               type="file"
               accept=".md,.json,.txt,.pptx"
+              disabled={uploading}
               className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) upload(f);
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) {
+                  void upload(file).then(() => setShowUpload(false));
+                }
               }}
             />
           </label>
+          <button
+            type="button"
+            onClick={() => setShowUpload(false)}
+            disabled={uploading}
+            className="btn-ghost btn-sm"
+          >
+            Cancelar
+          </button>
+          <p className="w-full text-xs text-zinc-500">
+            El tipo se elige aquí porque forma parte de la subida, no del filtro
+            de la biblioteca.
+          </p>
         </div>
-      </div>
+      )}
+
       {artifacts.length === 0 ? (
         <div className="card border-dashed p-8 text-center">
           <p className="flex items-center justify-center gap-2 text-sm text-zinc-400">
             <IconSparkles size={15} className="text-indigo-300" />
-            Todavía no hay artefactos: ejecuta el Curador o sube material propio.
+            Todavía no hay artefactos: ejecuta un agente o sube material propio.
           </p>
         </div>
       ) : filteredArtifacts.length === 0 ? (
@@ -896,54 +1029,74 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
           No hay artefactos del tipo seleccionado.
         </div>
       ) : (
-        <ul className="grid gap-2 sm:grid-cols-2">
-          {filteredArtifacts.map((a) => (
-            <li key={a.id}>
-              <div className="card card-hover flex items-center gap-2 px-3 py-3 text-sm">
-                <Link
-                  href={`/artifacts/${a.id}`}
-                  className="flex min-w-0 flex-1 items-center gap-3"
-                >
-                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-zinc-300 bg-[#f4ead7] text-indigo-500">
-                    {artifactIcon(a.type)}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate font-medium text-zinc-200">
-                      {a.title || a.type}
-                    </span>
-                    <span className="block text-xs text-zinc-500">
-                      {TYPE_LABELS[a.type] ?? a.type} ·{" "}
-                      {new Date(a.created_at).toLocaleString("es")}
-                    </span>
-                  </span>
-                </Link>
-                <select
-                  value={a.id}
-                  onChange={(event) => chooseArtifact(event.target.value)}
-                  className="input max-w-32 shrink-0 px-2 py-1.5 text-xs"
-                  aria-label={`Versión activa de ${a.title || a.type}`}
-                  title="La versión elegida será la que consuman los siguientes agentes"
-                >
-                  {a.versions.map((version) => (
-                    <option key={version.id} value={version.id}>
-                      v{version.version}
-                      {version.is_selected ? " · activa" : ""}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={() => setArtifactToDelete(a)}
-                  className="btn-ghost btn-sm shrink-0 text-red-300 hover:text-red-200"
-                  aria-label={`Eliminar versión ${a.version} de ${a.title || a.type}`}
-                  title={`Eliminar la versión activa v${a.version}`}
-                >
-                  <IconTrash size={14} />
-                </button>
+        <div className="space-y-6">
+          {artifactGroups.map((group) => (
+            <section key={group.type}>
+              <div className="mb-2 flex items-center gap-2">
+                <span className="text-indigo-300">{artifactIcon(group.type)}</span>
+                <h4 className="text-sm font-semibold text-zinc-200">
+                  {TYPE_LABELS[group.type] ?? group.type}
+                </h4>
+                <span className="badge-neutral">{group.artifacts.length}</span>
               </div>
-            </li>
+              <ul className="grid gap-2 sm:grid-cols-2">
+                {group.artifacts.map((artifact) => (
+                  <li key={artifact.id}>
+                    <div className="card card-hover flex items-center gap-2 px-3 py-3 text-sm">
+                      <Link
+                        href={"/artifacts/" + artifact.id}
+                        className="flex min-w-0 flex-1 items-center gap-3"
+                      >
+                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-zinc-300 bg-[#f4ead7] text-indigo-500">
+                          {artifactIcon(artifact.type)}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate font-medium text-zinc-200">
+                            {artifact.title || artifact.type}
+                          </span>
+                          <span className="block text-xs text-zinc-500">
+                            {new Date(artifact.created_at).toLocaleString("es")}
+                          </span>
+                        </span>
+                      </Link>
+                      <select
+                        value={artifact.id}
+                        onChange={(event) => chooseArtifact(event.target.value)}
+                        className="input max-w-32 shrink-0 px-2 py-1.5 text-xs"
+                        aria-label={
+                          "Versión activa de " +
+                          (artifact.title || artifact.type)
+                        }
+                        title="La versión elegida será la que consuman los siguientes agentes"
+                      >
+                        {artifact.versions.map((version) => (
+                          <option key={version.id} value={version.id}>
+                            v{version.version}
+                            {version.is_selected ? " · activa" : ""}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => setArtifactToDelete(artifact)}
+                        className="btn-ghost btn-sm shrink-0 text-red-300 hover:text-red-200"
+                        aria-label={
+                          "Eliminar versión " +
+                          artifact.version +
+                          " de " +
+                          (artifact.title || artifact.type)
+                        }
+                        title={"Eliminar la versión activa v" + artifact.version}
+                      >
+                        <IconTrash size={14} />
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
           ))}
-        </ul>
+        </div>
       )}
       <ConfirmDialog
         open={artifactToDelete !== null}

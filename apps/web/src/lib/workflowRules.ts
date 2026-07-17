@@ -58,8 +58,19 @@ export const ARTIFACT_NAMES: Record<string, string> = {
   subtitles: "subt\u00edtulos",
 };
 
+export function requiredInitialArtifacts(steps: WorkflowStep[]): string[] {
+  if (steps.length === 0) return [];
+  const firstAgent = steps[0].agent as WorkflowAgent;
+  return (AGENT_INPUTS[firstAgent] ?? []).filter(
+    (type) => type !== "course_idea_brief",
+  );
+}
+
 export function availableArtifacts(steps: WorkflowStep[]): Set<string> {
   const available = new Set<string>(["course_idea_brief"]);
+  for (const input of requiredInitialArtifacts(steps)) {
+    available.add(input);
+  }
   for (const step of steps) {
     const agent = step.agent as WorkflowAgent;
     for (const output of AGENT_OUTPUTS[agent] ?? []) {
@@ -73,9 +84,6 @@ export function unavailableReason(
   agent: WorkflowAgent,
   steps: WorkflowStep[],
 ): string | null {
-  if (steps.length === 0 && agent !== "curator") {
-    return "El workflow debe empezar por Curador";
-  }
   if (steps.length === 0) return null;
   if (steps.some((step) => step.agent === agent)) {
     return "Este agente ya forma parte del workflow";

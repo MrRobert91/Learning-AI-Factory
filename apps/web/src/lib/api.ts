@@ -142,6 +142,7 @@ export interface JobEvent {
     tool?: string;
     artifact_id?: string;
     agent?: string;
+    status?: "running" | "done" | "waiting_approval";
     step?: number;
   } | null;
   created_at: string;
@@ -371,6 +372,11 @@ export const api = {
   listProjectArtifacts: (projectId: string) =>
     request<Artifact[]>(`/api/projects/${projectId}/artifacts`),
   getArtifact: (id: string) => request<Artifact>(`/api/artifacts/${id}`),
+  editArtifact: (id: string, content: string) =>
+    request<Artifact>(`/api/artifacts/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ content }),
+    }),
   selectArtifact: (id: string) =>
     request<Artifact>(`/api/artifacts/${id}/select`, { method: "POST" }),
   deleteArtifact: (id: string) =>

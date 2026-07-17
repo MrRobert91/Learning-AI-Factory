@@ -1,10 +1,14 @@
+import logging
+import time
+import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from sqlalchemy import select
 
 from factory_api.config import get_settings
 from factory_api.db import SessionLocal
+from factory_api.logging_config import configure_file_logging, configure_logging
 from factory_api.models import User
 from factory_api.routers import (
     agents,
@@ -21,6 +25,9 @@ from factory_api.routers import (
 from factory_api.routers.agents import seed_default_profiles
 from factory_api.routers.workflows import seed_template_workflows
 from factory_api.runner import runner
+
+configure_logging(get_settings().log_level)
+logger = logging.getLogger(__name__)
 
 
 def ensure_default_user() -> None:
@@ -67,9 +74,10 @@ async def _analytics_scheduler() -> None:
                         .order_by(Job.created_at.desc())
                         .limit(1)
                     ).first()
-                    if last is not None and datetime.now(UTC) - last.created_at.replace(
-                        tzinfo=UTC
-                    ) < interval:
+                    if (
+                        last is not None
+                        and datetime.now(UTC) - last.created_at.replace(tzinfo=UTC) < interval
+                    ):
                         continue
                     from factory_api.models import Project
 
@@ -100,7 +108,10 @@ async def _analytics_scheduler() -> None:
 async def lifespan(_app: FastAPI):
     import asyncio
 
-    get_settings().data_dir.mkdir(parents=True, exist_ok=True)
+    settings = get_settings()
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    log_path = configure_file_logging(settings.data_dir)
+    logger.info("Backend startup beginning", extra={"persistent_log_path": str(log_path)})
     ensure_default_user()
     with SessionLocal() as db:
         seed_default_profiles(db)
@@ -109,13 +120,52 @@ async def lifespan(_app: FastAPI):
     scheduler_task = None
     if get_settings().analytics_interval_days > 0:
         scheduler_task = asyncio.create_task(_analytics_scheduler())
+    logger.info(
+        "Backend ready",
+        extra={"analytics_enabled": get_settings().analytics_interval_days > 0},
+    )
     yield
     if scheduler_task is not None:
         scheduler_task.cancel()
     await runner.stop()
 
+    logger.info("Backend shutdown complete")
+
 
 app = FastAPI(title="AI Learning Factory API", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def log_request(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or uuid.uuid4().hex
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception(
+            "HTTP request failed",
+            extra={
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+                "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+            },
+        )
+        raise
+    duration_ms = round((time.perf_counter() - started) * 1000, 2)
+    logger.info(
+        "HTTP request completed",
+        extra={
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+            "status_code": response.status_code,
+            "duration_ms": duration_ms,
+        },
+    )
+    response.headers["x-request-id"] = request_id
+    return response
+
 
 app.include_router(auth.router)
 app.include_router(projects.router)

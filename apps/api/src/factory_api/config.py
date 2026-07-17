@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     secret_key: str = "dev-secret-change-me"
 
     database_url: str = "sqlite:///./data/db/factory.sqlite"
+    # Structured backend logging (DEBUG, INFO, WARNING or ERROR).
+    log_level: str = "INFO"
+
     data_dir: Path = Path("./data")
 
     session_cookie_name: str = "factory_session"

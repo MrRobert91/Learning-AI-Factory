@@ -11,7 +11,11 @@ import {
   LoadingScreen,
   PageHeader,
 } from "@/components/ui";
-import { validateWorkflowSteps } from "@/lib/workflowRules";
+import {
+  ARTIFACT_NAMES,
+  requiredInitialArtifacts,
+  validateWorkflowSteps,
+} from "@/lib/workflowRules";
 
 export default function WorkflowsPage() {
   const router = useRouter();
@@ -80,6 +84,14 @@ export default function WorkflowsPage() {
                   <p className="truncate text-xs text-zinc-500">
                     {w.description || `${w.steps.length} pasos`}
                   </p>
+                  {requiredInitialArtifacts(w.steps).length > 0 && (
+                    <p className="mt-1 text-xs text-amber-300">
+                      Para ejecutarlo, el proyecto debe tener:{" "}
+                      {requiredInitialArtifacts(w.steps)
+                        .map((type) => ARTIFACT_NAMES[type] ?? type)
+                        .join(", ")}
+                    </p>
+                  )}
                 </div>
                 <span className="badge-neutral shrink-0">
                   {w.steps.length} pasos

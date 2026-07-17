@@ -247,6 +247,10 @@ class ArtifactRead(BaseModel):
     versions: list[ArtifactVersionRead] = []
 
 
+class ArtifactEdit(BaseModel):
+    content: str = Field(min_length=1)
+
+
 class ProjectRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -90,14 +90,15 @@ def validate_definition(definition: dict) -> list[str]:
     if not isinstance(steps, list) or not steps:
         return ["El workflow debe tener al menos un paso"]
     available = {"course_idea_brief"}
+    first_agent = steps[0].get("agent")
+    if first_agent in VALID_AGENTS:
+        available.update(AGENT_INPUTS[first_agent])
     seen: set[str] = set()
     for i, step in enumerate(steps):
         agent = step.get("agent")
         if agent not in VALID_AGENTS:
             problems.append(f"Paso {i + 1}: agente inválido '{agent}'")
             continue
-        if i == 0 and agent != "curator":
-            problems.append("Paso 1: el workflow debe empezar por Curador")
         if agent in seen:
             problems.append(f"Paso {i + 1}: el agente '{agent}' ya est\u00e1 incluido")
         missing = set(AGENT_INPUTS[agent]) - available
@@ -146,11 +147,18 @@ def build_workflow_graph(
                     job_id,
                     "stage",
                     f"Paso {index + 1}: {agent} — iniciando",
-                    {"agent": agent, "step": index + 1},
+                    {"agent": agent, "step": index + 1, "status": "running"},
                 )
                 stage_payload = {**state["payload"], **step.get("overrides", {})}
                 result = handlers[f"{agent}_run"](job_id, stage_payload)
                 results = {**state.get("results", {}), agent: result}
+                if not step.get("evaluate") or evaluator is None:
+                    append_event(
+                        job_id,
+                        "stage",
+                        f"Paso {index + 1}: {agent} completado",
+                        {"agent": agent, "step": index + 1, "status": "done"},
+                    )
                 return {"results": results}
 
             return node
@@ -171,8 +179,20 @@ def build_workflow_graph(
                     while True:
                         verdict, feedback = evaluator(agent, results.get(agent))
                         if verdict == "pass":
+                            append_event(
+                                job_id,
+                                "stage",
+                                f"Paso {index + 1}: {agent} completado",
+                                {"agent": agent, "step": index + 1, "status": "done"},
+                            )
                             return {"results": results, "escalate": None}
                         if attempts >= MAX_REVISIONS:
+                            append_event(
+                                job_id,
+                                "stage",
+                                f"Paso {index + 1}: {agent} espera revision",
+                                {"agent": agent, "step": index + 1, "status": "waiting_approval"},
+                            )
                             return {
                                 "results": results,
                                 "escalate": {

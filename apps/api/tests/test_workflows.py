@@ -43,16 +43,20 @@ def test_workflow_crud_and_validation(auth_client):
     assert resp.status_code == 200
     assert resp.json()["steps"][0]["approval_after"] is True
 
-    resp = auth_client.post(
-        "/api/workflows", json={"name": "Malo", "steps": [{"agent": "nope"}]}
-    )
+    resp = auth_client.post("/api/workflows", json={"name": "Malo", "steps": [{"agent": "nope"}]})
     assert resp.status_code == 422
     resp = auth_client.post(
         "/api/workflows",
-        json={"name": "Inicio invalido", "steps": [{"agent": "voice"}]},
+        json={"name": "Desde guion docente", "steps": [{"agent": "voice"}]},
     )
-    assert resp.status_code == 422
-    assert "empezar por Curador" in resp.json()["detail"]
+    assert resp.status_code == 201
+    project = _create_project(auth_client)
+    run = auth_client.post(
+        f"/api/projects/{project['id']}/workflow-runs",
+        json={"workflow_id": resp.json()["id"]},
+    )
+    assert run.status_code == 409
+    assert "teaching_script" in run.json()["detail"]
 
     resp = auth_client.post(
         "/api/workflows",
@@ -64,11 +68,8 @@ def test_workflow_crud_and_validation(auth_client):
     assert resp.status_code == 422
     assert "teaching_script" in resp.json()["detail"]
 
-
     template_id = _template_id(auth_client, "Investigación y plan")
-    assert auth_client.patch(
-        f"/api/workflows/{template_id}", json={"name": "X"}
-    ).status_code == 409
+    assert auth_client.patch(f"/api/workflows/{template_id}", json={"name": "X"}).status_code == 409
     assert auth_client.delete(f"/api/workflows/{template_id}").status_code == 409
 
     assert auth_client.delete(f"/api/workflows/{wf['id']}").status_code == 204

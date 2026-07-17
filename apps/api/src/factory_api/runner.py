@@ -32,24 +32,28 @@ class JobRunner:
     async def start(self) -> None:
         self._queue = asyncio.Queue()
         with SessionLocal() as db:
-            pending = db.scalars(
-                select(Job.id).where(Job.status.in_(["queued", "running"]))
-            ).all()
+            pending = db.scalars(select(Job.id).where(Job.status.in_(["queued", "running"]))).all()
         for job_id in pending:
             self._queue.put_nowait(job_id)
         self._task = asyncio.create_task(self._worker())
+        logger.info(
+            "Job runner started",
+            extra={"recovered_jobs": len(pending)},
+        )
 
     async def stop(self) -> None:
         if self._task:
             self._task.cancel()
             self._task = None
         self._queue = None
+        logger.info("Job runner stopped")
 
     def enqueue(self, job_id: str) -> None:
         # If the runner is not started the job stays queued in the DB and is
         # picked up on the next start().
         if self._queue is not None:
             self._queue.put_nowait(job_id)
+            logger.info("Job enqueued", extra={"job_id": job_id})
 
     async def _worker(self) -> None:
         while True:
@@ -68,6 +72,14 @@ class JobRunner:
             job.started_at = datetime.now(UTC)
             db.commit()
             kind, payload = job.kind, json.loads(job.payload_json)
+            logger.info(
+                "Job execution started",
+                extra={
+                    "job_id": job_id,
+                    "job_kind": kind,
+                    "project_id": job.project_id,
+                },
+            )
         _TOKENS_USED.setdefault(job_id, 0)
 
         try:
@@ -93,6 +105,10 @@ class JobRunner:
             if job is not None:
                 job.status = "waiting_approval"
                 db.commit()
+                logger.info(
+                    "Job waiting for approval",
+                    extra={"job_id": job_id, "job_kind": job.kind},
+                )
 
     def _finish(self, job_id: str, result: dict | None = None, error: str = "") -> None:
         with SessionLocal() as db:
@@ -104,6 +120,24 @@ class JobRunner:
             job.result_json = json.dumps(result, ensure_ascii=False) if result else None
             job.finished_at = datetime.now(UTC)
             db.commit()
+            duration_ms = None
+            if job.started_at is not None:
+                started_at = job.started_at
+                if started_at.tzinfo is None:
+                    started_at = started_at.replace(tzinfo=UTC)
+                duration_ms = round(
+                    (job.finished_at - started_at).total_seconds() * 1000,
+                    2,
+                )
+            logger.info(
+                "Job execution finished",
+                extra={
+                    "job_id": job_id,
+                    "job_kind": job.kind,
+                    "job_status": job.status,
+                    "duration_ms": duration_ms,
+                },
+            )
 
 
 class BudgetExceeded(RuntimeError):
@@ -170,8 +204,7 @@ def _budget_callbacks(job_id: str) -> list:
                     usage = getattr(message, "usage_metadata", None) or {}
                     add_tokens(
                         job_id,
-                        (usage.get("input_tokens", 0) or 0)
-                        + (usage.get("output_tokens", 0) or 0),
+                        (usage.get("input_tokens", 0) or 0) + (usage.get("output_tokens", 0) or 0),
                     )
 
     return [BudgetCallback()]
@@ -192,6 +225,15 @@ def append_event(job_id: str, type_: str, summary: str, data: dict | None = None
             )
         )
         db.commit()
+    logger.info(
+        "Job event",
+        extra={
+            "job_id": job_id,
+            "event_type": type_,
+            "event_summary": summary,
+            **(data or {}),
+        },
+    )
 
 
 def _save_artifact(
@@ -218,6 +260,16 @@ def _save_artifact(
             created_by_job_id=job_id,
         )
         db.commit()
+        logger.info(
+            "Artifact persisted",
+            extra={
+                "job_id": job_id,
+                "project_id": project_id,
+                "artifact_id": artifact.id,
+                "artifact_type": type_,
+                "artifact_version": artifact.version,
+            },
+        )
         return artifact.id
 
 
@@ -239,9 +291,7 @@ def _require_artifact(project_id: str, type_: str, hint: str) -> str:
     return content
 
 
-def _deactivate_unproduced(
-    project_id: str, type_: str, keep_ids: list[str]
-) -> None:
+def _deactivate_unproduced(project_id: str, type_: str, keep_ids: list[str]) -> None:
     """Replace a generated collection, hiding families absent from the new run."""
     keep = set(keep_ids)
     with SessionLocal() as db:
@@ -433,8 +483,7 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
         append_event(
             job_id,
             "artifact",
-            f"Slides de {title} listas"
-            + (f" (render: {', '.join(rendered)})" if rendered else ""),
+            f"Slides de {title} listas" + (f" (render: {', '.join(rendered)})" if rendered else ""),
             {"artifact_id": artifact_id},
         )
 
@@ -526,9 +575,7 @@ def run_script_job(job_id: str, payload: dict) -> dict:
     settings = get_settings()
     decks = _latest_by_base(payload["project_id"], "slide_deck")
     if not decks:
-        raise RuntimeError(
-            "Falta el artefacto 'slide_deck': genera o sube slides primero"
-        )
+        raise RuntimeError("Falta el artefacto 'slide_deck': genera o sube slides primero")
     lessons = _latest_by_base(payload["project_id"], "lesson_content")
     client = _client(job_id)
 
@@ -615,9 +662,7 @@ def run_video_job(job_id: str, payload: dict) -> dict:
     voices = _latest_by_base(payload["project_id"], "voice_script")
     decks = _latest_by_base(payload["project_id"], "slide_deck")
     if not voices:
-        raise RuntimeError(
-            "Falta el artefacto 'voice_script': ejecuta antes el Adaptador de voz"
-        )
+        raise RuntimeError("Falta el artefacto 'voice_script': ejecuta antes el Adaptador de voz")
 
     provider = OpenAITTSProvider(
         settings.openai_api_key, voice=settings.tts_voice, model=settings.tts_model
@@ -693,9 +738,7 @@ def _wiki_context(project_id: str) -> str:
             .where((WikiPage.project_id == project_id) | (WikiPage.project_id.is_(None)))
             .order_by(WikiPage.updated_at)
         ).all()
-        data = [
-            {"slug": p.slug, "title": p.title, "content_md": p.content_md} for p in pages
-        ]
+        data = [{"slug": p.slug, "title": p.title, "content_md": p.content_md} for p in pages]
     return render_wiki_for_prompt(data)
 
 
@@ -710,8 +753,7 @@ def _augment_input(task_input: str, payload: dict) -> str:
     feedback = payload.get("revision_feedback")
     if feedback:
         parts.append(
-            "# Feedback del evaluador (versión anterior rechazada — corrige esto)\n\n"
-            + feedback
+            "# Feedback del evaluador (versión anterior rechazada — corrige esto)\n\n" + feedback
         )
     return "\n\n".join(parts)
 
@@ -747,12 +789,9 @@ def consolidate_memory(job_id: str) -> None:
                         f"[{artifact.type}: {artifact.title}]\n"
                         + path.read_text(encoding="utf-8")[:2500]
                     )
-            pages = db.scalars(
-                select(WikiPage).where(WikiPage.project_id == project_id)
-            ).all()
+            pages = db.scalars(select(WikiPage).where(WikiPage.project_id == project_id)).all()
             current = [
-                {"slug": p.slug, "title": p.title, "content_md": p.content_md}
-                for p in pages
+                {"slug": p.slug, "title": p.title, "content_md": p.content_md} for p in pages
             ]
             summary = f"Job {job.kind} completado con {len(artifacts)} artefactos"
 
@@ -828,9 +867,7 @@ def run_publisher_job(job_id: str, payload: dict) -> dict:
         script_artifact = scripts.get(base)
         script_md = ""
         if script_artifact is not None:
-            script_md = (settings.data_dir / script_artifact.path).read_text(
-                encoding="utf-8"
-            )
+            script_md = (settings.data_dir / script_artifact.path).read_text(encoding="utf-8")
         package = run_publisher(
             _augment_input(
                 render_publisher_input(
@@ -1022,9 +1059,7 @@ def run_analyst_job(job_id: str, payload: dict) -> dict:
         token_data, settings.google_client_id, settings.google_client_secret, video_ids
     )
     total_comments = sum(len(v.get("comments", [])) for v in videos_data)
-    append_event(
-        job_id, "stage", f"Datos recogidos ({total_comments} comentarios). Analizando…"
-    )
+    append_event(job_id, "stage", f"Datos recogidos ({total_comments} comentarios). Analizando…")
 
     with SessionLocal() as db:
         # Current default agents.md per agent, so proposals are minimal diffs.
@@ -1037,9 +1072,7 @@ def run_analyst_job(job_id: str, payload: dict) -> dict:
                 current_agents_md[agent] = profile.agents_md
         channel_wiki = [
             {"slug": p.slug, "title": p.title, "content_md": p.content_md}
-            for p in db.scalars(
-                select(WikiPage).where(WikiPage.project_id.is_(None))
-            ).all()
+            for p in db.scalars(select(WikiPage).where(WikiPage.project_id.is_(None))).all()
         ]
 
     result = run_analyst(
@@ -1062,9 +1095,7 @@ def run_analyst_job(job_id: str, payload: dict) -> dict:
         f"Informe de rendimiento — {payload.get('project_title', '')}".strip(" —"),
         result.report_md,
     )
-    append_event(
-        job_id, "artifact", "Informe de rendimiento generado", {"artifact_id": report_id}
-    )
+    append_event(job_id, "artifact", "Informe de rendimiento generado", {"artifact_id": report_id})
 
     proposal_ids = []
     with SessionLocal() as db:
