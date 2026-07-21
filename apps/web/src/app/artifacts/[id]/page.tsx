@@ -41,6 +41,48 @@ const TYPE_LABELS: Record<string, string> = {
   thumbnail: "Miniatura",
 };
 
+function artifactOrientation(
+  artifact: Artifact,
+): "horizontal" | "vertical" | null {
+  return artifact.metadata.orientation === "vertical"
+    ? "vertical"
+    : artifact.metadata.orientation === "horizontal"
+      ? "horizontal"
+      : null;
+}
+
+function orientationLabel(metadata: Record<string, unknown>): string | null {
+  return metadata.orientation === "vertical"
+    ? "Vertical 9:16"
+    : metadata.orientation === "horizontal"
+      ? "Horizontal 16:9"
+      : null;
+}
+
+interface SlideImageMetadata {
+  id: string;
+  slide: number;
+  prompt: string;
+  layout: "left" | "right" | "background";
+  model: string;
+  style: string;
+  status: "generated" | "failed";
+  cost_usd?: number | null;
+  error?: string;
+}
+
+function slideImages(metadata: Record<string, unknown>): SlideImageMetadata[] {
+  if (!Array.isArray(metadata.images)) return [];
+  return metadata.images.filter(
+    (item): item is SlideImageMetadata =>
+      typeof item === "object" &&
+      item !== null &&
+      typeof (item as { id?: unknown }).id === "string" &&
+      typeof (item as { slide?: unknown }).slide === "number" &&
+      typeof (item as { prompt?: unknown }).prompt === "string",
+  );
+}
+
 export default function ArtifactViewerPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
@@ -49,6 +91,8 @@ export default function ArtifactViewerPage() {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
+  const [imagePrompts, setImagePrompts] = useState<Record<string, string>>({});
+  const [regeneratingImage, setRegeneratingImage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -61,6 +105,11 @@ export default function ArtifactViewerPage() {
       .then((value) => {
         setArtifact(value);
         setDraft(value.content ?? "");
+        setImagePrompts(
+          Object.fromEntries(
+            slideImages(value.metadata).map((image) => [image.id, image.prompt]),
+          ),
+        );
       })
       .catch(() => setNotFound(true));
   }, [id]);
@@ -80,6 +129,28 @@ export default function ArtifactViewerPage() {
       );
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function regenerateImage(image: SlideImageMetadata) {
+    if (!artifact) return;
+    const prompt = (imagePrompts[image.id] ?? image.prompt).trim();
+    if (!prompt) {
+      setError("El prompt de la imagen no puede estar vacío.");
+      return;
+    }
+    setRegeneratingImage(image.id);
+    setError(null);
+    try {
+      const updated = await api.regenerateSlideImage(artifact.id, image.id, prompt);
+      setArtifact(updated);
+      router.replace("/artifacts/" + updated.id);
+    } catch (reason) {
+      setError(
+        reason instanceof Error ? reason.message : "No se pudo regenerar la imagen",
+      );
+    } finally {
+      setRegeneratingImage(null);
     }
   }
 
@@ -106,6 +177,12 @@ export default function ArtifactViewerPage() {
 
   const editable =
     artifact.content !== null && EDITABLE_FORMATS.has(artifact.format);
+  const images = slideImages(artifact.metadata);
+  const generation =
+    typeof artifact.metadata.image_generation === "object" &&
+    artifact.metadata.image_generation !== null
+      ? (artifact.metadata.image_generation as Record<string, unknown>)
+      : null;
 
   return (
     <div className="mx-auto max-w-[1600px] px-6 py-8">
@@ -165,6 +242,11 @@ export default function ArtifactViewerPage() {
             >
               v{artifact.version} {artifact.is_selected ? "· activa" : "· histórica"}
             </span>
+            {orientationLabel(artifact.metadata) && (
+              <span className="badge-info">
+                {orientationLabel(artifact.metadata)}
+              </span>
+            )}
             <span>{new Date(artifact.created_at).toLocaleString("es")}</span>
           </p>
         </div>
@@ -181,6 +263,9 @@ export default function ArtifactViewerPage() {
               {artifact.versions.map((version) => (
                 <option key={version.id} value={version.id}>
                   v{version.version}
+                  {orientationLabel(version.metadata)
+                    ? ` · ${orientationLabel(version.metadata)}`
+                    : ""}
                   {version.is_selected ? " · activa" : ""}
                 </option>
               ))}
@@ -250,7 +335,11 @@ export default function ArtifactViewerPage() {
             <video
               controls
               src={"/api/artifacts/" + artifact.id + "/download"}
-              className="card mb-6 aspect-video w-full bg-black"
+              className={`card mb-6 w-full bg-black ${
+                artifactOrientation(artifact) === "vertical"
+                  ? "mx-auto aspect-[9/16] max-w-md"
+                  : "aspect-video"
+              }`}
             />
           )}
           {artifact.format === "json" && artifact.content !== null ? (
@@ -258,9 +347,102 @@ export default function ArtifactViewerPage() {
               <JsonViewer source={artifact.content} />
             </article>
           ) : artifact.type === "slide_deck" && artifact.content !== null ? (
-            <div className="card mb-6 p-4 sm:p-6">
-              <SlideDeck artifactId={artifact.id} />
-            </div>
+            <>
+              <div className="card mb-6 p-4 sm:p-6">
+                <SlideDeck
+                  artifactId={artifact.id}
+                  orientation={artifactOrientation(artifact) ?? "horizontal"}
+                />
+              </div>
+              {images.length > 0 && (
+                <section className="card mb-6 p-4 sm:p-6">
+                  <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h2 className="text-base font-semibold text-zinc-100">
+                        Imágenes generadas
+                      </h2>
+                      <p className="mt-1 text-xs text-zinc-500">
+                        Edita un prompt y regenera solo esa imagen. Al guardar se creará
+                        automáticamente la v{artifact.version + 1} del deck.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2 text-xs">
+                      {typeof generation?.model === "string" && (
+                        <span className="badge-neutral">{generation.model}</span>
+                      )}
+                      {typeof generation?.style === "string" && (
+                        <span className="badge-info">{generation.style}</span>
+                      )}
+                      {typeof generation?.generation_cost_usd === "number" && (
+                        <span className="badge-neutral">
+                          ${generation.generation_cost_usd.toFixed(4)} esta versión
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <ErrorBanner>{error}</ErrorBanner>
+                  <div className="grid gap-5 lg:grid-cols-2">
+                    {images.map((image) => (
+                      <article
+                        key={image.id}
+                        className="overflow-hidden rounded-xl border border-white/[0.09] bg-black/20"
+                      >
+                        {image.status === "generated" ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={`/api/artifacts/${artifact.id}/images/${encodeURIComponent(image.id)}`}
+                            alt={`Ilustración generada para la slide ${image.slide}`}
+                            className="aspect-video w-full bg-black object-cover"
+                          />
+                        ) : (
+                          <div className="flex aspect-video items-center justify-center bg-amber-500/[0.08] px-6 text-center text-sm text-amber-200">
+                            La generación falló. Puedes ajustar el prompt y volver a intentarlo.
+                          </div>
+                        )}
+                        <div className="space-y-3 p-4">
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                            <span className="font-semibold text-zinc-200">
+                              Slide {image.slide}
+                            </span>
+                            <span className="badge-neutral">{image.layout}</span>
+                          </div>
+                          <textarea
+                            value={imagePrompts[image.id] ?? image.prompt}
+                            onChange={(event) =>
+                              setImagePrompts((current) => ({
+                                ...current,
+                                [image.id]: event.target.value,
+                              }))
+                            }
+                            rows={4}
+                            className="input resize-y text-sm leading-relaxed"
+                            aria-label={`Prompt de la imagen de la slide ${image.slide}`}
+                          />
+                          {image.error && (
+                            <p className="text-xs text-amber-300/80">{image.error}</p>
+                          )}
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="font-mono text-[10px] text-zinc-500">
+                              {image.model}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => regenerateImage(image)}
+                              disabled={regeneratingImage !== null}
+                              className="btn-primary btn-sm"
+                            >
+                              {regeneratingImage === image.id
+                                ? "Generando…"
+                                : `Regenerar y guardar v${artifact.version + 1}`}
+                            </button>
+                          </div>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              )}
+            </>
           ) : MARKDOWN_TYPES.has(artifact.type) && artifact.content !== null ? (
             <article className="card notebook-sheet p-6 sm:p-8">
               <Markdown>{artifact.content}</Markdown>

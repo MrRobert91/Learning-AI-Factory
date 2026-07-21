@@ -39,17 +39,6 @@ const EXECUTION_ORDER = [
   "analyst",
 ];
 
-const VIDEO_STAGE: AgentSpec = {
-  name: "video",
-  display_name: "Montaje de vídeo",
-  description:
-    "Sintetiza la narración, renderiza las slides y monta el vídeo con subtítulos.",
-  kind: "automatic",
-  tool_names: ["TTS", "Marp", "ffmpeg"],
-  consumes: ["voice_script", "slide_deck"],
-  produces: ["video", "subtitles"],
-};
-
 const SOURCE_INPUTS: Record<string, string> = {
   ideation: "Idea inicial del usuario",
   curator: "Brief de idea y datos del proyecto",
@@ -63,13 +52,13 @@ export default function ProfilesPage() {
   const [newName, setNewName] = useState("");
 
   const load = useCallback(async () => {
-    const specs = [...(await api.listAgents()), VIDEO_STAGE].sort(
+    const specs = [...(await api.listAgents())].sort(
       (left, right) =>
         EXECUTION_ORDER.indexOf(left.name) - EXECUTION_ORDER.indexOf(right.name),
     );
     const byType: Record<string, AgentProfile[]> = {};
     await Promise.all(
-      specs.filter((s) => s.kind !== "automatic").map(async (s) => {
+      specs.map(async (s) => {
         byType[s.name] = await api.listProfiles(s.name);
       }),
     );
@@ -95,10 +84,11 @@ export default function ProfilesPage() {
         title="Agentes y perfiles"
         description={
           <>
-            Cada perfil define la personalidad (<code>soul.md</code>) y las
-            reglas operativas (<code>agents.md</code>) de un agente. Puedes
-            tener varios perfiles por agente y elegir cuál usar en cada
-            ejecución.
+            Cada perfil conserva la configuración de una etapa. Los agentes de
+            IA incluyen personalidad (<code>soul.md</code>) y reglas operativas (
+            <code>agents.md</code>); Slides y Vídeo también permiten elegir la
+            orientación, y Slides puede generar imágenes con un modelo y estilo
+            consistentes. Puedes seleccionar un perfil distinto en cada ejecución.
           </>
         }
       />
@@ -159,18 +149,16 @@ export default function ProfilesPage() {
                   )}
                 </div>
               </div>
-              {agent.kind !== "automatic" && (
-                <button
-                  onClick={() => {
-                    setCreating(creating === agent.name ? null : agent.name);
-                    setNewName("");
-                  }}
-                  className="btn-secondary btn-sm shrink-0"
-                >
-                  <IconPlus size={13} />
-                  Nuevo perfil
-                </button>
-              )}
+              <button
+                onClick={() => {
+                  setCreating(creating === agent.name ? null : agent.name);
+                  setNewName("");
+                }}
+                className="btn-secondary btn-sm shrink-0"
+              >
+                <IconPlus size={13} />
+                Nuevo perfil
+              </button>
             </div>
             {creating === agent.name && (
               <form
@@ -192,12 +180,7 @@ export default function ProfilesPage() {
                 </button>
               </form>
             )}
-            {agent.kind === "automatic" ? (
-              <p className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-4 py-3 text-xs text-zinc-500">
-                Etapa automática sin perfil configurable.
-              </p>
-            ) : (
-              <ul className="space-y-1.5">
+            <ul className="space-y-1.5">
                 {(profiles[agent.name] ?? []).map((p) => (
                   <li key={p.id}>
                     <Link
@@ -213,14 +196,27 @@ export default function ProfilesPage() {
                           por defecto
                         </span>
                       )}
+                      {p.orientation && (
+                        <span className="badge-neutral shrink-0">
+                          {p.orientation === "vertical"
+                            ? "Vertical 9:16"
+                            : "Horizontal 16:9"}
+                        </span>
+                      )}
+                      {p.images_enabled !== null && (
+                        <span
+                          className={p.images_enabled ? "badge-info shrink-0" : "badge-neutral shrink-0"}
+                        >
+                          {p.images_enabled ? "Con imágenes" : "Sin imágenes"}
+                        </span>
+                      )}
                       <span className="shrink-0 text-xs text-zinc-500">
                         v{p.version}
                       </span>
                     </Link>
                   </li>
                 ))}
-              </ul>
-            )}
+            </ul>
           </section>
         ))
       )}

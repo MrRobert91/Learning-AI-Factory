@@ -9,5 +9,6 @@ from factory_agents.agents import (  # noqa: F401
     publisher,
     script,
     slides,
+    video,
     voice,
 )

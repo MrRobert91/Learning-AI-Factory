@@ -78,6 +78,32 @@ def test_slides_adds_frontmatter_when_missing():
     assert result.startswith("---\nmarp: true")
 
 
+def test_slides_enforces_vertical_canvas():
+    client = FakeClient(["# Contenido vertical\n"])
+    result = run_slides("lección", client=client, model="m", orientation="vertical")
+    assert "size: 1080px 1920px" not in result
+    assert "factory-vertical-canvas:start" in result
+    assert "theme: factory-vertical" in result
+    assert "size: 9:16" in result
+    system_prompt = client.requests[0]["messages"][0]["content"]
+    assert "una sola columna" in system_prompt
+    assert "máximo 4 bullets" in system_prompt
+
+
+def test_slides_enforces_horizontal_canvas_and_removes_vertical_style():
+    client = FakeClient(
+        [
+            "---\nmarp: true\nsize: 1080px 1920px\n---\n\n"
+            "<!-- factory-vertical-canvas:start -->\nold\n"
+            "<!-- factory-vertical-canvas:end -->\n\n# Horizontal\n"
+        ]
+    )
+    result = run_slides("lección", client=client, model="m", orientation="horizontal")
+    assert "size: 16:9" in result
+    assert "factory-vertical-canvas" not in result
+    assert "1080px 1920px" not in result
+
+
 def test_clean_marp_output_plain():
     assert clean_marp_output("# Hola") == "# Hola\n"
 

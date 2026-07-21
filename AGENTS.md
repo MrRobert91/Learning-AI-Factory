@@ -48,6 +48,17 @@ docker compose up --build                # stack completo (2 contenedores)
 - **Renderizado web**: usa el componente `Markdown` para contenido generado y
   notas de memoria. Los artefactos JSON se muestran con `JsonViewer`; conserva
   la descarga raw, pero no presentes JSON sin procesar como vista principal.
+- **Orientación multimedia**: los perfiles de `slides` y `video` guardan
+  `orientation` (`horizontal` por defecto o `vertical`). Las variantes de vídeo
+  siguen en la misma familia versionada y registran la orientación en los
+  metadatos del artefacto; no dupliques subtítulos si su contenido no cambia.
+  Las slides verticales usan el tema Marp `factory-vertical` con canvas nativo
+  1080×1920 en HTML/PDF/PPTX/PNG; un PPTX conjunto nunca mezcla orientaciones.
+- **Imágenes de slides**: son opcionales y se configuran/versionan en el perfil
+  de `slides` (modelo OpenRouter + preset o prompt personalizado). El agente
+  selecciona como máximo 6 por lección; los originales viven como assets de la
+  versión del `slide_deck` y prompts/modelo/coste quedan en sus metadatos. Una
+  regeneración individual siempre crea una nueva versión autosuficiente del deck.
 
 ## Convenciones
 

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -88,6 +89,11 @@ class ProfileCreate(BaseModel):
     soul_md: str = ""
     agents_md: str = ""
     model: str | None = None
+    orientation: Literal["horizontal", "vertical"] | None = None
+    images_enabled: bool | None = None
+    image_model: str | None = None
+    image_style: str | None = None
+    image_style_prompt: str | None = None
 
 
 class ProfileUpdate(BaseModel):
@@ -95,6 +101,11 @@ class ProfileUpdate(BaseModel):
     soul_md: str | None = None
     agents_md: str | None = None
     model: str | None = None
+    orientation: Literal["horizontal", "vertical"] | None = None
+    images_enabled: bool | None = None
+    image_model: str | None = None
+    image_style: str | None = None
+    image_style_prompt: str | None = None
     is_default: bool | None = None
     note: str = ""
 
@@ -106,6 +117,11 @@ class ProfileRead(BaseModel):
     soul_md: str
     agents_md: str
     model: str | None = None
+    orientation: Literal["horizontal", "vertical"] | None = None
+    images_enabled: bool | None = None
+    image_model: str | None = None
+    image_style: str | None = None
+    image_style_prompt: str | None = None
     version: int
     is_default: bool
     created_at: datetime
@@ -113,11 +129,15 @@ class ProfileRead(BaseModel):
 
 
 class ProfileVersionRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
     version: int
     soul_md: str
     agents_md: str
+    model: str | None = None
+    orientation: Literal["horizontal", "vertical"] | None = None
+    images_enabled: bool | None = None
+    image_model: str | None = None
+    image_style: str | None = None
+    image_style_prompt: str | None = None
     note: str
     created_at: datetime
 
@@ -228,6 +248,7 @@ class ArtifactVersionRead(BaseModel):
     id: str
     version: int
     is_selected: bool
+    metadata: dict = Field(default_factory=dict)
     created_at: datetime
 
 
@@ -240,6 +261,7 @@ class ArtifactRead(BaseModel):
     logical_key: str
     version: int
     is_selected: bool
+    metadata: dict = Field(default_factory=dict)
     created_by_job_id: str | None
     created_at: datetime
     content: str | None = None
@@ -249,6 +271,10 @@ class ArtifactRead(BaseModel):
 
 class ArtifactEdit(BaseModel):
     content: str = Field(min_length=1)
+
+
+class SlideImageRegenerate(BaseModel):
+    prompt: str = Field(min_length=1, max_length=4000)
 
 
 class ProjectRead(BaseModel):

@@ -3,6 +3,7 @@
 import re
 
 from factory_agents.runtime import AgentSpec, compose_system_prompt, register
+from factory_agents.tools.marp import apply_marp_orientation
 
 SLIDES_BASE_PROMPT = """\
 Eres el Diseñador de Slides de AI Learning Factory. Conviertes el contenido de una \
@@ -23,6 +24,7 @@ front-matter:
 ---
 marp: true
 theme: {theme}
+{size_directive}
 paginate: true
 ---
 
@@ -31,8 +33,8 @@ No añadas explicaciones fuera del Markdown.
 
 DEFAULT_SOUL = """\
 Diseñador sobrio: la claridad es el estilo. Odia las slides-muro-de-texto tanto como \
-las slides vacías de una palabra. Piensa en cómo se verá cada slide congelada en un \
-vídeo de YouTube a 1080p.
+las slides vacías de una palabra. Piensa en cómo se verá cada slide congelada en el \
+formato objetivo, tanto en YouTube como en una pantalla móvil.
 """
 
 DEFAULT_AGENTS_MD = """\
@@ -40,6 +42,21 @@ DEFAULT_AGENTS_MD = """\
 - Títulos de slide de máximo 8 palabras.
 - Si la lección tiene código verificado, inclúyelo tal cual (no lo reescribas).
 - Idioma: el del curso.
+"""
+
+IMAGE_MARKER_PROMPT = """\
+
+Generación de imágenes activada:
+- Selecciona como máximo 6 slides que se beneficien realmente de una ilustración.
+- Nunca añadas más de una imagen por slide.
+- Evita portada, slides centradas en código y resumen, salvo que la imagen aporte valor claro.
+- Para cada imagen inserta un comentario JSON válido en la posición de la slide.
+  Ejemplo: <!-- factory-image {"prompt":"visual prompt","layout":"right","alt":"concept"} -->
+- `layout` solo puede ser `left`, `right` o `background`. Prefiere `left`/`right`; usa
+  `background` únicamente cuando el texto siga siendo perfectamente legible.
+- El prompt debe ilustrar el concepto concreto de esa slide, describir sujeto, acción,
+  composición y metáfora visual, estar escrito en inglés y no incluir instrucciones de estilo.
+- No escribas rutas, Markdown de imagen ni URLs: el sistema sustituirá el comentario por el asset.
 """
 
 SLIDES_SPEC = register(
@@ -61,10 +78,20 @@ SLIDES_SPEC = register(
 MARP_THEME = "default"
 
 
-def render_slides_input(lesson_md: str, course_title: str, style: str) -> str:
+def render_slides_input(
+    lesson_md: str, course_title: str, style: str, orientation: str = "horizontal"
+) -> str:
+    layout = (
+        "vertical 9:16 real (1080x1920), optimizado para TikTok, YouTube Shorts "
+        "y lectura en un móvil; usa una sola columna, tipografía grande, bloques "
+        "cortos y distribuye el contenido a lo largo del lienzo"
+        if orientation == "vertical"
+        else "horizontal 16:9 (1920x1080)"
+    )
     return (
         f"Curso: {course_title}\n"
         f"Estilo visual/tono: {style or 'profesional y sobrio'}\n\n"
+        f"Formato de las slides: {layout}.\n\n"
         f"Convierte esta lección en slides Marp:\n\n{lesson_md}"
     )
 
@@ -78,6 +105,11 @@ def clean_marp_output(text: str) -> str:
     return text + "\n"
 
 
+def apply_slide_orientation(deck: str, orientation: str) -> str:
+    """Enforce a stable Marp canvas regardless of the model response."""
+    return apply_marp_orientation(deck, orientation)
+
+
 def run_slides(
     task_input: str,
     *,
@@ -85,10 +117,26 @@ def run_slides(
     model: str,
     soul_md: str = "",
     agents_md: str = "",
+    orientation: str = "horizontal",
+    images_enabled: bool = False,
 ) -> str:
+    size_directive = "" if orientation == "vertical" else "size: 16:9"
     prompt = compose_system_prompt(
         SLIDES_SPEC, soul_md or DEFAULT_SOUL, agents_md or DEFAULT_AGENTS_MD
-    ).replace("{theme}", MARP_THEME)
+    ).replace("{theme}", MARP_THEME).replace("{size_directive}", size_directive)
+    if orientation == "vertical":
+        prompt += """
+
+Reglas adicionales para composición vertical móvil:
+- Diseña en una sola columna y aprovecha el recorrido vertical del lienzo 9:16.
+- Usa como máximo 4 bullets breves por slide y evita tablas anchas o columnas paralelas.
+- Mantén títulos en una o dos líneas y prioriza elementos grandes legibles en móvil.
+- Reparte conceptos densos en más slides; no reduzcas el texto para hacerlo caber.
+"""
+    if images_enabled:
+        prompt += IMAGE_MARKER_PROMPT
+    else:
+        prompt += "\nNo incluyas marcadores `factory-image` ni referencias a imágenes generadas.\n"
     response = client.chat.completions.create(
         model=model,
         messages=[
@@ -100,4 +148,4 @@ def run_slides(
     deck = clean_marp_output(response.choices[0].message.content or "")
     if "marp: true" not in deck:
         deck = f"---\nmarp: true\ntheme: {MARP_THEME}\npaginate: true\n---\n\n" + deck
-    return deck
+    return apply_slide_orientation(deck, orientation)

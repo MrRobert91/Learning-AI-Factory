@@ -1,5 +1,6 @@
 """Helpers for versioned artifact families and their active selection."""
 
+import json
 import re
 
 from sqlalchemy import select, update
@@ -42,6 +43,7 @@ def add_artifact_version(
     title: str,
     path: str,
     created_by_job_id: str | None = None,
+    metadata: dict | None = None,
 ) -> Artifact:
     """Add and select the next version in a logical artifact family."""
     logical_key = artifact_logical_key(type_, title)
@@ -63,12 +65,21 @@ def add_artifact_version(
         logical_key=logical_key,
         version=(previous[0].version + 1) if previous else 1,
         is_selected=True,
+        metadata_json=json.dumps(metadata or {}, ensure_ascii=False),
         path=path,
         created_by_job_id=created_by_job_id,
     )
     db.add(artifact)
     db.flush()
     return artifact
+
+
+def artifact_metadata(artifact: Artifact) -> dict:
+    try:
+        value = json.loads(artifact.metadata_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def selected_artifact(db: Session, project_id: str, type_: str) -> Artifact | None:

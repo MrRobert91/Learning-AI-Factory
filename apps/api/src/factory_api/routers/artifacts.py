@@ -2,12 +2,33 @@ import io
 import json
 import logging
 import re
+import shutil
 import uuid
 import zipfile
+from copy import deepcopy
 from pathlib import Path
 from typing import Annotated
 
-from factory_agents.tools.marp import available_renders, render_deck
+from factory_agents.tools.images import (
+    CONSISTENCY_PROMPT,
+    DEFAULT_IMAGE_MODEL,
+    DEFAULT_IMAGE_STYLE,
+    ImageGenerationError,
+    consistency_seed,
+    generate_image,
+    media_extension,
+    replace_generated_image,
+    resolve_style_prompt,
+)
+from factory_agents.tools.marp import (
+    available_renders,
+    inline_local_images,
+    legacy_vertical_render_is_current,
+    normalize_marp_canvas,
+    render_deck,
+    render_manifest_path,
+    vertical_theme_path,
+)
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, Response
 from pypdf import PdfReader, PdfWriter
@@ -16,6 +37,7 @@ from sqlalchemy.orm import Session
 
 from factory_api.artifact_versions import (
     add_artifact_version,
+    artifact_metadata,
     select_artifact_version,
     select_latest_remaining,
 )
@@ -24,7 +46,12 @@ from factory_api.config import get_settings
 from factory_api.db import get_db
 from factory_api.models import Artifact, Project
 from factory_api.pdf_exports import LessonDocument, lessons_pdf
-from factory_api.schemas import ArtifactEdit, ArtifactRead, ArtifactVersionRead
+from factory_api.schemas import (
+    ArtifactEdit,
+    ArtifactRead,
+    ArtifactVersionRead,
+    SlideImageRegenerate,
+)
 
 router = APIRouter(prefix="/api", tags=["artifacts"])
 logger = logging.getLogger(__name__)
@@ -83,9 +110,74 @@ def _artifact_documents(artifacts: list[Artifact]) -> list[LessonDocument]:
     return documents
 
 
+def _safe_stored_asset(relative_path: str) -> Path | None:
+    if not relative_path:
+        return None
+    settings = get_settings()
+    root = settings.data_dir.resolve()
+    candidate = (settings.data_dir / relative_path).resolve()
+    if not candidate.is_relative_to(root):
+        return None
+    return candidate
+
+
+def _clone_slide_assets(
+    markdown: str,
+    metadata: dict,
+    project_id: str,
+    *,
+    suffix: str,
+) -> tuple[str, dict, Path, str]:
+    """Copy a deck's generated images so every artifact version is self-contained."""
+    cloned = deepcopy(metadata)
+    asset_dir_name = f"slide-assets-{suffix}-{uuid.uuid4().hex[:8]}"
+    storage_asset_dir = f"artifacts/{project_id}/{asset_dir_name}"
+    output_dir = get_settings().data_dir / storage_asset_dir
+    for image in cloned.get("images", []):
+        stored_path = image.get("path")
+        markdown_path = image.get("markdown_path")
+        if not stored_path or not markdown_path:
+            continue
+        source = _safe_stored_asset(str(stored_path))
+        if source is None or not source.is_file():
+            continue
+        output_dir.mkdir(parents=True, exist_ok=True)
+        target = output_dir / source.name
+        shutil.copy2(source, target)
+        new_markdown_path = f"{asset_dir_name}/{source.name}"
+        markdown = markdown.replace(str(markdown_path), new_markdown_path)
+        image["path"] = f"{storage_asset_dir}/{source.name}"
+        image["markdown_path"] = new_markdown_path
+    return markdown, cloned, output_dir, storage_asset_dir
+
+
+def _remove_slide_assets(metadata: dict, project_id: str) -> None:
+    """Best-effort cleanup of the private asset directory owned by one deck version."""
+    root = (get_settings().data_dir / "artifacts" / project_id).resolve()
+    directories: set[Path] = set()
+    for image in metadata.get("images", []):
+        stored_path = image.get("path")
+        if not stored_path:
+            continue
+        path = _safe_stored_asset(str(stored_path))
+        if path is not None:
+            directories.add(path.parent)
+    for directory in directories:
+        if (
+            directory.is_relative_to(root)
+            and directory.parent == root
+            and directory.name.startswith("slide-assets-")
+        ):
+            shutil.rmtree(directory, ignore_errors=True)
+
+
 def _ensure_slide_renders(path: Path) -> dict[str, str]:
     renders = available_renders(path)
-    if len(renders) < 3:
+    source = path.read_text(encoding="utf-8")
+    legacy_vertical = normalize_marp_canvas(source) != source
+    if len(renders) < 3 or (
+        legacy_vertical and not legacy_vertical_render_is_current(path)
+    ):
         render_deck(path)
         renders = available_renders(path)
     return renders
@@ -107,7 +199,9 @@ def _combined_marp(artifacts: list[Artifact]) -> str:
     frontmatter = ""
     bodies: list[str] = []
     for artifact in artifacts:
-        source = (settings.data_dir / artifact.path).read_text(encoding="utf-8")
+        artifact_path = settings.data_dir / artifact.path
+        source = artifact_path.read_text(encoding="utf-8")
+        source = inline_local_images(source, artifact_path.parent)
         candidate_frontmatter, body = _marp_parts(source)
         if not frontmatter and candidate_frontmatter:
             frontmatter = candidate_frontmatter
@@ -217,6 +311,7 @@ def _artifact_read(db: Session, artifact: Artifact, include_content: bool) -> Ar
         logical_key=artifact.logical_key,
         version=artifact.version,
         is_selected=artifact.is_selected,
+        metadata=artifact_metadata(artifact),
         created_by_job_id=artifact.created_by_job_id,
         created_at=artifact.created_at,
         content=content,
@@ -226,6 +321,7 @@ def _artifact_read(db: Session, artifact: Artifact, include_content: bool) -> Ar
                 id=item.id,
                 version=item.version,
                 is_selected=item.is_selected,
+                metadata=artifact_metadata(item),
                 created_at=item.created_at,
             )
             for item in versions
@@ -249,6 +345,174 @@ def list_project_artifacts(project_id: str, user: CurrentUser, db: DB):
 @router.get("/artifacts/{artifact_id}", response_model=ArtifactRead)
 def get_artifact(artifact_id: str, user: CurrentUser, db: DB):
     artifact = _check_owner(db, user.id, db.get(Artifact, artifact_id))
+    return _artifact_read(db, artifact, include_content=True)
+
+
+@router.get("/artifacts/{artifact_id}/images/{image_id}")
+def get_slide_image(artifact_id: str, image_id: str, user: CurrentUser, db: DB):
+    artifact = _check_owner(db, user.id, db.get(Artifact, artifact_id))
+    if artifact.type != "slide_deck":
+        raise HTTPException(status_code=404, detail="Imagen no encontrada")
+    image = next(
+        (
+            item
+            for item in artifact_metadata(artifact).get("images", [])
+            if item.get("id") == image_id and item.get("path")
+        ),
+        None,
+    )
+    path = _safe_stored_asset(str(image["path"])) if image else None
+    if path is None or not path.is_file():
+        raise HTTPException(status_code=404, detail="Imagen no encontrada")
+    return FileResponse(
+        path,
+        media_type=image.get("media_type") or "application/octet-stream",
+        filename=path.name,
+        content_disposition_type="inline",
+    )
+
+
+@router.post(
+    "/artifacts/{artifact_id}/images/{image_id}/regenerate",
+    response_model=ArtifactRead,
+)
+def regenerate_slide_image(
+    artifact_id: str,
+    image_id: str,
+    body: SlideImageRegenerate,
+    user: CurrentUser,
+    db: DB,
+):
+    """Regenerate one image and save the modified deck as a new immutable version."""
+    original = _check_owner(db, user.id, db.get(Artifact, artifact_id))
+    if original.type != "slide_deck":
+        raise HTTPException(status_code=422, detail="El artefacto no es un deck de slides")
+    metadata = artifact_metadata(original)
+    original_image = next(
+        (item for item in metadata.get("images", []) if item.get("id") == image_id),
+        None,
+    )
+    if original_image is None:
+        raise HTTPException(status_code=404, detail="Imagen no encontrada")
+
+    model = original_image.get("model") or metadata.get("image_generation", {}).get(
+        "model", DEFAULT_IMAGE_MODEL
+    )
+    style = original_image.get("style") or metadata.get("image_generation", {}).get(
+        "style", DEFAULT_IMAGE_STYLE
+    )
+    style_prompt = original_image.get("style_prompt") or resolve_style_prompt(
+        style,
+        metadata.get("image_generation", {}).get("style_prompt", ""),
+    )
+    seed = original_image.get("seed")
+    if seed is None:
+        seed = consistency_seed(original.logical_key, style_prompt)
+    resolved_prompt = (
+        f"{body.prompt.strip()}\n\nSTYLE SYSTEM:\n{style_prompt}\n\n{CONSISTENCY_PROMPT}"
+    )
+    try:
+        generated = generate_image(
+            resolved_prompt,
+            api_key=get_settings().openrouter_api_key,
+            model=model,
+            orientation=metadata.get("orientation", "horizontal"),
+            seed=seed,
+        )
+    except (ImageGenerationError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    settings = get_settings()
+    original_path = settings.data_dir / original.path
+    markdown = original_path.read_text(encoding="utf-8")
+    markdown, cloned_metadata, output_dir, storage_asset_dir = _clone_slide_assets(
+        markdown,
+        metadata,
+        original.project_id,
+        suffix="regen",
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    cloned_image = next(
+        item for item in cloned_metadata.get("images", []) if item.get("id") == image_id
+    )
+    previous_path = _safe_stored_asset(str(cloned_image.get("path", "")))
+    extension = media_extension(generated.media_type, generated.content)
+    filename = f"{image_id}{extension}"
+    target = output_dir / filename
+    target.write_bytes(generated.content)
+    if previous_path is not None and previous_path != target:
+        previous_path.unlink(missing_ok=True)
+    markdown_path = f"{output_dir.name}/{filename}"
+    try:
+        markdown = replace_generated_image(
+            markdown,
+            image_id,
+            markdown_path,
+            layout=cloned_image.get("layout", "right"),
+            alt=cloned_image.get("alt", "Ilustración generada"),
+        )
+    except ValueError as exc:
+        shutil.rmtree(output_dir, ignore_errors=True)
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    cloned_image.update(
+        {
+            "prompt": body.prompt.strip(),
+            "model": model,
+            "style": style,
+            "style_prompt": style_prompt,
+            "seed": seed,
+            "path": f"{storage_asset_dir}/{filename}",
+            "markdown_path": markdown_path,
+            "media_type": generated.media_type,
+            "cost_usd": generated.cost_usd,
+            "status": "generated",
+        }
+    )
+    cloned_image.pop("error", None)
+    generation = cloned_metadata.setdefault("image_generation", {})
+    generation.update(
+        {
+            "enabled": True,
+            "model": model,
+            "style": style,
+            "generated": sum(
+                item.get("status") == "generated"
+                for item in cloned_metadata.get("images", [])
+            ),
+            "attempted": len(cloned_metadata.get("images", [])),
+            "generation_cost_usd": generated.cost_usd or 0.0,
+            "regenerated_image_id": image_id,
+        }
+    )
+
+    relative = (
+        f"artifacts/{original.project_id}/slide_deck-image-edit-{uuid.uuid4().hex[:10]}.md"
+    )
+    path = settings.data_dir / relative
+    path.write_text(normalize_marp_canvas(markdown), encoding="utf-8")
+    artifact = add_artifact_version(
+        db,
+        project_id=original.project_id,
+        type_="slide_deck",
+        format_="markdown",
+        title=original.title,
+        path=relative,
+        metadata=cloned_metadata,
+    )
+    db.commit()
+    db.refresh(artifact)
+    render_deck(path)
+    logger.info(
+        "Slide image regenerated as a new artifact version",
+        extra={
+            "artifact_id": artifact.id,
+            "source_artifact_id": original.id,
+            "project_id": original.project_id,
+            "image_id": image_id,
+            "artifact_version": artifact.version,
+        },
+    )
     return _artifact_read(db, artifact, include_content=True)
 
 
@@ -286,7 +550,18 @@ def edit_artifact(
     )
     path = settings.data_dir / relative
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(body.content, encoding="utf-8")
+    content = body.content
+    metadata = artifact_metadata(original)
+    if original.type == "slide_deck" and metadata.get("images"):
+        content, metadata, _asset_dir, _storage_dir = _clone_slide_assets(
+            content,
+            metadata,
+            original.project_id,
+            suffix="edit",
+        )
+    if original.type == "slide_deck":
+        content = normalize_marp_canvas(content)
+    path.write_text(content, encoding="utf-8")
     edited = add_artifact_version(
         db,
         project_id=original.project_id,
@@ -294,6 +569,7 @@ def edit_artifact(
         format_=original.format,
         title=original.title,
         path=relative,
+        metadata=metadata,
     )
     db.commit()
     db.refresh(edited)
@@ -324,17 +600,20 @@ def select_artifact(artifact_id: str, user: CurrentUser, db: DB):
 def delete_artifact(artifact_id: str, user: CurrentUser, db: DB):
     artifact = _check_owner(db, user.id, db.get(Artifact, artifact_id))
     path = get_settings().data_dir / artifact.path
+    metadata = artifact_metadata(artifact)
     renders = available_renders(path) if artifact.type == "slide_deck" else {}
     if artifact.is_selected:
         select_latest_remaining(db, artifact)
     db.delete(artifact)
     db.commit()
-    for candidate in [path, *renders.values()]:
+    for candidate in [path, render_manifest_path(path), *renders.values()]:
         try:
             Path(candidate).unlink(missing_ok=True)
         except OSError:
             # The DB deletion is authoritative; orphan cleanup is best effort.
             pass
+    if artifact.type == "slide_deck":
+        _remove_slide_assets(metadata, artifact.project_id)
 
 
 @router.get("/artifacts/{artifact_id}/download")
@@ -343,6 +622,12 @@ def download_artifact(artifact_id: str, user: CurrentUser, db: DB):
     path = get_settings().data_dir / artifact.path
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Fichero no encontrado")
+    if artifact.type == "slide_deck":
+        return Response(
+            content=normalize_marp_canvas(path.read_text(encoding="utf-8")),
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{path.name}"'},
+        )
     return FileResponse(path, filename=path.name)
 
 
@@ -468,6 +753,18 @@ def export_slides_pptx(project_id: str, user: CurrentUser, db: DB):
     artifacts = _selected_artifacts(db, project_id, "slide_deck")
     if not artifacts:
         raise HTTPException(status_code=404, detail="No hay slides activas para exportar")
+    orientations = {
+        artifact_metadata(artifact).get("orientation", "horizontal")
+        for artifact in artifacts
+    }
+    if len(orientations) > 1:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No se puede crear un único PPTX con slides horizontales y verticales. "
+                "Selecciona decks de una sola orientación o descarga el PDF o ZIP."
+            ),
+        )
     content = _render_combined_slides(artifacts, "pptx")
     logger.info(
         "Combined slides PPTX exported",
@@ -489,11 +786,26 @@ def export_slides_zip(project_id: str, user: CurrentUser, db: DB):
     settings = get_settings()
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        if any(
+            artifact_metadata(artifact).get("orientation") == "vertical"
+            for artifact in artifacts
+        ):
+            archive.write(vertical_theme_path(), "factory-vertical.css")
         for index, artifact in enumerate(artifacts, start=1):
             source = settings.data_dir / artifact.path
             renders = _ensure_slide_renders(source)
             stem = f"{index:02d}-{_safe_filename(artifact.title, 'slides')}"
-            archive.write(source, f"{stem}.md")
+            markdown = normalize_marp_canvas(source.read_text(encoding="utf-8"))
+            for image in artifact_metadata(artifact).get("images", []):
+                stored_path = image.get("path")
+                markdown_path = image.get("markdown_path")
+                image_path = _safe_stored_asset(str(stored_path or ""))
+                if image_path is None or not image_path.is_file() or not markdown_path:
+                    continue
+                archive_path = f"{stem}-assets/{image_path.name}"
+                markdown = markdown.replace(str(markdown_path), archive_path)
+                archive.write(image_path, archive_path)
+            archive.writestr(f"{stem}.md", markdown)
             for fmt in ("pdf", "pptx"):
                 if fmt in renders:
                     archive.write(renders[fmt], f"{stem}.{fmt}")
@@ -557,6 +869,13 @@ async def upload_artifact(
         format_=format_,
         title=title or (file.filename or type),
         path=rel_path,
+        metadata={
+            "orientation": "horizontal",
+            "width": 1920,
+            "height": 1080,
+        }
+        if type == "slide_deck"
+        else None,
     )
     db.commit()
     db.refresh(artifact)

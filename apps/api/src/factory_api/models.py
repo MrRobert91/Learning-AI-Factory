@@ -255,6 +255,7 @@ class Artifact(Base):
     logical_key: Mapped[str] = mapped_column(String(320), nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     is_selected: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
     path: Mapped[str] = mapped_column(Text, nullable=False)  # relative to data_dir
     created_by_job_id: Mapped[str | None] = mapped_column(
         ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True

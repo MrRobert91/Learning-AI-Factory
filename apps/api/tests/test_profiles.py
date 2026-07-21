@@ -12,6 +12,49 @@ def test_default_profiles_seeded(auth_client):
     assert len(profiles) >= 1
     assert any(p["is_default"] for p in profiles)
     assert profiles[0]["soul_md"]
+    slides = auth_client.get("/api/agents/slides/profiles").json()
+    videos = auth_client.get("/api/agents/video/profiles").json()
+    assert slides[0]["orientation"] == "horizontal"
+    assert slides[0]["images_enabled"] is False
+    assert slides[0]["image_model"] == "bytedance-seed/seedream-4.5"
+    assert slides[0]["image_style"] == "editorial_vector"
+    assert videos[0]["orientation"] == "horizontal"
+
+
+def test_slide_profile_image_configuration_is_versioned(auth_client):
+    options = auth_client.get("/api/agents/image-options")
+    assert options.status_code == 200
+    assert len(options.json()["models"]) == 4
+    assert len(options.json()["styles"]) == 5  # Four presets plus custom.
+
+    response = auth_client.post(
+        "/api/agents/slides/profiles",
+        json={
+            "name": "Slides ilustradas",
+            "images_enabled": True,
+            "image_model": "bytedance-seed/seedream-4.5",
+            "image_style": "custom",
+            "image_style_prompt": "Paper collage with cobalt and coral shapes",
+        },
+    )
+    assert response.status_code == 201
+    profile = response.json()
+    assert profile["images_enabled"] is True
+    assert profile["image_style"] == "custom"
+
+    updated = auth_client.patch(
+        f"/api/agents/profiles/{profile['id']}",
+        json={"image_style": "isometric_3d", "image_style_prompt": "", "note": "3D"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["version"] == 2
+    assert updated.json()["image_style"] == "isometric_3d"
+
+    invalid = auth_client.patch(
+        f"/api/agents/profiles/{profile['id']}",
+        json={"image_style": "custom", "image_style_prompt": ""},
+    )
+    assert invalid.status_code == 422
 
 
 def test_profile_crud_and_versioning(auth_client):
