@@ -22,6 +22,92 @@ def _upload(auth_client, project_id, type_, title, content):
     return response.json()
 
 
+def _fake_complete_marp_render(source):
+    path = Path(source)
+    outputs = {
+        "html": path.with_suffix(".html"),
+        "pdf": path.with_suffix(".pdf"),
+        "pptx": path.with_suffix(".pptx"),
+    }
+    outputs["html"].write_text("<html><body>palette preview</body></html>", encoding="utf-8")
+    outputs["pdf"].write_bytes(b"PDF")
+    outputs["pptx"].write_bytes(b"PPTX")
+    return {format_: str(output) for format_, output in outputs.items()}
+
+
+def test_slide_palette_edit_creates_new_version_without_mutating_source(
+    auth_client, monkeypatch
+):
+    monkeypatch.setattr("factory_api.routers.artifacts.marp_available", lambda: True)
+    monkeypatch.setattr("factory_api.routers.artifacts.render_deck", _fake_complete_marp_render)
+    project = _create_project(auth_client)
+    original = _upload(
+        auth_client,
+        project["id"],
+        "slide_deck",
+        "Slides — 1.1 Introducción",
+        "---\nmarp: true\ntheme: default\n---\n\n# Original\n",
+    )
+    palette = auth_client.get("/api/agents/palette-options").json()["presets"][2]["colors"]
+
+    preview = auth_client.post(
+        f"/api/artifacts/{original['id']}/palette/preview",
+        json={"palette": palette},
+    )
+    assert preview.status_code == 200
+    assert b"palette preview" in preview.content
+
+    response = auth_client.post(
+        f"/api/artifacts/{original['id']}/palette",
+        json={"palette": palette, "scope": "deck"},
+    )
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+    edited = response.json()[0]
+    assert edited["version"] == 2
+    assert edited["metadata"]["source_artifact_id"] == original["id"]
+    assert edited["metadata"]["version_reason"] == "palette_edit"
+    assert edited["metadata"]["palette_name"] == "dark"
+    assert "--factory-background: #111827" in edited["content"]
+    assert set(edited["renders"]) == {"html", "pdf", "pptx"}
+
+    historical = auth_client.get(f"/api/artifacts/{original['id']}").json()
+    assert historical["is_selected"] is False
+    assert "factory-slide-palette" not in historical["content"]
+
+
+def test_project_palette_edit_updates_all_selected_decks_atomically(auth_client, monkeypatch):
+    monkeypatch.setattr("factory_api.routers.artifacts.marp_available", lambda: True)
+    monkeypatch.setattr("factory_api.routers.artifacts.render_deck", _fake_complete_marp_render)
+    project = _create_project(auth_client)
+    first = _upload(
+        auth_client,
+        project["id"],
+        "slide_deck",
+        "Slides — 1.1 Uno",
+        "---\nmarp: true\n---\n\n# Uno\n",
+    )
+    _upload(
+        auth_client,
+        project["id"],
+        "slide_deck",
+        "Slides — 1.2 Dos",
+        "---\nmarp: true\n---\n\n# Dos\n",
+    )
+    palette = auth_client.get("/api/agents/palette-options").json()["presets"][4]["colors"]
+
+    response = auth_client.post(
+        f"/api/artifacts/{first['id']}/palette",
+        json={"palette": palette, "scope": "project"},
+    )
+    assert response.status_code == 200
+    assert len(response.json()) == 2
+    assert {item["version"] for item in response.json()} == {2}
+    selected = auth_client.get(f"/api/projects/{project['id']}/artifacts").json()
+    assert len(selected) == 2
+    assert all(item["metadata"]["palette_name"] == "warm" for item in selected)
+
+
 def test_artifact_edit_creates_version_and_lesson_pdf_exports(auth_client):
     project = _create_project(auth_client)
     original = _upload(

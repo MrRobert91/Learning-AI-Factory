@@ -4,6 +4,7 @@ from typing import Annotated
 
 from factory_agents.agents.curator import render_curator_input
 from factory_agents.tools.images import DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_STYLE
+from factory_agents.tools.palette import DEFAULT_SLIDE_PALETTE, normalize_palette
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
@@ -70,6 +71,7 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
             "image_model": DEFAULT_IMAGE_MODEL,
             "image_style": DEFAULT_IMAGE_STYLE,
             "image_style_prompt": "",
+            "slide_palette": dict(DEFAULT_SLIDE_PALETTE),
         }
     config = json.loads(profile.config_json or "{}")
     return {
@@ -81,6 +83,7 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
         "image_model": config.get("image_model") or DEFAULT_IMAGE_MODEL,
         "image_style": config.get("image_style") or DEFAULT_IMAGE_STYLE,
         "image_style_prompt": config.get("image_style_prompt") or "",
+        "slide_palette": normalize_palette(config.get("slide_palette")),
     }
 
 
