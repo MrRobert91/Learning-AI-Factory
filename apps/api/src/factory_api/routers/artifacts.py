@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from factory_api.artifact_versions import (
     add_artifact_version,
+    artifact_metadata,
     select_artifact_version,
     select_latest_remaining,
 )
@@ -217,6 +218,7 @@ def _artifact_read(db: Session, artifact: Artifact, include_content: bool) -> Ar
         logical_key=artifact.logical_key,
         version=artifact.version,
         is_selected=artifact.is_selected,
+        metadata=artifact_metadata(artifact),
         created_by_job_id=artifact.created_by_job_id,
         created_at=artifact.created_at,
         content=content,
@@ -226,6 +228,7 @@ def _artifact_read(db: Session, artifact: Artifact, include_content: bool) -> Ar
                 id=item.id,
                 version=item.version,
                 is_selected=item.is_selected,
+                metadata=artifact_metadata(item),
                 created_at=item.created_at,
             )
             for item in versions
@@ -294,6 +297,7 @@ def edit_artifact(
         format_=original.format,
         title=original.title,
         path=relative,
+        metadata=artifact_metadata(original),
     )
     db.commit()
     db.refresh(edited)
@@ -557,6 +561,13 @@ async def upload_artifact(
         format_=format_,
         title=title or (file.filename or type),
         path=rel_path,
+        metadata={
+            "orientation": "horizontal",
+            "width": 1920,
+            "height": 1080,
+        }
+        if type == "slide_deck"
+        else None,
     )
     db.commit()
     db.refresh(artifact)

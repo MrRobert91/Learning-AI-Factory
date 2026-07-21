@@ -78,6 +78,12 @@ def test_slides_adds_frontmatter_when_missing():
     assert result.startswith("---\nmarp: true")
 
 
+def test_slides_enforces_vertical_canvas():
+    client = FakeClient(["# Contenido vertical\n"])
+    result = run_slides("lección", client=client, model="m", orientation="vertical")
+    assert "size: 1080px 1920px" in result
+
+
 def test_clean_marp_output_plain():
     assert clean_marp_output("# Hola") == "# Hola\n"
 

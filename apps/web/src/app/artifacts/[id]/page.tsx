@@ -41,6 +41,24 @@ const TYPE_LABELS: Record<string, string> = {
   thumbnail: "Miniatura",
 };
 
+function artifactOrientation(
+  artifact: Artifact,
+): "horizontal" | "vertical" | null {
+  return artifact.metadata.orientation === "vertical"
+    ? "vertical"
+    : artifact.metadata.orientation === "horizontal"
+      ? "horizontal"
+      : null;
+}
+
+function orientationLabel(metadata: Record<string, unknown>): string | null {
+  return metadata.orientation === "vertical"
+    ? "Vertical 9:16"
+    : metadata.orientation === "horizontal"
+      ? "Horizontal 16:9"
+      : null;
+}
+
 export default function ArtifactViewerPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
@@ -165,6 +183,11 @@ export default function ArtifactViewerPage() {
             >
               v{artifact.version} {artifact.is_selected ? "· activa" : "· histórica"}
             </span>
+            {orientationLabel(artifact.metadata) && (
+              <span className="badge-info">
+                {orientationLabel(artifact.metadata)}
+              </span>
+            )}
             <span>{new Date(artifact.created_at).toLocaleString("es")}</span>
           </p>
         </div>
@@ -181,6 +204,9 @@ export default function ArtifactViewerPage() {
               {artifact.versions.map((version) => (
                 <option key={version.id} value={version.id}>
                   v{version.version}
+                  {orientationLabel(version.metadata)
+                    ? ` · ${orientationLabel(version.metadata)}`
+                    : ""}
                   {version.is_selected ? " · activa" : ""}
                 </option>
               ))}
@@ -250,7 +276,11 @@ export default function ArtifactViewerPage() {
             <video
               controls
               src={"/api/artifacts/" + artifact.id + "/download"}
-              className="card mb-6 aspect-video w-full bg-black"
+              className={`card mb-6 w-full bg-black ${
+                artifactOrientation(artifact) === "vertical"
+                  ? "mx-auto aspect-[9/16] max-w-md"
+                  : "aspect-video"
+              }`}
             />
           )}
           {artifact.format === "json" && artifact.content !== null ? (
@@ -259,7 +289,10 @@ export default function ArtifactViewerPage() {
             </article>
           ) : artifact.type === "slide_deck" && artifact.content !== null ? (
             <div className="card mb-6 p-4 sm:p-6">
-              <SlideDeck artifactId={artifact.id} />
+              <SlideDeck
+                artifactId={artifact.id}
+                orientation={artifactOrientation(artifact) ?? "horizontal"}
+              />
             </div>
           ) : MARKDOWN_TYPES.has(artifact.type) && artifact.content !== null ? (
             <article className="card notebook-sheet p-6 sm:p-8">

@@ -32,6 +32,7 @@ const PROFILE_AGENTS = [
   "slides",
   "script",
   "voice",
+  "video",
   "publisher",
 ];
 const AGENT_NAMES: Record<string, string> = {
@@ -342,6 +343,9 @@ export default function WorkflowEditorPage() {
                 {(profiles[step.agent] ?? []).map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name} (v{p.version})
+                    {p.orientation
+                      ? ` · ${p.orientation === "vertical" ? "9:16" : "16:9"}`
+                      : ""}
                   </option>
                 ))}
               </select>

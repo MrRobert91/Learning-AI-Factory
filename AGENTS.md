@@ -48,6 +48,10 @@ docker compose up --build                # stack completo (2 contenedores)
 - **Renderizado web**: usa el componente `Markdown` para contenido generado y
   notas de memoria. Los artefactos JSON se muestran con `JsonViewer`; conserva
   la descarga raw, pero no presentes JSON sin procesar como vista principal.
+- **Orientación multimedia**: los perfiles de `slides` y `video` guardan
+  `orientation` (`horizontal` por defecto o `vertical`). Las variantes de vídeo
+  siguen en la misma familia versionada y registran la orientación en los
+  metadatos del artefacto; no dupliques subtítulos si su contenido no cambia.
 
 ## Convenciones
 

@@ -125,7 +125,6 @@ const STAGES: {
   },
 ];
 
-// Video production is tool-driven (TTS + ffmpeg), not an LLM agent with profiles.
 const PROFILE_AGENTS = [
   "curator",
   "planner",
@@ -133,6 +132,7 @@ const PROFILE_AGENTS = [
   "slides",
   "script",
   "voice",
+  "video",
   "publisher",
 ];
 
@@ -246,6 +246,14 @@ function artifactIcon(type: string) {
   if (type === "research_brief") return <IconSearch size={16} />;
   if (type === "performance_report") return <IconTrendingUp size={16} />;
   return <IconFileText size={16} />;
+}
+
+function orientationLabel(metadata: Record<string, unknown>): string | null {
+  return metadata.orientation === "vertical"
+    ? "Vertical 9:16"
+    : metadata.orientation === "horizontal"
+      ? "Horizontal 16:9"
+      : null;
 }
 
 const ACTIVE_STATUSES: Job["status"][] = ["queued", "running", "waiting_approval"];
@@ -693,6 +701,9 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
                     {profiles.map((p) => (
                       <option key={p.id} value={p.id}>
                         {p.name} (v{p.version})
+                        {p.orientation
+                          ? ` · ${p.orientation === "vertical" ? "9:16" : "16:9"}`
+                          : ""}
                       </option>
                     ))}
                   </select>
@@ -1056,6 +1067,9 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
                           </span>
                           <span className="block text-xs text-zinc-500">
                             {new Date(artifact.created_at).toLocaleString("es")}
+                            {orientationLabel(artifact.metadata)
+                              ? ` · ${orientationLabel(artifact.metadata)}`
+                              : ""}
                           </span>
                         </span>
                       </Link>
@@ -1072,6 +1086,9 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
                         {artifact.versions.map((version) => (
                           <option key={version.id} value={version.id}>
                             v{version.version}
+                            {orientationLabel(version.metadata)
+                              ? ` · ${orientationLabel(version.metadata)}`
+                              : ""}
                             {version.is_selected ? " · activa" : ""}
                           </option>
                         ))}

@@ -60,12 +60,18 @@ RUNNABLE_AGENTS = (
 
 def _profile_fields(profile: AgentProfile | None) -> dict:
     if profile is None:
-        return {"soul_md": "", "agents_md": "", "model": None}
+        return {
+            "soul_md": "",
+            "agents_md": "",
+            "model": None,
+            "orientation": "horizontal",
+        }
     config = json.loads(profile.config_json or "{}")
     return {
         "soul_md": profile.soul_md,
         "agents_md": profile.agents_md,
         "model": config.get("model"),
+        "orientation": config.get("orientation", "horizontal"),
     }
 
 

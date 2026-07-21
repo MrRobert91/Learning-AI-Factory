@@ -12,6 +12,10 @@ def test_default_profiles_seeded(auth_client):
     assert len(profiles) >= 1
     assert any(p["is_default"] for p in profiles)
     assert profiles[0]["soul_md"]
+    slides = auth_client.get("/api/agents/slides/profiles").json()
+    videos = auth_client.get("/api/agents/video/profiles").json()
+    assert slides[0]["orientation"] == "horizontal"
+    assert videos[0]["orientation"] == "horizontal"
 
 
 def test_profile_crud_and_versioning(auth_client):

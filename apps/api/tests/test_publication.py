@@ -52,7 +52,7 @@ def _patch_publication(monkeypatch, thumbnail_ok=True):
             paths.append(p)
         return paths
 
-    def fake_compose(pairs, out_path, workdir):
+    def fake_compose(pairs, out_path, workdir, orientation="horizontal"):
         out = Path(out_path)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(b"MP4")

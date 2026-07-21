@@ -21,6 +21,14 @@ from factory_api.schemas import (
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
 DB = Annotated[Session, Depends(get_db)]
+ORIENTATION_AGENTS = {"slides", "video"}
+
+
+def _profile_config(agent_type: str, model: str | None, orientation: str | None) -> dict:
+    config = {"model": model} if model else {}
+    if agent_type in ORIENTATION_AGENTS:
+        config["orientation"] = orientation or "horizontal"
+    return config
 
 
 def seed_default_profiles(db: Session) -> None:
@@ -35,6 +43,7 @@ def seed_default_profiles(db: Session) -> None:
                 name=f"{spec.display_name} (por defecto)",
                 soul_md=spec.default_soul_md,
                 agents_md=spec.default_agents_md,
+                config_json=json.dumps(_profile_config(spec.name, None, None)),
                 is_default=True,
             )
             db.add(profile)
@@ -61,6 +70,9 @@ def _profile_read(p: AgentProfile) -> ProfileRead:
         soul_md=p.soul_md,
         agents_md=p.agents_md,
         model=config.get("model"),
+        orientation=(config.get("orientation") or "horizontal")
+        if p.agent_type in ORIENTATION_AGENTS
+        else None,
         version=p.version,
         is_default=p.is_default,
         created_at=p.created_at,
@@ -115,7 +127,7 @@ def list_profiles(agent_type: str, user: CurrentUser, db: DB):
 def create_profile(agent_type: str, body: ProfileCreate, user: CurrentUser, db: DB):
     if agent_type not in REGISTRY:
         raise HTTPException(status_code=404, detail="Agente desconocido")
-    config = {"model": body.model} if body.model else {}
+    config = _profile_config(agent_type, body.model, body.orientation)
     profile = AgentProfile(
         agent_type=agent_type,
         name=body.name,
@@ -153,7 +165,22 @@ def list_profile_versions(profile_id: str, user: CurrentUser, db: DB):
     profile = db.get(AgentProfile, profile_id)
     if profile is None:
         raise HTTPException(status_code=404, detail="Perfil no encontrado")
-    return profile.versions
+    return [
+        ProfileVersionRead(
+            version=item.version,
+            soul_md=item.soul_md,
+            agents_md=item.agents_md,
+            model=json.loads(item.config_json or "{}").get("model"),
+            orientation=(
+                json.loads(item.config_json or "{}").get("orientation") or "horizontal"
+            )
+            if profile.agent_type in ORIENTATION_AGENTS
+            else None,
+            note=item.note,
+            created_at=item.created_at,
+        )
+        for item in profile.versions
+    ]
 
 
 @router.patch("/profiles/{profile_id}", response_model=ProfileRead)
@@ -166,6 +193,12 @@ def update_profile(profile_id: str, body: ProfileUpdate, user: CurrentUser, db: 
         (body.soul_md is not None and body.soul_md != profile.soul_md)
         or (body.agents_md is not None and body.agents_md != profile.agents_md)
         or (body.model is not None)
+        or (
+            body.orientation is not None
+            and body.orientation != json.loads(profile.config_json or "{}").get(
+                "orientation", "horizontal"
+            )
+        )
     )
     if body.name is not None:
         profile.name = body.name
@@ -177,6 +210,15 @@ def update_profile(profile_id: str, body: ProfileUpdate, user: CurrentUser, db: 
         config = json.loads(profile.config_json or "{}")
         config["model"] = body.model or None
         profile.config_json = json.dumps({k: v for k, v in config.items() if v})
+    if body.orientation is not None:
+        if profile.agent_type not in ORIENTATION_AGENTS:
+            raise HTTPException(
+                status_code=422,
+                detail="Este agente no admite configuración de orientación",
+            )
+        config = json.loads(profile.config_json or "{}")
+        config["orientation"] = body.orientation
+        profile.config_json = json.dumps(config)
     if body.is_default is True:
         for other in db.scalars(
             select(AgentProfile).where(AgentProfile.agent_type == profile.agent_type)

@@ -5,7 +5,7 @@ import pytest
 from factory_agents.agents.voice import run_voice
 from factory_agents.contracts import VoiceScript
 from factory_agents.tools.tts import synthesize_cached
-from factory_agents.tools.video import _format_srt_time, build_srt
+from factory_agents.tools.video import _format_srt_time, build_srt, compose_video
 
 
 class FakeClient:
@@ -85,3 +85,27 @@ def test_build_srt_accumulates_timings():
     srt = build_srt([("Primera frase.", 2.0), ("Segunda frase.", 3.5)])
     assert "1\n00:00:00,000 --> 00:00:02,000\nPrimera frase." in srt
     assert "2\n00:00:02,000 --> 00:00:05,500\nSegunda frase." in srt
+
+
+def test_vertical_video_uses_blurred_background_without_cropping_foreground(
+    monkeypatch, tmp_path
+):
+    commands = []
+    monkeypatch.setattr("factory_agents.tools.video.ffmpeg_available", lambda: True)
+
+    def fake_run(command, timeout=600):
+        commands.append(command)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("factory_agents.tools.video._run", fake_run)
+    compose_video(
+        [(tmp_path / "slide.png", tmp_path / "audio.mp3")],
+        tmp_path / "video.mp4",
+        tmp_path / "segments",
+        orientation="vertical",
+    )
+    filter_graph = commands[0][commands[0].index("-filter_complex") + 1]
+    assert "scale=1080:1920:force_original_aspect_ratio=increase" in filter_graph
+    assert "scale=1080:1920:force_original_aspect_ratio=decrease" in filter_graph
+    assert "boxblur" in filter_graph
+    assert "overlay=(W-w)/2:(H-h)/2" in filter_graph

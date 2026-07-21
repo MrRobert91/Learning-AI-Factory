@@ -26,9 +26,10 @@ def _patch_media(monkeypatch):
     )
 
 
-def _run(auth_client, project_id, agent):
+def _run(auth_client, project_id, agent, profile_id=None):
     job_id = auth_client.post(
-        f"/api/projects/{project_id}/agent-runs", json={"agent": agent}
+        f"/api/projects/{project_id}/agent-runs",
+        json={"agent": agent, "profile_id": profile_id},
     ).json()["id"]
     return _wait_for_job(auth_client, job_id)
 
@@ -72,8 +73,28 @@ def test_script_requires_slides(auth_client, monkeypatch):
     assert "slide_deck" in response.json()["detail"]
 
 
+def test_slides_profile_sets_vertical_artifact_metadata(auth_client, monkeypatch):
+    _patch_media(monkeypatch)
+    project = _create_project(auth_client)
+    for agent in ("curator", "planner", "lessons"):
+        assert _run(auth_client, project["id"], agent)["status"] == "done"
+    profile = auth_client.post(
+        "/api/agents/slides/profiles",
+        json={"name": "Slides verticales", "orientation": "vertical"},
+    ).json()
+
+    job = _run(auth_client, project["id"], "slides", profile_id=profile["id"])
+    assert job["status"] == "done", job["error"]
+    artifacts = auth_client.get(f"/api/projects/{project['id']}/artifacts").json()
+    slides = [a for a in artifacts if a["type"] == "slide_deck"]
+    assert slides
+    assert all(a["metadata"]["orientation"] == "vertical" for a in slides)
+    assert all(a["metadata"]["width"] == 1080 for a in slides)
+
+
 def test_video_job_with_mocked_media_tools(auth_client, monkeypatch, tmp_path):
     _patch_media(monkeypatch)
+    composed_orientations = []
 
     class FakeProvider:
         cache_key = "fake"
@@ -94,7 +115,8 @@ def test_video_job_with_mocked_media_tools(auth_client, monkeypatch, tmp_path):
             paths.append(p)
         return paths
 
-    def fake_compose(pairs, out_path, workdir):
+    def fake_compose(pairs, out_path, workdir, orientation="horizontal"):
+        composed_orientations.append(orientation)
         out = Path(out_path)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(b"MP4" + str(len(pairs)).encode())
@@ -121,6 +143,7 @@ def test_video_job_with_mocked_media_tools(auth_client, monkeypatch, tmp_path):
     videos = [a for a in artifacts if a["type"] == "video"]
     subtitles = [a for a in artifacts if a["type"] == "subtitles"]
     assert len(videos) == 2 and len(subtitles) == 2
+    assert all(a["metadata"]["orientation"] == "horizontal" for a in videos)
 
     srt = auth_client.get(f"/api/artifacts/{subtitles[0]['id']}").json()
     assert "00:00:00,000 --> 00:00:02,500" in srt["content"]
@@ -128,6 +151,35 @@ def test_video_job_with_mocked_media_tools(auth_client, monkeypatch, tmp_path):
     download = auth_client.get(f"/api/artifacts/{videos[0]['id']}/download")
     assert download.status_code == 200
     assert download.content.startswith(b"MP4")
+
+    vertical_profile = auth_client.post(
+        "/api/agents/video/profiles",
+        json={"name": "Shorts y TikTok", "orientation": "vertical"},
+    )
+    assert vertical_profile.status_code == 201
+    assert vertical_profile.json()["orientation"] == "vertical"
+
+    vertical_job = _run(
+        auth_client,
+        project["id"],
+        "video",
+        profile_id=vertical_profile.json()["id"],
+    )
+    assert vertical_job["status"] == "done", vertical_job["error"]
+    artifacts = auth_client.get(f"/api/projects/{project['id']}/artifacts").json()
+    videos = [a for a in artifacts if a["type"] == "video"]
+    subtitles = [a for a in artifacts if a["type"] == "subtitles"]
+    assert all(a["metadata"]["orientation"] == "vertical" for a in videos)
+    assert all(len(a["versions"]) == 2 for a in videos)
+    assert all(a["versions"][0]["metadata"]["orientation"] == "vertical" for a in videos)
+    assert all(a["versions"][1]["metadata"]["orientation"] == "horizontal" for a in videos)
+    assert all(len(a["versions"]) == 1 for a in subtitles)
+    assert composed_orientations == [
+        "horizontal",
+        "horizontal",
+        "vertical",
+        "vertical",
+    ]
 
 
 def test_video_requires_voice_script(auth_client, monkeypatch):

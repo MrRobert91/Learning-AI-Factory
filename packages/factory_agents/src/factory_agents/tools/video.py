@@ -9,7 +9,10 @@ import subprocess
 from pathlib import Path
 
 FFMPEG_TIMEOUT = 600
-VIDEO_SIZE = "1920x1080"
+VIDEO_SIZES = {
+    "horizontal": (1920, 1080),
+    "vertical": (1080, 1920),
+}
 
 
 class VideoToolError(RuntimeError):
@@ -73,11 +76,26 @@ def probe_duration(media_path: str | Path) -> float:
 
 
 def compose_video(
-    pairs: list[tuple[Path, Path]], out_path: str | Path, workdir: str | Path
+    pairs: list[tuple[Path, Path]],
+    out_path: str | Path,
+    workdir: str | Path,
+    orientation: str = "horizontal",
 ) -> Path:
-    """Compose (slide_image, narration_audio) pairs into a single MP4."""
+    """Compose slide/audio pairs, preserving the full slide on either canvas."""
     if not ffmpeg_available():
         raise VideoToolError("ffmpeg/ffprobe no están instalados")
+    if orientation not in VIDEO_SIZES:
+        raise VideoToolError(f"Orientación de vídeo desconocida: {orientation}")
+    width, height = VIDEO_SIZES[orientation]
+    filter_graph = (
+        "[0:v]split=2[background][foreground];"
+        f"[background]scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height},boxblur=20:2[background_blurred];"
+        f"[foreground]scale={width}:{height}:force_original_aspect_ratio=decrease"
+        "[foreground_scaled];"
+        "[background_blurred][foreground_scaled]"
+        "overlay=(W-w)/2:(H-h)/2,format=yuv420p[video]"
+    )
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     segment_paths: list[Path] = []
@@ -97,11 +115,12 @@ def compose_video(
                 "libx264",
                 "-tune",
                 "stillimage",
-                "-pix_fmt",
-                "yuv420p",
-                "-vf",
-                f"scale={VIDEO_SIZE.replace('x', ':')}:force_original_aspect_ratio=decrease,"
-                f"pad={VIDEO_SIZE.replace('x', ':')}:(ow-iw)/2:(oh-ih)/2:color=white",
+                "-filter_complex",
+                filter_graph,
+                "-map",
+                "[video]",
+                "-map",
+                "1:a",
                 "-c:a",
                 "aac",
                 "-b:a",

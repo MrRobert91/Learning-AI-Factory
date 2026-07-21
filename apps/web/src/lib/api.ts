@@ -120,6 +120,7 @@ export interface AgentProfile {
   soul_md: string;
   agents_md: string;
   model: string | null;
+  orientation: "horizontal" | "vertical" | null;
   version: number;
   is_default: boolean;
   created_at: string;
@@ -130,6 +131,8 @@ export interface ProfileVersion {
   version: number;
   soul_md: string;
   agents_md: string;
+  model: string | null;
+  orientation: "horizontal" | "vertical" | null;
   note: string;
   created_at: string;
 }
@@ -208,6 +211,7 @@ export interface Artifact {
   logical_key: string;
   version: number;
   is_selected: boolean;
+  metadata: Record<string, unknown>;
   created_by_job_id: string | null;
   created_at: string;
   content: string | null;
@@ -216,6 +220,7 @@ export interface Artifact {
     id: string;
     version: number;
     is_selected: boolean;
+    metadata: Record<string, unknown>;
     created_at: string;
   }[];
 }
@@ -320,7 +325,13 @@ export const api = {
     request<AgentProfile[]>(`/api/agents/${agentType}/profiles`),
   createProfile: (
     agentType: string,
-    input: { name: string; soul_md?: string; agents_md?: string; model?: string },
+    input: {
+      name: string;
+      soul_md?: string;
+      agents_md?: string;
+      model?: string;
+      orientation?: "horizontal" | "vertical";
+    },
   ) =>
     request<AgentProfile>(`/api/agents/${agentType}/profiles`, {
       method: "POST",
@@ -332,7 +343,10 @@ export const api = {
   updateProfile: (
     id: string,
     input: Partial<
-      Pick<AgentProfile, "name" | "soul_md" | "agents_md" | "is_default">
+      Pick<
+        AgentProfile,
+        "name" | "soul_md" | "agents_md" | "is_default" | "orientation"
+      >
     > & { model?: string; note?: string },
   ) =>
     request<AgentProfile>(`/api/agents/profiles/${id}`, {

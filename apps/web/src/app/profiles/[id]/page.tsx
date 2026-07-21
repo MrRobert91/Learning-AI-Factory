@@ -21,6 +21,9 @@ export default function ProfileEditorPage() {
   const [soul, setSoul] = useState("");
   const [agentsMd, setAgentsMd] = useState("");
   const [model, setModel] = useState("");
+  const [orientation, setOrientation] = useState<"horizontal" | "vertical">(
+    "horizontal",
+  );
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -35,6 +38,7 @@ export default function ProfileEditorPage() {
     setSoul(p.soul_md);
     setAgentsMd(p.agents_md);
     setModel(p.model ?? "");
+    setOrientation(p.orientation ?? "horizontal");
     setVersions(await api.getProfileVersions(id));
   }
 
@@ -52,6 +56,7 @@ export default function ProfileEditorPage() {
       soul_md?: string;
       agents_md?: string;
       model?: string;
+      orientation?: "horizontal" | "vertical";
       note?: string;
     } = {};
     if (name !== profile.name) patch.name = name;
@@ -59,6 +64,12 @@ export default function ProfileEditorPage() {
     if (agentsMd !== profile.agents_md) patch.agents_md = agentsMd;
     // An empty string clears the model override (back to the system default).
     if (model.trim() !== (profile.model ?? "")) patch.model = model.trim();
+    if (
+      profile.orientation !== null &&
+      orientation !== (profile.orientation ?? "horizontal")
+    ) {
+      patch.orientation = orientation;
+    }
     return patch;
   }
 
@@ -68,7 +79,8 @@ export default function ProfileEditorPage() {
     patch !== null &&
     (patch.soul_md !== undefined ||
       patch.agents_md !== undefined ||
-      patch.model !== undefined);
+      patch.model !== undefined ||
+      patch.orientation !== undefined);
 
   async function save() {
     if (!patch || !dirty) return;
@@ -101,6 +113,9 @@ export default function ProfileEditorPage() {
   if (!profile) {
     return <LoadingScreen label="Cargando perfil…" />;
   }
+  const supportsOrientation =
+    profile.agent_type === "slides" || profile.agent_type === "video";
+  const isAutomaticVideo = profile.agent_type === "video";
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-8">
@@ -146,6 +161,47 @@ export default function ProfileEditorPage() {
       </p>
 
       <div className="space-y-5">
+        {supportsOrientation && (
+          <div className="card p-5">
+            <label className="label">Orientación de salida</label>
+            <p className="mb-3 text-xs text-zinc-500">
+              La orientación se guarda con esta versión del perfil y se aplica a
+              cada nueva generación.
+            </p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <label className="card card-hover flex cursor-pointer items-center gap-3 px-4 py-3 text-sm">
+                <input
+                  type="radio"
+                  name="orientation"
+                  value="horizontal"
+                  checked={orientation === "horizontal"}
+                  onChange={() => setOrientation("horizontal")}
+                />
+                <span>
+                  <span className="block font-semibold text-zinc-200">
+                    Horizontal
+                  </span>
+                  <span className="text-xs text-zinc-500">16:9 · 1920×1080</span>
+                </span>
+              </label>
+              <label className="card card-hover flex cursor-pointer items-center gap-3 px-4 py-3 text-sm">
+                <input
+                  type="radio"
+                  name="orientation"
+                  value="vertical"
+                  checked={orientation === "vertical"}
+                  onChange={() => setOrientation("vertical")}
+                />
+                <span>
+                  <span className="block font-semibold text-zinc-200">Vertical</span>
+                  <span className="text-xs text-zinc-500">9:16 · 1080×1920</span>
+                </span>
+              </label>
+            </div>
+          </div>
+        )}
+        {!isAutomaticVideo && (
+          <>
         <div className="card p-5">
           <label className="label">soul.md — personalidad y criterio</label>
           <p className="mb-2 text-xs text-zinc-500">
@@ -195,6 +251,19 @@ export default function ProfileEditorPage() {
             />
           </div>
         </div>
+          </>
+        )}
+        {isAutomaticVideo && (
+          <div>
+            <label className="label">Nota de esta versión</label>
+            <input
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="qué has cambiado y por qué"
+              className="input"
+            />
+          </div>
+        )}
         <ErrorBanner>{error}</ErrorBanner>
         <div className="flex items-center gap-3">
           <button onClick={save} disabled={saving || !dirty} className="btn-primary">
@@ -219,7 +288,16 @@ export default function ProfileEditorPage() {
           {versions.map((v) => (
             <li key={v.version} className="card px-4 py-3 text-sm">
               <div className="flex items-center justify-between gap-3">
-                <span className="font-semibold text-zinc-200">v{v.version}</span>
+                <span className="flex items-center gap-2 font-semibold text-zinc-200">
+                  v{v.version}
+                  {v.orientation && (
+                    <span className="badge-neutral font-normal">
+                      {v.orientation === "vertical"
+                        ? "Vertical 9:16"
+                        : "Horizontal 16:9"}
+                    </span>
+                  )}
+                </span>
                 <span className="text-xs text-zinc-500">
                   {new Date(v.created_at).toLocaleString("es")}
                 </span>

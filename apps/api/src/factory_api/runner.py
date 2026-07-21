@@ -14,7 +14,12 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 
-from factory_api.artifact_versions import add_artifact_version, selected_artifact
+from factory_api.artifact_versions import (
+    add_artifact_version,
+    artifact_logical_key,
+    artifact_metadata,
+    selected_artifact,
+)
 from factory_api.config import get_settings
 from factory_api.db import SessionLocal
 from factory_api.models import Artifact, Job, JobEvent
@@ -237,7 +242,13 @@ def append_event(job_id: str, type_: str, summary: str, data: dict | None = None
 
 
 def _save_artifact(
-    job_id: str, project_id: str, type_: str, title: str, content: str, format_: str = "markdown"
+    job_id: str,
+    project_id: str,
+    type_: str,
+    title: str,
+    content: str,
+    format_: str = "markdown",
+    metadata: dict | None = None,
 ) -> str:
     settings = get_settings()
     ext = {"markdown": "md", "json": "json"}.get(format_, "txt")
@@ -258,6 +269,7 @@ def _save_artifact(
             title=title,
             path=rel_path,
             created_by_job_id=job_id,
+            metadata=metadata,
         )
         db.commit()
         logger.info(
@@ -282,6 +294,42 @@ def _latest_artifact_content(project_id: str, type_: str) -> tuple[str | None, s
             return None, None
         path = settings.data_dir / artifact.path
         return artifact.id, path.read_text(encoding="utf-8") if path.is_file() else None
+
+
+def _save_artifact_if_changed(
+    job_id: str,
+    project_id: str,
+    type_: str,
+    title: str,
+    content: str,
+    *,
+    format_: str = "text",
+    metadata: dict | None = None,
+) -> str:
+    """Reuse the selected text artifact when regeneration produced identical content."""
+    settings = get_settings()
+    with SessionLocal() as db:
+        logical_key = artifact_logical_key(type_, title)
+        current = db.scalars(
+            select(Artifact).where(
+                Artifact.project_id == project_id,
+                Artifact.logical_key == logical_key,
+                Artifact.is_selected.is_(True),
+            )
+        ).first()
+        if current is not None:
+            path = settings.data_dir / current.path
+            if path.is_file() and path.read_text(encoding="utf-8") == content:
+                return current.id
+    return _save_artifact(
+        job_id,
+        project_id,
+        type_,
+        title,
+        content,
+        format_=format_,
+        metadata=metadata,
+    )
 
 
 def _require_artifact(project_id: str, type_: str, hint: str) -> str:
@@ -458,22 +506,39 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
             "marp-cli no está instalado: se generará solo el Markdown de las slides",
         )
 
+    orientation = payload.get("orientation", "horizontal")
+    width, height = ((1080, 1920) if orientation == "vertical" else (1920, 1080))
     artifact_ids: list[str] = []
     for title, (_lesson_id, rel_path) in by_title.items():
         append_event(job_id, "stage", f"Diseñando slides de {title}…")
         lesson_md = (settings.data_dir / rel_path).read_text(encoding="utf-8")
         deck = run_slides(
             _augment_input(
-                render_slides_input(lesson_md, plan.course_title, payload.get("style", "")),
+                render_slides_input(
+                    lesson_md,
+                    plan.course_title,
+                    payload.get("style", ""),
+                    orientation,
+                ),
                 payload,
             ),
             client=client,
             model=payload.get("model") or settings.openrouter_model,
             soul_md=payload.get("soul_md", ""),
             agents_md=payload.get("agents_md", ""),
+            orientation=orientation,
         )
         artifact_id = _save_artifact(
-            job_id, payload["project_id"], "slide_deck", f"Slides — {title}", deck
+            job_id,
+            payload["project_id"],
+            "slide_deck",
+            f"Slides — {title}",
+            deck,
+            metadata={
+                "orientation": orientation,
+                "width": width,
+                "height": height,
+            },
         )
         with SessionLocal() as db:
             artifact = db.get(Artifact, artifact_id)
@@ -511,7 +576,13 @@ def run_pipeline_job(job_id: str, payload: dict) -> dict:
 
 
 def _register_artifact_file(
-    job_id: str, project_id: str, type_: str, title: str, src_path, format_: str
+    job_id: str,
+    project_id: str,
+    type_: str,
+    title: str,
+    src_path,
+    format_: str,
+    metadata: dict | None = None,
 ) -> str:
     """Register an already-produced binary/text file as an artifact."""
     import shutil
@@ -519,7 +590,9 @@ def _register_artifact_file(
 
     settings = get_settings()
     src_path = Path(src_path)
-    rel_path = f"artifacts/{project_id}/{type_}-{job_id}-{src_path.name}"
+    rel_path = (
+        f"artifacts/{project_id}/{type_}-{job_id}-{uuid.uuid4().hex[:8]}-{src_path.name}"
+    )
     dst = settings.data_dir / rel_path
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(src_path, dst)
@@ -532,6 +605,7 @@ def _register_artifact_file(
             title=title,
             path=rel_path,
             created_by_job_id=job_id,
+            metadata=metadata,
         )
         db.commit()
         return artifact.id
@@ -669,6 +743,8 @@ def run_video_job(job_id: str, payload: dict) -> dict:
     )
     cache_dir = settings.data_dir / "tts-cache"
     workdir_root = settings.data_dir / "runs" / job_id
+    orientation = payload.get("orientation", "horizontal")
+    width, height = ((1080, 1920) if orientation == "vertical" else (1920, 1080))
 
     video_ids: list[str] = []
     subtitle_ids: list[str] = []
@@ -697,20 +773,40 @@ def run_video_job(job_id: str, payload: dict) -> dict:
             pairs.append((image, audio))
             srt_segments.append((segment.text, probe_duration(audio)))
 
-        append_event(job_id, "stage", f"Montando vídeo de {base} (ffmpeg)…")
+        append_event(
+            job_id,
+            "stage",
+            f"Montando vídeo {orientation} de {base} (ffmpeg)…",
+        )
         out_mp4 = workdir / "lesson.mp4"
-        compose_video(pairs, out_mp4, workdir / "segments")
+        compose_video(pairs, out_mp4, workdir / "segments", orientation=orientation)
 
         video_id = _register_artifact_file(
-            job_id, payload["project_id"], "video", f"Vídeo — {base}", out_mp4, "video"
+            job_id,
+            payload["project_id"],
+            "video",
+            f"Vídeo — {base}",
+            out_mp4,
+            "video",
+            metadata={
+                "orientation": orientation,
+                "width": width,
+                "height": height,
+                "slide_orientation": artifact_metadata(deck).get(
+                    "orientation", "horizontal"
+                ),
+                "slide_deck_id": deck.id,
+                "voice_script_id": voice_artifact.id,
+            },
         )
-        srt_id = _save_artifact(
+        srt_id = _save_artifact_if_changed(
             job_id,
             payload["project_id"],
             "subtitles",
             f"Subtítulos — {base}",
             build_srt(srt_segments),
             format_="text",
+            metadata={"voice_script_id": voice_artifact.id},
         )
         video_ids.append(video_id)
         subtitle_ids.append(srt_id)
@@ -718,8 +814,12 @@ def run_video_job(job_id: str, payload: dict) -> dict:
         append_event(
             job_id,
             "artifact",
-            f"Vídeo de {base} listo ({duration / 60:.1f} min)",
-            {"artifact_id": video_id, "subtitles_id": srt_id},
+            f"Vídeo {orientation} de {base} listo ({duration / 60:.1f} min)",
+            {
+                "artifact_id": video_id,
+                "subtitles_id": srt_id,
+                "orientation": orientation,
+            },
         )
     _deactivate_unproduced(payload["project_id"], "video", video_ids)
     _deactivate_unproduced(payload["project_id"], "subtitles", subtitle_ids)
