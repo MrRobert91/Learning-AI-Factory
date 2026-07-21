@@ -1,11 +1,17 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from factory_agents.agents.voice import run_voice
 from factory_agents.contracts import VoiceScript
 from factory_agents.tools.tts import synthesize_cached
-from factory_agents.tools.video import _format_srt_time, build_srt, compose_video
+from factory_agents.tools.video import (
+    _format_srt_time,
+    build_srt,
+    compose_video,
+    render_slide_images,
+)
 
 
 class FakeClient:
@@ -109,3 +115,29 @@ def test_vertical_video_uses_blurred_background_without_cropping_foreground(
     assert "scale=1080:1920:force_original_aspect_ratio=decrease" in filter_graph
     assert "boxblur" in filter_graph
     assert "overlay=(W-w)/2:(H-h)/2" in filter_graph
+
+
+def test_video_render_upgrades_legacy_vertical_canvas(monkeypatch, tmp_path):
+    deck = tmp_path / "vertical.md"
+    legacy = "---\nmarp: true\nsize: 1080px 1920px\n---\n\n# Vertical\n"
+    deck.write_text(legacy, encoding="utf-8")
+    rendered_sources = []
+    commands = []
+
+    monkeypatch.setattr("factory_agents.tools.video.shutil.which", lambda _name: "marp")
+
+    def fake_run(command, timeout=600):
+        commands.append(command)
+        rendered_sources.append(Path(command[1]).read_text(encoding="utf-8"))
+        output = Path(command[command.index("-o") + 1])
+        output.with_name("slide.001.png").write_bytes(b"png")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("factory_agents.tools.video._run", fake_run)
+    images = render_slide_images(deck, tmp_path / "slides")
+
+    assert len(images) == 1
+    assert "theme: factory-vertical" in rendered_sources[0]
+    assert "size: 9:16" in rendered_sources[0]
+    assert "--theme-set" in commands[0]
+    assert deck.read_text(encoding="utf-8") == legacy

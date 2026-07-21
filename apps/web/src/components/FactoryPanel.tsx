@@ -276,6 +276,7 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
   const [deciding, setDeciding] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [exportingSlidesPptx, setExportingSlidesPptx] = useState(false);
   const [uploadType, setUploadType] = useState("slide_deck");
   const [showUpload, setShowUpload] = useState(false);
   const [artifactToDelete, setArtifactToDelete] = useState<Artifact | null>(
@@ -492,6 +493,45 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
       );
     } finally {
       setDeletingArtifact(false);
+    }
+  }
+
+  async function downloadSlidesPptx() {
+    setExportingSlidesPptx(true);
+    setError(null);
+    try {
+      const response = await fetch(
+        `/api/projects/${projectId}/exports/slides.pptx`,
+      );
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as
+          | { detail?: string }
+          | null;
+        throw new Error(
+          payload?.detail ?? "No se pudo generar el PPTX de las slides",
+        );
+      }
+      const url = URL.createObjectURL(await response.blob());
+      const disposition = response.headers.get("content-disposition") ?? "";
+      const encodedName = disposition.match(/filename\*=utf-8''([^;]+)/i)?.[1];
+      const plainName = disposition.match(/filename="?([^";]+)"?/i)?.[1];
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = encodedName
+        ? decodeURIComponent(encodedName)
+        : (plainName ?? "slides.pptx");
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "No se pudo generar el PPTX de las slides",
+      );
+    } finally {
+      setExportingSlidesPptx(false);
     }
   }
 
@@ -947,12 +987,14 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
               >
                 PDF único
               </a>
-              <a
-                href={"/api/projects/" + projectId + "/exports/slides.pptx"}
+              <button
+                type="button"
+                onClick={() => void downloadSlidesPptx()}
+                disabled={exportingSlidesPptx}
                 className="btn-secondary btn-sm"
               >
-                PPTX único
-              </a>
+                {exportingSlidesPptx ? "Generando PPTX…" : "PPTX único"}
+              </button>
             </div>
           )}
           {artifactTypes.has("lesson_content") && (

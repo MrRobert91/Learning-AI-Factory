@@ -155,6 +155,71 @@ marp: true
     assert auth_client.delete(f"/api/artifacts/{first['id']}").status_code == 204
 
 
+def test_mixed_slide_orientations_block_combined_pptx(auth_client, monkeypatch):
+    monkeypatch.setattr("factory_api.routers.artifacts.render_deck", lambda _path: {})
+    project = _create_project(auth_client)
+    _upload(
+        auth_client,
+        project["id"],
+        "slide_deck",
+        "Slides horizontales",
+        "---\nmarp: true\nsize: 16:9\n---\n\n# Horizontal\n",
+    )
+    vertical = _upload(
+        auth_client,
+        project["id"],
+        "slide_deck",
+        "Slides verticales",
+        "---\nmarp: true\nsize: 1080px 1920px\n---\n\n# Vertical\n",
+    )
+    with SessionLocal() as db:
+        artifact = db.get(Artifact, vertical["id"])
+        artifact.metadata_json = json.dumps(
+            {"orientation": "vertical", "width": 1080, "height": 1920}
+        )
+        db.commit()
+
+    response = auth_client.get(f"/api/projects/{project['id']}/exports/slides.pptx")
+
+    assert response.status_code == 422
+    assert "horizontales y verticales" in response.json()["detail"]
+    assert "PDF o ZIP" in response.json()["detail"]
+
+
+def test_legacy_vertical_markdown_download_uses_real_9_16_canvas(
+    auth_client, monkeypatch
+):
+    monkeypatch.setattr("factory_api.routers.artifacts.render_deck", lambda _path: {})
+    project = _create_project(auth_client)
+    artifact = _upload(
+        auth_client,
+        project["id"],
+        "slide_deck",
+        "Slides verticales",
+        "---\nmarp: true\nsize: 1080px 1920px\n---\n\n# Vertical\n",
+    )
+    with SessionLocal() as db:
+        stored = db.get(Artifact, artifact["id"])
+        stored.metadata_json = json.dumps(
+            {"orientation": "vertical", "width": 1080, "height": 1920}
+        )
+        db.commit()
+
+    response = auth_client.get(f"/api/artifacts/{artifact['id']}/download")
+
+    assert response.status_code == 200
+    assert "size: 1080px 1920px" not in response.text
+    assert "theme: factory-vertical" in response.text
+    assert "size: 9:16" in response.text
+
+    zipped = auth_client.get(f"/api/projects/{project['id']}/exports/slides.zip")
+    assert zipped.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(zipped.content)) as archive:
+        assert "factory-vertical.css" in archive.namelist()
+        theme = archive.read("factory-vertical.css").decode("utf-8")
+        assert "@size 9:16 1080px 1920px" in theme
+
+
 def test_regenerating_one_slide_image_creates_self_contained_deck_version(
     auth_client, monkeypatch
 ):

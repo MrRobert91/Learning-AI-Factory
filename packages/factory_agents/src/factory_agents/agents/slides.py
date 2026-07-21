@@ -3,6 +3,7 @@
 import re
 
 from factory_agents.runtime import AgentSpec, compose_system_prompt, register
+from factory_agents.tools.marp import apply_marp_orientation
 
 SLIDES_BASE_PROMPT = """\
 Eres el Diseñador de Slides de AI Learning Factory. Conviertes el contenido de una \
@@ -23,7 +24,7 @@ front-matter:
 ---
 marp: true
 theme: {theme}
-size: {slide_size}
+{size_directive}
 paginate: true
 ---
 
@@ -81,8 +82,9 @@ def render_slides_input(
     lesson_md: str, course_title: str, style: str, orientation: str = "horizontal"
 ) -> str:
     layout = (
-        "vertical 9:16 (1080x1920), optimizado para móvil; usa bloques cortos "
-        "y distribuye el contenido en más slides"
+        "vertical 9:16 real (1080x1920), optimizado para TikTok, YouTube Shorts "
+        "y lectura en un móvil; usa una sola columna, tipografía grande, bloques "
+        "cortos y distribuye el contenido a lo largo del lienzo"
         if orientation == "vertical"
         else "horizontal 16:9 (1920x1080)"
     )
@@ -105,18 +107,7 @@ def clean_marp_output(text: str) -> str:
 
 def apply_slide_orientation(deck: str, orientation: str) -> str:
     """Enforce a stable Marp canvas regardless of the model response."""
-    size = "1080px 1920px" if orientation == "vertical" else "16:9"
-    lines = deck.replace("\r\n", "\n").splitlines()
-    if not lines or lines[0].strip() != "---":
-        lines = ["---", "marp: true", f"size: {size}", "paginate: true", "---", "", *lines]
-        return "\n".join(lines).rstrip() + "\n"
-    try:
-        end = next(i for i in range(1, len(lines)) if lines[i].strip() == "---")
-    except StopIteration:
-        return deck
-    frontmatter = [line for line in lines[1:end] if not line.strip().startswith("size:")]
-    frontmatter.append(f"size: {size}")
-    return "\n".join(["---", *frontmatter, "---", *lines[end + 1 :]]).rstrip() + "\n"
+    return apply_marp_orientation(deck, orientation)
 
 
 def run_slides(
@@ -129,10 +120,19 @@ def run_slides(
     orientation: str = "horizontal",
     images_enabled: bool = False,
 ) -> str:
-    slide_size = "1080px 1920px" if orientation == "vertical" else "16:9"
+    size_directive = "" if orientation == "vertical" else "size: 16:9"
     prompt = compose_system_prompt(
         SLIDES_SPEC, soul_md or DEFAULT_SOUL, agents_md or DEFAULT_AGENTS_MD
-    ).replace("{theme}", MARP_THEME).replace("{slide_size}", slide_size)
+    ).replace("{theme}", MARP_THEME).replace("{size_directive}", size_directive)
+    if orientation == "vertical":
+        prompt += """
+
+Reglas adicionales para composición vertical móvil:
+- Diseña en una sola columna y aprovecha el recorrido vertical del lienzo 9:16.
+- Usa como máximo 4 bullets breves por slide y evita tablas anchas o columnas paralelas.
+- Mantén títulos en una o dos líneas y prioriza elementos grandes legibles en móvil.
+- Reparte conceptos densos en más slides; no reduzcas el texto para hacerlo caber.
+"""
     if images_enabled:
         prompt += IMAGE_MARKER_PROMPT
     else:

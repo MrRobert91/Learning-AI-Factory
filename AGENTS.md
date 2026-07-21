@@ -52,6 +52,8 @@ docker compose up --build                # stack completo (2 contenedores)
   `orientation` (`horizontal` por defecto o `vertical`). Las variantes de vídeo
   siguen en la misma familia versionada y registran la orientación en los
   metadatos del artefacto; no dupliques subtítulos si su contenido no cambia.
+  Las slides verticales usan el tema Marp `factory-vertical` con canvas nativo
+  1080×1920 en HTML/PDF/PPTX/PNG; un PPTX conjunto nunca mezcla orientaciones.
 - **Imágenes de slides**: son opcionales y se configuran/versionan en el perfil
   de `slides` (modelo OpenRouter + preset o prompt personalizado). El agente
   selecciona como máximo 6 por lección; los originales viven como assets de la

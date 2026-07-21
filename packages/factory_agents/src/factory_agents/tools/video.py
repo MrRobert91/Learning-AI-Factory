@@ -8,6 +8,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from factory_agents.tools.marp import prepared_marp_source, vertical_theme_path
+
 FFMPEG_TIMEOUT = 600
 VIDEO_SIZES = {
     "horizontal": (1920, 1080),
@@ -39,19 +41,22 @@ def render_slide_images(deck_md_path: str | Path, out_dir: str | Path) -> list[P
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     target = out_dir / "slide.png"
-    _run(
-        [
-            "marp",
-            str(deck_md_path),
-            "--images",
-            "png",
-            "--image-scale",
-            "2",
-            "--allow-local-files",
-            "-o",
-            str(target),
-        ]
-    )
+    with prepared_marp_source(deck_md_path) as source:
+        _run(
+            [
+                "marp",
+                str(source),
+                "--images",
+                "png",
+                "--image-scale",
+                "2",
+                "--theme-set",
+                str(vertical_theme_path()),
+                "--allow-local-files",
+                "-o",
+                str(target),
+            ]
+        )
     images = sorted(out_dir.glob("slide.*.png"))
     if not images:
         raise VideoToolError("marp no produjo imágenes de slides")

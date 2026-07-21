@@ -20,7 +20,15 @@ from factory_agents.tools.images import (
     replace_generated_image,
     resolve_style_prompt,
 )
-from factory_agents.tools.marp import available_renders, inline_local_images, render_deck
+from factory_agents.tools.marp import (
+    available_renders,
+    inline_local_images,
+    legacy_vertical_render_is_current,
+    normalize_marp_canvas,
+    render_deck,
+    render_manifest_path,
+    vertical_theme_path,
+)
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, Response
 from pypdf import PdfReader, PdfWriter
@@ -165,7 +173,11 @@ def _remove_slide_assets(metadata: dict, project_id: str) -> None:
 
 def _ensure_slide_renders(path: Path) -> dict[str, str]:
     renders = available_renders(path)
-    if len(renders) < 3:
+    source = path.read_text(encoding="utf-8")
+    legacy_vertical = normalize_marp_canvas(source) != source
+    if len(renders) < 3 or (
+        legacy_vertical and not legacy_vertical_render_is_current(path)
+    ):
         render_deck(path)
         renders = available_renders(path)
     return renders
@@ -478,7 +490,7 @@ def regenerate_slide_image(
         f"artifacts/{original.project_id}/slide_deck-image-edit-{uuid.uuid4().hex[:10]}.md"
     )
     path = settings.data_dir / relative
-    path.write_text(markdown, encoding="utf-8")
+    path.write_text(normalize_marp_canvas(markdown), encoding="utf-8")
     artifact = add_artifact_version(
         db,
         project_id=original.project_id,
@@ -547,6 +559,8 @@ def edit_artifact(
             original.project_id,
             suffix="edit",
         )
+    if original.type == "slide_deck":
+        content = normalize_marp_canvas(content)
     path.write_text(content, encoding="utf-8")
     edited = add_artifact_version(
         db,
@@ -592,7 +606,7 @@ def delete_artifact(artifact_id: str, user: CurrentUser, db: DB):
         select_latest_remaining(db, artifact)
     db.delete(artifact)
     db.commit()
-    for candidate in [path, *renders.values()]:
+    for candidate in [path, render_manifest_path(path), *renders.values()]:
         try:
             Path(candidate).unlink(missing_ok=True)
         except OSError:
@@ -608,6 +622,12 @@ def download_artifact(artifact_id: str, user: CurrentUser, db: DB):
     path = get_settings().data_dir / artifact.path
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Fichero no encontrado")
+    if artifact.type == "slide_deck":
+        return Response(
+            content=normalize_marp_canvas(path.read_text(encoding="utf-8")),
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{path.name}"'},
+        )
     return FileResponse(path, filename=path.name)
 
 
@@ -733,6 +753,18 @@ def export_slides_pptx(project_id: str, user: CurrentUser, db: DB):
     artifacts = _selected_artifacts(db, project_id, "slide_deck")
     if not artifacts:
         raise HTTPException(status_code=404, detail="No hay slides activas para exportar")
+    orientations = {
+        artifact_metadata(artifact).get("orientation", "horizontal")
+        for artifact in artifacts
+    }
+    if len(orientations) > 1:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No se puede crear un único PPTX con slides horizontales y verticales. "
+                "Selecciona decks de una sola orientación o descarga el PDF o ZIP."
+            ),
+        )
     content = _render_combined_slides(artifacts, "pptx")
     logger.info(
         "Combined slides PPTX exported",
@@ -754,11 +786,16 @@ def export_slides_zip(project_id: str, user: CurrentUser, db: DB):
     settings = get_settings()
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        if any(
+            artifact_metadata(artifact).get("orientation") == "vertical"
+            for artifact in artifacts
+        ):
+            archive.write(vertical_theme_path(), "factory-vertical.css")
         for index, artifact in enumerate(artifacts, start=1):
             source = settings.data_dir / artifact.path
             renders = _ensure_slide_renders(source)
             stem = f"{index:02d}-{_safe_filename(artifact.title, 'slides')}"
-            markdown = source.read_text(encoding="utf-8")
+            markdown = normalize_marp_canvas(source.read_text(encoding="utf-8"))
             for image in artifact_metadata(artifact).get("images", []):
                 stored_path = image.get("path")
                 markdown_path = image.get("markdown_path")

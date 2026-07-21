@@ -1,9 +1,16 @@
 import base64
+from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
-from factory_agents.tools import images
+from factory_agents.tools import images, marp
 from factory_agents.tools.images import GeneratedImage
-from factory_agents.tools.marp import inline_local_images
+from factory_agents.tools.marp import (
+    inline_local_images,
+    normalize_marp_canvas,
+    prepared_marp_source,
+    vertical_theme_path,
+)
 
 
 def _marker(prompt: str, layout: str = "right") -> str:
@@ -112,6 +119,54 @@ def test_inline_local_images_makes_html_source_portable(tmp_path):
 
     assert "data:image/png;base64," in result
     assert "visual.png" not in result
+
+
+def test_legacy_vertical_canvas_is_normalized_without_mutating_source(tmp_path):
+    source = tmp_path / "legacy.md"
+    legacy = (
+        "---\nmarp: true\ntheme: default\nsize: 1080px 1920px\n---\n\n# Vertical\n"
+    )
+    source.write_text(legacy, encoding="utf-8")
+
+    normalized = normalize_marp_canvas(legacy)
+    assert "size: 1080px 1920px" not in normalized
+    assert "theme: factory-vertical" in normalized
+    assert "size: 9:16" in normalized
+    theme = vertical_theme_path().read_text(encoding="utf-8")
+    assert "@size 9:16 1080px 1920px" in theme
+    assert "font-size: 42px" in theme
+
+    with prepared_marp_source(source) as prepared:
+        assert prepared != source
+        assert "factory-vertical-canvas:start" in prepared.read_text(encoding="utf-8")
+    assert source.read_text(encoding="utf-8") == legacy
+    assert not list(tmp_path.glob(".*-render.md"))
+
+
+def test_render_deck_registers_vertical_theme_and_marks_legacy_render_current(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "legacy.md"
+    legacy = "---\nmarp: true\nsize: 1080px 1920px\n---\n\n# Vertical\n"
+    source.write_text(legacy, encoding="utf-8")
+    commands = []
+    prepared_sources = []
+    monkeypatch.setattr(marp, "marp_available", lambda: True)
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        prepared_sources.append(Path(command[1]).read_text(encoding="utf-8"))
+        Path(command[command.index("-o") + 1]).write_bytes(b"render")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(marp.subprocess, "run", fake_run)
+    rendered = marp.render_deck(source)
+
+    assert set(rendered) == {"html", "pdf", "pptx"}
+    assert all("--theme-set" in command for command in commands)
+    assert all("theme: factory-vertical" in content for content in prepared_sources)
+    assert marp.legacy_vertical_render_is_current(source)
+    assert source.read_text(encoding="utf-8") == legacy
 
 
 def test_failed_image_is_removed_from_deck_and_reported(tmp_path, monkeypatch):
