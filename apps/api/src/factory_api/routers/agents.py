@@ -3,6 +3,13 @@ from typing import Annotated
 
 from factory_agents import agents as _agents  # noqa: F401  (populate registry)
 from factory_agents.runtime import REGISTRY
+from factory_agents.tools.images import (
+    DEFAULT_IMAGE_MODEL,
+    DEFAULT_IMAGE_STYLE,
+    IMAGE_MODEL_OPTIONS,
+    IMAGE_STYLE_PRESETS,
+    image_options,
+)
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -22,13 +29,86 @@ router = APIRouter(prefix="/api/agents", tags=["agents"])
 
 DB = Annotated[Session, Depends(get_db)]
 ORIENTATION_AGENTS = {"slides", "video"}
+IMAGE_CONFIG_KEYS = {
+    "images_enabled",
+    "image_model",
+    "image_style",
+    "image_style_prompt",
+}
 
 
-def _profile_config(agent_type: str, model: str | None, orientation: str | None) -> dict:
+def _profile_config(
+    agent_type: str,
+    model: str | None,
+    orientation: str | None,
+    *,
+    images_enabled: bool | None = None,
+    image_model: str | None = None,
+    image_style: str | None = None,
+    image_style_prompt: str | None = None,
+) -> dict:
     config = {"model": model} if model else {}
     if agent_type in ORIENTATION_AGENTS:
         config["orientation"] = orientation or "horizontal"
+    if agent_type == "slides":
+        config.update(
+            {
+                "images_enabled": bool(images_enabled),
+                "image_model": image_model or DEFAULT_IMAGE_MODEL,
+                "image_style": image_style or DEFAULT_IMAGE_STYLE,
+                "image_style_prompt": image_style_prompt or "",
+            }
+        )
     return config
+
+
+def _slide_image_fields(config: dict, agent_type: str) -> dict:
+    if agent_type != "slides":
+        return {
+            "images_enabled": None,
+            "image_model": None,
+            "image_style": None,
+            "image_style_prompt": None,
+        }
+    return {
+        "images_enabled": bool(config.get("images_enabled", False)),
+        "image_model": config.get("image_model") or DEFAULT_IMAGE_MODEL,
+        "image_style": config.get("image_style") or DEFAULT_IMAGE_STYLE,
+        "image_style_prompt": config.get("image_style_prompt") or "",
+    }
+
+
+def _supplied_image_config(body: ProfileCreate | ProfileUpdate) -> dict:
+    return {
+        key: value
+        for key, value in {
+            "images_enabled": body.images_enabled,
+            "image_model": body.image_model,
+            "image_style": body.image_style,
+            "image_style_prompt": body.image_style_prompt,
+        }.items()
+        if value is not None
+    }
+
+
+def _validate_slide_image_config(agent_type: str, config: dict) -> None:
+    if agent_type != "slides" and IMAGE_CONFIG_KEYS.intersection(config):
+        raise HTTPException(
+            status_code=422,
+            detail="Solo el agente de Slides admite configuración de imágenes",
+        )
+    if agent_type != "slides":
+        return
+    if config.get("image_model", DEFAULT_IMAGE_MODEL) not in IMAGE_MODEL_OPTIONS:
+        raise HTTPException(status_code=422, detail="Modelo de imágenes no permitido")
+    style = config.get("image_style", DEFAULT_IMAGE_STYLE)
+    if style not in IMAGE_STYLE_PRESETS:
+        raise HTTPException(status_code=422, detail="Estilo de imágenes desconocido")
+    if style == "custom" and not str(config.get("image_style_prompt", "")).strip():
+        raise HTTPException(
+            status_code=422,
+            detail="El estilo personalizado necesita un prompt",
+        )
 
 
 def seed_default_profiles(db: Session) -> None:
@@ -73,6 +153,7 @@ def _profile_read(p: AgentProfile) -> ProfileRead:
         orientation=(config.get("orientation") or "horizontal")
         if p.agent_type in ORIENTATION_AGENTS
         else None,
+        **_slide_image_fields(config, p.agent_type),
         version=p.version,
         is_default=p.is_default,
         created_at=p.created_at,
@@ -109,6 +190,11 @@ def list_agents(user: CurrentUser):
     ]
 
 
+@router.get("/image-options")
+def get_image_options(user: CurrentUser):
+    return image_options()
+
+
 @router.get("/{agent_type}/profiles", response_model=list[ProfileRead])
 def list_profiles(agent_type: str, user: CurrentUser, db: DB):
     if agent_type not in REGISTRY:
@@ -127,13 +213,23 @@ def list_profiles(agent_type: str, user: CurrentUser, db: DB):
 def create_profile(agent_type: str, body: ProfileCreate, user: CurrentUser, db: DB):
     if agent_type not in REGISTRY:
         raise HTTPException(status_code=404, detail="Agente desconocido")
-    config = _profile_config(agent_type, body.model, body.orientation)
+    supplied_images = _supplied_image_config(body)
+    _validate_slide_image_config(agent_type, supplied_images)
+    config = _profile_config(
+        agent_type,
+        body.model,
+        body.orientation,
+        images_enabled=body.images_enabled,
+        image_model=body.image_model,
+        image_style=body.image_style,
+        image_style_prompt=body.image_style_prompt,
+    )
     profile = AgentProfile(
         agent_type=agent_type,
         name=body.name,
         soul_md=body.soul_md,
         agents_md=body.agents_md,
-        config_json=json.dumps(config),
+        config_json=json.dumps(config, ensure_ascii=False),
     )
     db.add(profile)
     db.flush()
@@ -165,22 +261,24 @@ def list_profile_versions(profile_id: str, user: CurrentUser, db: DB):
     profile = db.get(AgentProfile, profile_id)
     if profile is None:
         raise HTTPException(status_code=404, detail="Perfil no encontrado")
-    return [
-        ProfileVersionRead(
-            version=item.version,
-            soul_md=item.soul_md,
-            agents_md=item.agents_md,
-            model=json.loads(item.config_json or "{}").get("model"),
-            orientation=(
-                json.loads(item.config_json or "{}").get("orientation") or "horizontal"
+    result = []
+    for item in profile.versions:
+        config = json.loads(item.config_json or "{}")
+        result.append(
+            ProfileVersionRead(
+                version=item.version,
+                soul_md=item.soul_md,
+                agents_md=item.agents_md,
+                model=config.get("model"),
+                orientation=(config.get("orientation") or "horizontal")
+                if profile.agent_type in ORIENTATION_AGENTS
+                else None,
+                **_slide_image_fields(config, profile.agent_type),
+                note=item.note,
+                created_at=item.created_at,
             )
-            if profile.agent_type in ORIENTATION_AGENTS
-            else None,
-            note=item.note,
-            created_at=item.created_at,
         )
-        for item in profile.versions
-    ]
+    return result
 
 
 @router.patch("/profiles/{profile_id}", response_model=ProfileRead)
@@ -189,16 +287,30 @@ def update_profile(profile_id: str, body: ProfileUpdate, user: CurrentUser, db: 
     if profile is None:
         raise HTTPException(status_code=404, detail="Perfil no encontrado")
 
+    current_config = json.loads(profile.config_json or "{}")
+    proposed_config = dict(current_config)
+    supplied_images = _supplied_image_config(body)
+    if supplied_images:
+        _validate_slide_image_config(profile.agent_type, supplied_images)
+        proposed_config.update(supplied_images)
+    if body.model is not None:
+        if body.model:
+            proposed_config["model"] = body.model
+        else:
+            proposed_config.pop("model", None)
+    if body.orientation is not None:
+        if profile.agent_type not in ORIENTATION_AGENTS:
+            raise HTTPException(
+                status_code=422,
+                detail="Este agente no admite configuración de orientación",
+            )
+        proposed_config["orientation"] = body.orientation
+    _validate_slide_image_config(profile.agent_type, proposed_config)
+
     content_changed = (
         (body.soul_md is not None and body.soul_md != profile.soul_md)
         or (body.agents_md is not None and body.agents_md != profile.agents_md)
-        or (body.model is not None)
-        or (
-            body.orientation is not None
-            and body.orientation != json.loads(profile.config_json or "{}").get(
-                "orientation", "horizontal"
-            )
-        )
+        or proposed_config != current_config
     )
     if body.name is not None:
         profile.name = body.name
@@ -206,19 +318,8 @@ def update_profile(profile_id: str, body: ProfileUpdate, user: CurrentUser, db: 
         profile.soul_md = body.soul_md
     if body.agents_md is not None:
         profile.agents_md = body.agents_md
-    if body.model is not None:
-        config = json.loads(profile.config_json or "{}")
-        config["model"] = body.model or None
-        profile.config_json = json.dumps({k: v for k, v in config.items() if v})
-    if body.orientation is not None:
-        if profile.agent_type not in ORIENTATION_AGENTS:
-            raise HTTPException(
-                status_code=422,
-                detail="Este agente no admite configuración de orientación",
-            )
-        config = json.loads(profile.config_json or "{}")
-        config["orientation"] = body.orientation
-        profile.config_json = json.dumps(config)
+    if proposed_config != current_config:
+        profile.config_json = json.dumps(proposed_config, ensure_ascii=False)
     if body.is_default is True:
         for other in db.scalars(
             select(AgentProfile).where(AgentProfile.agent_type == profile.agent_type)

@@ -3,7 +3,12 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { api, type AgentProfile, type ProfileVersion } from "@/lib/api";
+import {
+  api,
+  type AgentProfile,
+  type ImageOptions,
+  type ProfileVersion,
+} from "@/lib/api";
 import {
   ConfirmDialog,
   ErrorBanner,
@@ -24,6 +29,11 @@ export default function ProfileEditorPage() {
   const [orientation, setOrientation] = useState<"horizontal" | "vertical">(
     "horizontal",
   );
+  const [imageOptions, setImageOptions] = useState<ImageOptions | null>(null);
+  const [imagesEnabled, setImagesEnabled] = useState(false);
+  const [imageModel, setImageModel] = useState("");
+  const [imageStyle, setImageStyle] = useState("");
+  const [imageStylePrompt, setImageStylePrompt] = useState("");
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -32,13 +42,21 @@ export default function ProfileEditorPage() {
   const [deleting, setDeleting] = useState(false);
 
   async function load() {
-    const p = await api.getProfile(id);
+    const [p, options] = await Promise.all([
+      api.getProfile(id),
+      api.getImageOptions(),
+    ]);
     setProfile(p);
+    setImageOptions(options);
     setName(p.name);
     setSoul(p.soul_md);
     setAgentsMd(p.agents_md);
     setModel(p.model ?? "");
     setOrientation(p.orientation ?? "horizontal");
+    setImagesEnabled(p.images_enabled ?? false);
+    setImageModel(p.image_model ?? options.default_model);
+    setImageStyle(p.image_style ?? options.default_style);
+    setImageStylePrompt(p.image_style_prompt ?? "");
     setVersions(await api.getProfileVersions(id));
   }
 
@@ -57,6 +75,10 @@ export default function ProfileEditorPage() {
       agents_md?: string;
       model?: string;
       orientation?: "horizontal" | "vertical";
+      images_enabled?: boolean;
+      image_model?: string;
+      image_style?: string;
+      image_style_prompt?: string;
       note?: string;
     } = {};
     if (name !== profile.name) patch.name = name;
@@ -70,6 +92,21 @@ export default function ProfileEditorPage() {
     ) {
       patch.orientation = orientation;
     }
+    if (profile.images_enabled !== null && imagesEnabled !== profile.images_enabled) {
+      patch.images_enabled = imagesEnabled;
+    }
+    if (profile.image_model !== null && imageModel !== profile.image_model) {
+      patch.image_model = imageModel;
+    }
+    if (profile.image_style !== null && imageStyle !== profile.image_style) {
+      patch.image_style = imageStyle;
+    }
+    if (
+      profile.image_style_prompt !== null &&
+      imageStylePrompt !== profile.image_style_prompt
+    ) {
+      patch.image_style_prompt = imageStylePrompt;
+    }
     return patch;
   }
 
@@ -80,10 +117,18 @@ export default function ProfileEditorPage() {
     (patch.soul_md !== undefined ||
       patch.agents_md !== undefined ||
       patch.model !== undefined ||
-      patch.orientation !== undefined);
+      patch.orientation !== undefined ||
+      patch.images_enabled !== undefined ||
+      patch.image_model !== undefined ||
+      patch.image_style !== undefined ||
+      patch.image_style_prompt !== undefined);
 
   async function save() {
     if (!patch || !dirty) return;
+    if (imageStyle === "custom" && !imageStylePrompt.trim()) {
+      setError("El estilo personalizado necesita un prompt.");
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -115,7 +160,11 @@ export default function ProfileEditorPage() {
   }
   const supportsOrientation =
     profile.agent_type === "slides" || profile.agent_type === "video";
+  const isSlides = profile.agent_type === "slides";
   const isAutomaticVideo = profile.agent_type === "video";
+  const selectedImageStyle = imageOptions?.styles.find(
+    (option) => option.id === imageStyle,
+  );
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-8">
@@ -198,6 +247,90 @@ export default function ProfileEditorPage() {
                 </span>
               </label>
             </div>
+          </div>
+        )}
+        {isSlides && imageOptions && (
+          <div className="card p-5">
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <label className="label">Imágenes generadas</label>
+                <p className="text-xs leading-relaxed text-zinc-500">
+                  El agente puede elegir hasta {imageOptions.max_images_per_deck} slides
+                  por lección. Nunca generará más de una imagen por slide.
+                </p>
+              </div>
+              <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-zinc-200">
+                <input
+                  type="checkbox"
+                  checked={imagesEnabled}
+                  onChange={(event) => setImagesEnabled(event.target.checked)}
+                />
+                {imagesEnabled ? "Activadas" : "Desactivadas"}
+              </label>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="label">Modelo de imágenes</label>
+                <select
+                  value={imageModel}
+                  onChange={(event) => setImageModel(event.target.value)}
+                  className="input"
+                >
+                  {imageOptions.models.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label} · {option.price_hint}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1.5 break-all font-mono text-[11px] text-zinc-500">
+                  {imageModel}
+                </p>
+              </div>
+              <div>
+                <label className="label">Estilo visual consistente</label>
+                <select
+                  value={imageStyle}
+                  onChange={(event) => setImageStyle(event.target.value)}
+                  className="input"
+                >
+                  {imageOptions.styles.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {imageStyle === "custom" ? (
+              <div className="mt-4">
+                <label className="label">Prompt de estilo personalizado</label>
+                <textarea
+                  value={imageStylePrompt}
+                  onChange={(event) => setImageStylePrompt(event.target.value)}
+                  rows={5}
+                  placeholder="Describe paleta, técnica, iluminación, materiales y composición…"
+                  className="input resize-y text-sm"
+                />
+                <p className="mt-1.5 text-xs text-zinc-500">
+                  Este prompt reemplaza completamente los estilos predefinidos.
+                </p>
+              </div>
+            ) : (
+              <div className="mt-4 rounded-lg border border-white/[0.08] bg-black/20 p-3">
+                <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                  Prompt del preset
+                </p>
+                <p className="text-xs leading-relaxed text-zinc-400">
+                  {selectedImageStyle?.prompt}
+                </p>
+              </div>
+            )}
+            <p className="mt-3 text-xs text-amber-300/80">
+              Las imágenes usan créditos de OpenRouter. Los fallos se reintentan dos
+              veces y no bloquean la generación del deck.
+            </p>
           </div>
         )}
         {!isAutomaticVideo && (
@@ -295,6 +428,13 @@ export default function ProfileEditorPage() {
                       {v.orientation === "vertical"
                         ? "Vertical 9:16"
                         : "Horizontal 16:9"}
+                    </span>
+                  )}
+                  {v.images_enabled !== null && (
+                    <span
+                      className={v.images_enabled ? "badge-info font-normal" : "badge-neutral font-normal"}
+                    >
+                      {v.images_enabled ? "Con imágenes" : "Sin imágenes"}
                     </span>
                   )}
                 </span>

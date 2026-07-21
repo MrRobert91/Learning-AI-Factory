@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from factory_agents.contracts import VoiceScript
+from factory_agents.tools.images import GeneratedImage
 from test_pipeline import _patch_all
 from test_runs import _create_project, _wait_for_job
 
@@ -90,6 +91,47 @@ def test_slides_profile_sets_vertical_artifact_metadata(auth_client, monkeypatch
     assert slides
     assert all(a["metadata"]["orientation"] == "vertical" for a in slides)
     assert all(a["metadata"]["width"] == 1080 for a in slides)
+
+
+def test_slides_profile_generates_selected_images_without_blocking_pipeline(
+    auth_client, monkeypatch
+):
+    _patch_media(monkeypatch)
+    monkeypatch.setattr(
+        "factory_agents.agents.slides.run_slides",
+        lambda *args, **kwargs: (
+            "---\nmarp: true\n---\n\n# Portada\n---\n# Concepto\n"
+            '<!-- factory-image {"prompt":"A learning network",'
+            '"layout":"right","alt":"Network"} -->\n'
+        ),
+    )
+    monkeypatch.setattr(
+        "factory_agents.tools.images.generate_image",
+        lambda *args, **kwargs: GeneratedImage(b"generated", "image/jpeg", 0.04),
+    )
+    project = _create_project(auth_client)
+    for agent in ("curator", "planner", "lessons"):
+        assert _run(auth_client, project["id"], agent)["status"] == "done"
+    profile = auth_client.post(
+        "/api/agents/slides/profiles",
+        json={
+            "name": "Slides con imágenes",
+            "images_enabled": True,
+            "image_model": "bytedance-seed/seedream-4.5",
+            "image_style": "editorial_vector",
+        },
+    ).json()
+
+    job = _run(auth_client, project["id"], "slides", profile_id=profile["id"])
+    assert job["status"] == "done", job["error"]
+    assert any("Generando imagen" in event["summary"] for event in job["events"])
+    artifacts = auth_client.get(f"/api/projects/{project['id']}/artifacts").json()
+    slides = [item for item in artifacts if item["type"] == "slide_deck"]
+    assert all(item["metadata"]["image_generation"]["generated"] == 1 for item in slides)
+    first = auth_client.get(f"/api/artifacts/{slides[0]['id']}").json()
+    assert "factory-image-id: slide-2" in first["content"]
+    image = auth_client.get(f"/api/artifacts/{slides[0]['id']}/images/slide-2")
+    assert image.content == b"generated"
 
 
 def test_video_job_with_mocked_media_tools(auth_client, monkeypatch, tmp_path):

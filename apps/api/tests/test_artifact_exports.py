@@ -1,7 +1,12 @@
 import io
+import json
 import zipfile
 from pathlib import Path
 
+from factory_agents.tools.images import GeneratedImage
+from factory_api.config import get_settings
+from factory_api.db import SessionLocal
+from factory_api.models import Artifact
 from factory_api.pdf_exports import LessonDocument, lessons_pdf
 from pypdf import PdfReader
 from test_runs import _create_project
@@ -148,3 +153,82 @@ marp: true
         assert len([name for name in names if name.endswith(".pptx")]) == 2
 
     assert auth_client.delete(f"/api/artifacts/{first['id']}").status_code == 204
+
+
+def test_regenerating_one_slide_image_creates_self_contained_deck_version(
+    auth_client, monkeypatch
+):
+    monkeypatch.setattr("factory_api.routers.artifacts.render_deck", lambda _path: {})
+    monkeypatch.setattr(
+        "factory_api.routers.artifacts.generate_image",
+        lambda *args, **kwargs: GeneratedImage(b"new-image", "image/jpeg", 0.04),
+    )
+    project = _create_project(auth_client)
+    artifact = _upload(
+        auth_client,
+        project["id"],
+        "slide_deck",
+        "Slides — 1.1 Images",
+        "---\nmarp: true\n---\n\n# Concepto\n",
+    )
+    settings = get_settings()
+    asset_dir = settings.data_dir / "artifacts" / project["id"] / "slide-assets-test"
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    (asset_dir / "slide-1.jpg").write_bytes(b"old-image")
+    with SessionLocal() as db:
+        stored = db.get(Artifact, artifact["id"])
+        source = settings.data_dir / stored.path
+        source.write_text(
+            "---\nmarp: true\n---\n\n# Concepto\n"
+            "<!-- factory-image-id: slide-1 -->\n"
+            "![bg right:42%](slide-assets-test/slide-1.jpg)\n",
+            encoding="utf-8",
+        )
+        stored.metadata_json = json.dumps(
+            {
+                "orientation": "horizontal",
+                "images": [
+                    {
+                        "id": "slide-1",
+                        "slide": 1,
+                        "prompt": "Old prompt",
+                        "layout": "right",
+                        "alt": "Concept",
+                        "model": "bytedance-seed/seedream-4.5",
+                        "style": "editorial_vector",
+                        "style_prompt": "Editorial vector style",
+                        "seed": 42,
+                        "path": (
+                            f"artifacts/{project['id']}/slide-assets-test/slide-1.jpg"
+                        ),
+                        "markdown_path": "slide-assets-test/slide-1.jpg",
+                        "media_type": "image/jpeg",
+                        "status": "generated",
+                    }
+                ],
+                "image_generation": {
+                    "enabled": True,
+                    "model": "bytedance-seed/seedream-4.5",
+                    "style": "editorial_vector",
+                },
+            }
+        )
+        db.commit()
+
+    response = auth_client.post(
+        f"/api/artifacts/{artifact['id']}/images/slide-1/regenerate",
+        json={"prompt": "A new visual metaphor"},
+    )
+    assert response.status_code == 200, response.text
+    regenerated = response.json()
+    assert regenerated["id"] != artifact["id"]
+    assert regenerated["version"] == 2
+    assert regenerated["metadata"]["images"][0]["prompt"] == "A new visual metaphor"
+    assert "slide-assets-regen-" in regenerated["content"]
+
+    new_image = auth_client.get(
+        f"/api/artifacts/{regenerated['id']}/images/slide-1"
+    )
+    old_image = auth_client.get(f"/api/artifacts/{artifact['id']}/images/slide-1")
+    assert new_image.content == b"new-image"
+    assert old_image.content == b"old-image"

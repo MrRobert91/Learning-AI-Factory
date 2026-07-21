@@ -473,6 +473,7 @@ def run_lessons_job(job_id: str, payload: dict) -> dict:
 def run_slides_job(job_id: str, payload: dict) -> dict:
     from factory_agents.agents.slides import render_slides_input, run_slides
     from factory_agents.contracts import CoursePlan
+    from factory_agents.tools.images import generate_deck_images, parse_image_slots
     from factory_agents.tools.marp import marp_available, render_deck
 
     settings = get_settings()
@@ -508,6 +509,10 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
 
     orientation = payload.get("orientation", "horizontal")
     width, height = ((1080, 1920) if orientation == "vertical" else (1920, 1080))
+    images_enabled = bool(payload.get("images_enabled", False))
+    image_model = payload.get("image_model", "bytedance-seed/seedream-4.5")
+    image_style = payload.get("image_style", "editorial_vector")
+    image_style_prompt = payload.get("image_style_prompt", "")
     artifact_ids: list[str] = []
     for title, (_lesson_id, rel_path) in by_title.items():
         append_event(job_id, "stage", f"Diseñando slides de {title}…")
@@ -527,6 +532,39 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
             soul_md=payload.get("soul_md", ""),
             agents_md=payload.get("agents_md", ""),
             orientation=orientation,
+            images_enabled=images_enabled,
+        )
+        image_records: list[dict] = []
+        if images_enabled:
+            slots = parse_image_slots(deck)
+            if not slots:
+                append_event(
+                    job_id,
+                    "warning",
+                    f"El agente no seleccionó imágenes para {title}",
+                    {"lesson": title},
+                )
+            asset_dir_name = f"slide-assets-{job_id}-{uuid.uuid4().hex[:8]}"
+            storage_asset_dir = f"artifacts/{payload['project_id']}/{asset_dir_name}"
+            deck, image_records = generate_deck_images(
+                deck,
+                api_key=settings.openrouter_api_key,
+                model=image_model,
+                style=image_style,
+                custom_style_prompt=image_style_prompt,
+                orientation=orientation,
+                deck_identity=f"{plan.course_title}:{title}",
+                output_dir=settings.data_dir / storage_asset_dir,
+                markdown_asset_dir=asset_dir_name,
+                storage_asset_dir=storage_asset_dir,
+                on_event=lambda event_type, summary, data, lesson_title=title: append_event(
+                    job_id, event_type, f"[{lesson_title}] {summary}", data
+                ),
+            )
+        generation_cost = sum(
+            float(item["cost_usd"])
+            for item in image_records
+            if item.get("cost_usd") is not None
         )
         artifact_id = _save_artifact(
             job_id,
@@ -538,6 +576,19 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
                 "orientation": orientation,
                 "width": width,
                 "height": height,
+                "images": image_records,
+                "image_generation": {
+                    "enabled": images_enabled,
+                    "model": image_model if images_enabled else None,
+                    "style": image_style if images_enabled else None,
+                    "style_prompt": image_style_prompt if image_style == "custom" else "",
+                    "max_images": 6,
+                    "generated": sum(
+                        item.get("status") == "generated" for item in image_records
+                    ),
+                    "attempted": len(image_records),
+                    "generation_cost_usd": generation_cost,
+                },
             },
         )
         with SessionLocal() as db:

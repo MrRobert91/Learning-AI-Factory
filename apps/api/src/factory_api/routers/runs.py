@@ -3,6 +3,7 @@ import json
 from typing import Annotated
 
 from factory_agents.agents.curator import render_curator_input
+from factory_agents.tools.images import DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_STYLE
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
@@ -65,6 +66,10 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
             "agents_md": "",
             "model": None,
             "orientation": "horizontal",
+            "images_enabled": False,
+            "image_model": DEFAULT_IMAGE_MODEL,
+            "image_style": DEFAULT_IMAGE_STYLE,
+            "image_style_prompt": "",
         }
     config = json.loads(profile.config_json or "{}")
     return {
@@ -72,6 +77,10 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
         "agents_md": profile.agents_md,
         "model": config.get("model"),
         "orientation": config.get("orientation", "horizontal"),
+        "images_enabled": bool(config.get("images_enabled", False)),
+        "image_model": config.get("image_model") or DEFAULT_IMAGE_MODEL,
+        "image_style": config.get("image_style") or DEFAULT_IMAGE_STYLE,
+        "image_style_prompt": config.get("image_style_prompt") or "",
     }
 
 

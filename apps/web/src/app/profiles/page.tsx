@@ -87,7 +87,8 @@ export default function ProfilesPage() {
             Cada perfil conserva la configuración de una etapa. Los agentes de
             IA incluyen personalidad (<code>soul.md</code>) y reglas operativas (
             <code>agents.md</code>); Slides y Vídeo también permiten elegir la
-            orientación. Puedes seleccionar un perfil distinto en cada ejecución.
+            orientación, y Slides puede generar imágenes con un modelo y estilo
+            consistentes. Puedes seleccionar un perfil distinto en cada ejecución.
           </>
         }
       />
@@ -200,6 +201,13 @@ export default function ProfilesPage() {
                           {p.orientation === "vertical"
                             ? "Vertical 9:16"
                             : "Horizontal 16:9"}
+                        </span>
+                      )}
+                      {p.images_enabled !== null && (
+                        <span
+                          className={p.images_enabled ? "badge-info shrink-0" : "badge-neutral shrink-0"}
+                        >
+                          {p.images_enabled ? "Con imágenes" : "Sin imágenes"}
                         </span>
                       )}
                       <span className="shrink-0 text-xs text-zinc-500">

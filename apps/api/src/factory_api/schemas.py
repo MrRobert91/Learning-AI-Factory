@@ -90,6 +90,10 @@ class ProfileCreate(BaseModel):
     agents_md: str = ""
     model: str | None = None
     orientation: Literal["horizontal", "vertical"] | None = None
+    images_enabled: bool | None = None
+    image_model: str | None = None
+    image_style: str | None = None
+    image_style_prompt: str | None = None
 
 
 class ProfileUpdate(BaseModel):
@@ -98,6 +102,10 @@ class ProfileUpdate(BaseModel):
     agents_md: str | None = None
     model: str | None = None
     orientation: Literal["horizontal", "vertical"] | None = None
+    images_enabled: bool | None = None
+    image_model: str | None = None
+    image_style: str | None = None
+    image_style_prompt: str | None = None
     is_default: bool | None = None
     note: str = ""
 
@@ -110,6 +118,10 @@ class ProfileRead(BaseModel):
     agents_md: str
     model: str | None = None
     orientation: Literal["horizontal", "vertical"] | None = None
+    images_enabled: bool | None = None
+    image_model: str | None = None
+    image_style: str | None = None
+    image_style_prompt: str | None = None
     version: int
     is_default: bool
     created_at: datetime
@@ -122,6 +134,10 @@ class ProfileVersionRead(BaseModel):
     agents_md: str
     model: str | None = None
     orientation: Literal["horizontal", "vertical"] | None = None
+    images_enabled: bool | None = None
+    image_model: str | None = None
+    image_style: str | None = None
+    image_style_prompt: str | None = None
     note: str
     created_at: datetime
 
@@ -255,6 +271,10 @@ class ArtifactRead(BaseModel):
 
 class ArtifactEdit(BaseModel):
     content: str = Field(min_length=1)
+
+
+class SlideImageRegenerate(BaseModel):
+    prompt: str = Field(min_length=1, max_length=4000)
 
 
 class ProjectRead(BaseModel):

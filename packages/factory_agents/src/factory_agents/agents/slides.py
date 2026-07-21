@@ -43,6 +43,21 @@ DEFAULT_AGENTS_MD = """\
 - Idioma: el del curso.
 """
 
+IMAGE_MARKER_PROMPT = """\
+
+Generación de imágenes activada:
+- Selecciona como máximo 6 slides que se beneficien realmente de una ilustración.
+- Nunca añadas más de una imagen por slide.
+- Evita portada, slides centradas en código y resumen, salvo que la imagen aporte valor claro.
+- Para cada imagen inserta un comentario JSON válido en la posición de la slide.
+  Ejemplo: <!-- factory-image {"prompt":"visual prompt","layout":"right","alt":"concept"} -->
+- `layout` solo puede ser `left`, `right` o `background`. Prefiere `left`/`right`; usa
+  `background` únicamente cuando el texto siga siendo perfectamente legible.
+- El prompt debe ilustrar el concepto concreto de esa slide, describir sujeto, acción,
+  composición y metáfora visual, estar escrito en inglés y no incluir instrucciones de estilo.
+- No escribas rutas, Markdown de imagen ni URLs: el sistema sustituirá el comentario por el asset.
+"""
+
 SLIDES_SPEC = register(
     AgentSpec(
         name="slides",
@@ -112,11 +127,16 @@ def run_slides(
     soul_md: str = "",
     agents_md: str = "",
     orientation: str = "horizontal",
+    images_enabled: bool = False,
 ) -> str:
     slide_size = "1080px 1920px" if orientation == "vertical" else "16:9"
     prompt = compose_system_prompt(
         SLIDES_SPEC, soul_md or DEFAULT_SOUL, agents_md or DEFAULT_AGENTS_MD
     ).replace("{theme}", MARP_THEME).replace("{slide_size}", slide_size)
+    if images_enabled:
+        prompt += IMAGE_MARKER_PROMPT
+    else:
+        prompt += "\nNo incluyas marcadores `factory-image` ni referencias a imágenes generadas.\n"
     response = client.chat.completions.create(
         model=model,
         messages=[

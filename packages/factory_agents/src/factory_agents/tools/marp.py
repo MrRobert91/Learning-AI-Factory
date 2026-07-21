@@ -4,14 +4,38 @@ Best-effort: when marp-cli is not installed the deck's canonical Markdown
 is still the artifact; renders are simply skipped and reported.
 """
 
+import base64
 import logging
+import mimetypes
+import re
 import shutil
 import subprocess
+import uuid
 from pathlib import Path
 
 RENDER_FORMATS = ("html", "pdf", "pptx")
 RENDER_TIMEOUT = 120
 logger = logging.getLogger(__name__)
+MARKDOWN_IMAGE_RE = re.compile(r"(!\[[^\]]*\]\()(?P<target>[^)]+)(\))")
+
+
+def inline_local_images(markdown: str, base_dir: str | Path) -> str:
+    """Embed local Markdown images as data URIs for portable combined/HTML renders."""
+    root = Path(base_dir).resolve()
+
+    def replace(match: re.Match) -> str:
+        raw_target = match.group("target").strip()
+        target = raw_target.strip("<>")
+        if target.startswith(("http://", "https://", "data:", "#")):
+            return match.group(0)
+        path = (root / target).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            return match.group(0)
+        media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+        return f"{match.group(1)}data:{media_type};base64,{encoded}{match.group(3)}"
+
+    return MARKDOWN_IMAGE_RE.sub(replace, markdown)
 
 
 def marp_available() -> bool:
@@ -30,7 +54,18 @@ def render_deck(md_path: str | Path) -> dict[str, str]:
     rendered: dict[str, str] = {}
     for fmt in RENDER_FORMATS:
         out = md_path.with_suffix(f".{fmt}")
-        cmd = ["marp", str(md_path), "-o", str(out), "--allow-local-files"]
+        source = md_path
+        temporary_source: Path | None = None
+        if fmt == "html":
+            markdown = md_path.read_text(encoding="utf-8")
+            inlined = inline_local_images(markdown, md_path.parent)
+            if inlined != markdown:
+                temporary_source = md_path.with_name(
+                    f".{md_path.stem}-{uuid.uuid4().hex[:8]}-html.md"
+                )
+                temporary_source.write_text(inlined, encoding="utf-8")
+                source = temporary_source
+        cmd = ["marp", str(source), "-o", str(out), "--allow-local-files"]
         logger.info(
             "Marp render started",
             extra={
@@ -61,6 +96,9 @@ def render_deck(md_path: str | Path) -> dict[str, str]:
                 "Marp render crashed",
                 extra={"render_format": fmt, "source_path": str(md_path)},
             )
+        finally:
+            if temporary_source is not None:
+                temporary_source.unlink(missing_ok=True)
     return rendered
 
 

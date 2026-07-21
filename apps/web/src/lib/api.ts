@@ -121,6 +121,10 @@ export interface AgentProfile {
   agents_md: string;
   model: string | null;
   orientation: "horizontal" | "vertical" | null;
+  images_enabled: boolean | null;
+  image_model: string | null;
+  image_style: string | null;
+  image_style_prompt: string | null;
   version: number;
   is_default: boolean;
   created_at: string;
@@ -133,8 +137,20 @@ export interface ProfileVersion {
   agents_md: string;
   model: string | null;
   orientation: "horizontal" | "vertical" | null;
+  images_enabled: boolean | null;
+  image_model: string | null;
+  image_style: string | null;
+  image_style_prompt: string | null;
   note: string;
   created_at: string;
+}
+
+export interface ImageOptions {
+  default_model: string;
+  default_style: string;
+  max_images_per_deck: number;
+  models: { id: string; label: string; price_hint: string }[];
+  styles: { id: string; label: string; prompt: string }[];
 }
 
 export interface JobEvent {
@@ -321,6 +337,7 @@ export const api = {
   deleteIdeation: (id: string) =>
     request<void>(`/api/ideation/${id}`, { method: "DELETE" }),
   listAgents: () => request<AgentSpec[]>("/api/agents"),
+  getImageOptions: () => request<ImageOptions>("/api/agents/image-options"),
   listProfiles: (agentType: string) =>
     request<AgentProfile[]>(`/api/agents/${agentType}/profiles`),
   createProfile: (
@@ -331,6 +348,10 @@ export const api = {
       agents_md?: string;
       model?: string;
       orientation?: "horizontal" | "vertical";
+      images_enabled?: boolean;
+      image_model?: string;
+      image_style?: string;
+      image_style_prompt?: string;
     },
   ) =>
     request<AgentProfile>(`/api/agents/${agentType}/profiles`, {
@@ -345,7 +366,15 @@ export const api = {
     input: Partial<
       Pick<
         AgentProfile,
-        "name" | "soul_md" | "agents_md" | "is_default" | "orientation"
+        | "name"
+        | "soul_md"
+        | "agents_md"
+        | "is_default"
+        | "orientation"
+        | "images_enabled"
+        | "image_model"
+        | "image_style"
+        | "image_style_prompt"
       >
     > & { model?: string; note?: string },
   ) =>
@@ -391,6 +420,14 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ content }),
     }),
+  regenerateSlideImage: (artifactId: string, imageId: string, prompt: string) =>
+    request<Artifact>(
+      `/api/artifacts/${artifactId}/images/${encodeURIComponent(imageId)}/regenerate`,
+      {
+        method: "POST",
+        body: JSON.stringify({ prompt }),
+      },
+    ),
   selectArtifact: (id: string) =>
     request<Artifact>(`/api/artifacts/${id}/select`, { method: "POST" }),
   deleteArtifact: (id: string) =>
