@@ -3,12 +3,19 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { api, type Artifact } from "@/lib/api";
+import {
+  api,
+  type Artifact,
+  type PaletteOptions,
+  type SlidePalette,
+} from "@/lib/api";
 import YouTubePublish from "@/components/YouTubePublish";
 import Markdown from "@/components/Markdown";
 import SlideDeck from "@/components/SlideDeck";
 import JsonViewer from "@/components/JsonViewer";
+import SlidePaletteEditor, { paletteWarnings } from "@/components/SlidePaletteEditor";
 import {
+  ConfirmDialog,
   EmptyState,
   ErrorBanner,
   IconChevronLeft,
@@ -59,6 +66,20 @@ function orientationLabel(metadata: Record<string, unknown>): string | null {
       : null;
 }
 
+function paletteLabel(metadata: Record<string, unknown>): string | null {
+  const labels: Record<string, string> = {
+    factory: "Factory",
+    neutral_light: "Neutro claro",
+    dark: "Oscuro",
+    high_contrast: "Alto contraste",
+    warm: "Cálido",
+    custom: "Personalizada",
+  };
+  return typeof metadata.palette_name === "string"
+    ? `Paleta ${labels[metadata.palette_name] ?? metadata.palette_name}`
+    : null;
+}
+
 interface SlideImageMetadata {
   id: string;
   slide: number;
@@ -93,6 +114,15 @@ export default function ArtifactViewerPage() {
   const [saving, setSaving] = useState(false);
   const [imagePrompts, setImagePrompts] = useState<Record<string, string>>({});
   const [regeneratingImage, setRegeneratingImage] = useState<string | null>(null);
+  const [paletteOptions, setPaletteOptions] = useState<PaletteOptions | null>(null);
+  const [editingPalette, setEditingPalette] = useState(false);
+  const [slidePalette, setSlidePalette] = useState<SlidePalette | null>(null);
+  const [paletteScope, setPaletteScope] = useState<"deck" | "project">("deck");
+  const [paletteWarningsAccepted, setPaletteWarningsAccepted] = useState(false);
+  const [palettePreview, setPalettePreview] = useState<string | null>(null);
+  const [previewingPalette, setPreviewingPalette] = useState(false);
+  const [confirmPalette, setConfirmPalette] = useState(false);
+  const [applyingPalette, setApplyingPalette] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -100,10 +130,10 @@ export default function ArtifactViewerPage() {
     setNotFound(false);
     setEditing(false);
     setError(null);
-    api
-      .getArtifact(id)
-      .then((value) => {
+    Promise.all([api.getArtifact(id), api.getPaletteOptions()])
+      .then(([value, palettes]) => {
         setArtifact(value);
+        setPaletteOptions(palettes);
         setDraft(value.content ?? "");
         setImagePrompts(
           Object.fromEntries(
@@ -113,6 +143,13 @@ export default function ArtifactViewerPage() {
       })
       .catch(() => setNotFound(true));
   }, [id]);
+
+  useEffect(
+    () => () => {
+      if (palettePreview) URL.revokeObjectURL(palettePreview);
+    },
+    [palettePreview],
+  );
 
   async function saveVersion() {
     if (!artifact) return;
@@ -154,6 +191,54 @@ export default function ArtifactViewerPage() {
     }
   }
 
+  function openPaletteEditor() {
+    if (!artifact || !paletteOptions) return;
+    const stored = artifact.metadata.slide_palette;
+    setSlidePalette(
+      typeof stored === "object" && stored !== null
+        ? (stored as SlidePalette)
+        : paletteOptions.default,
+    );
+    setPaletteScope("deck");
+    setPaletteWarningsAccepted(false);
+    setEditingPalette(true);
+    setError(null);
+  }
+
+  async function refreshPalettePreview() {
+    if (!artifact || !slidePalette) return;
+    setPreviewingPalette(true);
+    setError(null);
+    try {
+      const blob = await api.previewSlidePalette(artifact.id, slidePalette);
+      if (palettePreview) URL.revokeObjectURL(palettePreview);
+      setPalettePreview(URL.createObjectURL(blob));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "No se pudo generar la preview");
+    } finally {
+      setPreviewingPalette(false);
+    }
+  }
+
+  async function applyPalette() {
+    if (!artifact || !slidePalette) return;
+    setApplyingPalette(true);
+    setError(null);
+    try {
+      const created = await api.applySlidePalette(artifact.id, slidePalette, paletteScope);
+      const current = created.find((item) => item.logical_key === artifact.logical_key) ?? created[0];
+      setArtifact(current);
+      setEditingPalette(false);
+      setConfirmPalette(false);
+      router.replace("/artifacts/" + current.id);
+    } catch (reason) {
+      setConfirmPalette(false);
+      setError(reason instanceof Error ? reason.message : "No se pudo aplicar la paleta");
+    } finally {
+      setApplyingPalette(false);
+    }
+  }
+
   if (notFound) {
     return (
       <div className="mx-auto max-w-2xl px-6 py-16">
@@ -185,6 +270,7 @@ export default function ArtifactViewerPage() {
       : null;
 
   return (
+    <>
     <div className="mx-auto max-w-[1600px] px-6 py-8">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <Link
@@ -195,6 +281,11 @@ export default function ArtifactViewerPage() {
           Volver al proyecto
         </Link>
         <div className="flex flex-wrap gap-2">
+          {artifact.type === "slide_deck" && !editing && (
+            <button type="button" onClick={openPaletteEditor} className="btn-primary btn-sm">
+              Cambiar paleta
+            </button>
+          )}
           {editable && !editing && (
             <button
               type="button"
@@ -247,6 +338,9 @@ export default function ArtifactViewerPage() {
                 {orientationLabel(artifact.metadata)}
               </span>
             )}
+            {paletteLabel(artifact.metadata) && (
+              <span className="badge-info">{paletteLabel(artifact.metadata)}</span>
+            )}
             <span>{new Date(artifact.created_at).toLocaleString("es")}</span>
           </p>
         </div>
@@ -266,6 +360,9 @@ export default function ArtifactViewerPage() {
                   {orientationLabel(version.metadata)
                     ? ` · ${orientationLabel(version.metadata)}`
                     : ""}
+                  {paletteLabel(version.metadata)
+                    ? ` · ${paletteLabel(version.metadata)}`
+                    : ""}
                   {version.is_selected ? " · activa" : ""}
                 </option>
               ))}
@@ -273,6 +370,119 @@ export default function ArtifactViewerPage() {
           </label>
         )}
       </div>
+
+      {editingPalette && paletteOptions && slidePalette && (
+        <section className="card mb-6 p-4 sm:p-6">
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold text-zinc-100">Cambiar paleta</h2>
+              <p className="mt-1 text-xs text-zinc-500">
+                Crea nuevas versiones autosuficientes, clona los assets y no usa LLM ni
+                regenera imágenes.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setEditingPalette(false);
+                setError(null);
+              }}
+              className="btn-secondary btn-sm"
+            >
+              Cerrar
+            </button>
+          </div>
+          <div className="grid gap-6 xl:grid-cols-2">
+            <div>
+              <SlidePaletteEditor
+                palette={slidePalette}
+                options={paletteOptions}
+                onChange={(value) => {
+                  setSlidePalette(value);
+                  setPaletteWarningsAccepted(false);
+                }}
+              />
+              {paletteWarnings(slidePalette).length > 0 && (
+                <label className="mt-3 flex cursor-pointer items-start gap-2 text-xs text-amber-100">
+                  <input
+                    type="checkbox"
+                    checked={paletteWarningsAccepted}
+                    onChange={(event) => setPaletteWarningsAccepted(event.target.checked)}
+                  />
+                  Confirmo la aplicación pese a las advertencias WCAG.
+                </label>
+              )}
+              <div className="mt-5 space-y-2">
+                <label className="card flex cursor-pointer items-start gap-3 px-4 py-3 text-sm">
+                  <input
+                    type="radio"
+                    checked={paletteScope === "deck"}
+                    onChange={() => setPaletteScope("deck")}
+                  />
+                  <span>
+                    <span className="block font-semibold text-zinc-200">Este deck</span>
+                    <span className="text-xs text-zinc-500">Solo {artifact.title}</span>
+                  </span>
+                </label>
+                <label className="card flex cursor-pointer items-start gap-3 px-4 py-3 text-sm">
+                  <input
+                    type="radio"
+                    checked={paletteScope === "project"}
+                    onChange={() => setPaletteScope("project")}
+                  />
+                  <span>
+                    <span className="block font-semibold text-zinc-200">
+                      Todos los decks activos del proyecto
+                    </span>
+                    <span className="text-xs text-zinc-500">
+                      Se validan y renderizan todos antes de publicar las versiones.
+                    </span>
+                  </span>
+                </label>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={refreshPalettePreview}
+                  disabled={previewingPalette}
+                  className="btn-secondary btn-sm"
+                >
+                  {previewingPalette ? "Generando preview…" : "Actualizar preview canónica"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmPalette(true)}
+                  disabled={
+                    paletteWarnings(slidePalette).length > 0 && !paletteWarningsAccepted
+                  }
+                  className="btn-primary btn-sm"
+                >
+                  Aplicar como nueva versión
+                </button>
+              </div>
+            </div>
+            <div>
+              {palettePreview ? (
+                <iframe
+                  src={palettePreview}
+                  title="Preview canónica de la nueva paleta"
+                  className={`w-full rounded-md border-2 border-zinc-300 bg-white ${
+                    artifactOrientation(artifact) === "vertical"
+                      ? "mx-auto aspect-[9/16] max-w-md"
+                      : "aspect-video"
+                  }`}
+                />
+              ) : (
+                <div className="flex min-h-64 items-center justify-center rounded-lg border border-dashed border-white/[0.12] px-8 text-center text-sm text-zinc-500">
+                  Genera la preview para comprobar el HTML exacto de Marp antes de crear
+                  la nueva versión.
+                </div>
+              )}
+            </div>
+          </div>
+          <ErrorBanner>{error}</ErrorBanner>
+        </section>
+      )}
 
       {editing ? (
         <section className="card mb-6 p-4 sm:p-6">
@@ -459,5 +669,18 @@ export default function ArtifactViewerPage() {
         </>
       )}
     </div>
+    <ConfirmDialog
+      open={confirmPalette}
+      title="Aplicar nueva paleta"
+      description={
+        paletteScope === "project"
+          ? "Se crearán nuevas versiones de todos los decks activos del proyecto. Las versiones anteriores permanecerán intactas."
+          : `Se creará la versión ${artifact.version + 1} de «${artifact.title}» y la actual permanecerá intacta.`
+      }
+      busy={applyingPalette}
+      onCancel={() => setConfirmPalette(false)}
+      onConfirm={applyPalette}
+    />
+    </>
   );
 }

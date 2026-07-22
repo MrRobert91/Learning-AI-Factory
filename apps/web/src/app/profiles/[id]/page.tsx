@@ -7,8 +7,11 @@ import {
   api,
   type AgentProfile,
   type ImageOptions,
+  type PaletteOptions,
   type ProfileVersion,
+  type SlidePalette,
 } from "@/lib/api";
+import SlidePaletteEditor, { paletteWarnings } from "@/components/SlidePaletteEditor";
 import {
   ConfirmDialog,
   ErrorBanner,
@@ -34,6 +37,9 @@ export default function ProfileEditorPage() {
   const [imageModel, setImageModel] = useState("");
   const [imageStyle, setImageStyle] = useState("");
   const [imageStylePrompt, setImageStylePrompt] = useState("");
+  const [paletteOptions, setPaletteOptions] = useState<PaletteOptions | null>(null);
+  const [slidePalette, setSlidePalette] = useState<SlidePalette | null>(null);
+  const [paletteWarningsAccepted, setPaletteWarningsAccepted] = useState(false);
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -42,9 +48,10 @@ export default function ProfileEditorPage() {
   const [deleting, setDeleting] = useState(false);
 
   async function load() {
-    const [p, options] = await Promise.all([
+    const [p, options, palettes] = await Promise.all([
       api.getProfile(id),
       api.getImageOptions(),
+      api.getPaletteOptions(),
     ]);
     setProfile(p);
     setImageOptions(options);
@@ -57,6 +64,9 @@ export default function ProfileEditorPage() {
     setImageModel(p.image_model ?? options.default_model);
     setImageStyle(p.image_style ?? options.default_style);
     setImageStylePrompt(p.image_style_prompt ?? "");
+    setPaletteOptions(palettes);
+    setSlidePalette(p.slide_palette ?? palettes.default);
+    setPaletteWarningsAccepted(false);
     setVersions(await api.getProfileVersions(id));
   }
 
@@ -79,6 +89,7 @@ export default function ProfileEditorPage() {
       image_model?: string;
       image_style?: string;
       image_style_prompt?: string;
+      slide_palette?: SlidePalette;
       note?: string;
     } = {};
     if (name !== profile.name) patch.name = name;
@@ -107,6 +118,13 @@ export default function ProfileEditorPage() {
     ) {
       patch.image_style_prompt = imageStylePrompt;
     }
+    if (
+      profile.slide_palette !== null &&
+      slidePalette !== null &&
+      JSON.stringify(slidePalette) !== JSON.stringify(profile.slide_palette)
+    ) {
+      patch.slide_palette = slidePalette;
+    }
     return patch;
   }
 
@@ -121,12 +139,26 @@ export default function ProfileEditorPage() {
       patch.images_enabled !== undefined ||
       patch.image_model !== undefined ||
       patch.image_style !== undefined ||
-      patch.image_style_prompt !== undefined);
+      patch.image_style_prompt !== undefined ||
+      patch.slide_palette !== undefined);
+  const paletteChanged = patch?.slide_palette !== undefined;
+  const currentPaletteWarnings = slidePalette ? paletteWarnings(slidePalette) : [];
 
   async function save() {
     if (!patch || !dirty) return;
     if (imageStyle === "custom" && !imageStylePrompt.trim()) {
       setError("El estilo personalizado necesita un prompt.");
+      return;
+    }
+    if (
+      slidePalette &&
+      Object.values(slidePalette).some((value) => !/^#[0-9A-Fa-f]{6}$/.test(value))
+    ) {
+      setError("Todos los colores deben usar HEX de seis dígitos, por ejemplo #F8F1E3.");
+      return;
+    }
+    if (paletteChanged && currentPaletteWarnings.length > 0 && !paletteWarningsAccepted) {
+      setError("Confirma las advertencias de contraste antes de guardar la paleta.");
       return;
     }
     setSaving(true);
@@ -247,6 +279,35 @@ export default function ProfileEditorPage() {
                 </span>
               </label>
             </div>
+          </div>
+        )}
+        {isSlides && paletteOptions && slidePalette && (
+          <div className="card p-5">
+            <div className="mb-4">
+              <label className="label">Paleta de slides</label>
+              <p className="text-xs leading-relaxed text-zinc-500">
+                Se congela con la versión del perfil y se aplica programáticamente al
+                Markdown Marp y a todos sus renders.
+              </p>
+            </div>
+            <SlidePaletteEditor
+              palette={slidePalette}
+              options={paletteOptions}
+              onChange={(value) => {
+                setSlidePalette(value);
+                setPaletteWarningsAccepted(false);
+              }}
+            />
+            {paletteChanged && currentPaletteWarnings.length > 0 && (
+              <label className="mt-3 flex cursor-pointer items-start gap-2 text-xs text-amber-100">
+                <input
+                  type="checkbox"
+                  checked={paletteWarningsAccepted}
+                  onChange={(event) => setPaletteWarningsAccepted(event.target.checked)}
+                />
+                Confirmo que quiero guardar la paleta pese a las advertencias de contraste.
+              </label>
+            )}
           </div>
         )}
         {isSlides && imageOptions && (
@@ -435,6 +496,15 @@ export default function ProfileEditorPage() {
                       className={v.images_enabled ? "badge-info font-normal" : "badge-neutral font-normal"}
                     >
                       {v.images_enabled ? "Con imágenes" : "Sin imágenes"}
+                    </span>
+                  )}
+                  {v.slide_palette && (
+                    <span className="badge-neutral font-normal">
+                      <span
+                        className="mr-1.5 inline-block h-2.5 w-2.5 rounded-full border border-white/20"
+                        style={{ background: v.slide_palette.primary }}
+                      />
+                      Paleta guardada
                     </span>
                   )}
                 </span>

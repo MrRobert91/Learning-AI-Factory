@@ -113,6 +113,22 @@ export interface AgentSpec {
   produces: string[];
 }
 
+export interface SlidePalette {
+  background: string;
+  text: string;
+  headings: string;
+  primary: string;
+  secondary: string;
+  code_background: string;
+  code_text: string;
+  links: string;
+}
+
+export interface PaletteOptions {
+  default: SlidePalette;
+  presets: { id: string; label: string; colors: SlidePalette }[];
+}
+
 export interface AgentProfile {
   id: string;
   agent_type: string;
@@ -125,6 +141,7 @@ export interface AgentProfile {
   image_model: string | null;
   image_style: string | null;
   image_style_prompt: string | null;
+  slide_palette: SlidePalette | null;
   version: number;
   is_default: boolean;
   created_at: string;
@@ -141,6 +158,7 @@ export interface ProfileVersion {
   image_model: string | null;
   image_style: string | null;
   image_style_prompt: string | null;
+  slide_palette: SlidePalette | null;
   note: string;
   created_at: string;
 }
@@ -338,6 +356,7 @@ export const api = {
     request<void>(`/api/ideation/${id}`, { method: "DELETE" }),
   listAgents: () => request<AgentSpec[]>("/api/agents"),
   getImageOptions: () => request<ImageOptions>("/api/agents/image-options"),
+  getPaletteOptions: () => request<PaletteOptions>("/api/agents/palette-options"),
   listProfiles: (agentType: string) =>
     request<AgentProfile[]>(`/api/agents/${agentType}/profiles`),
   createProfile: (
@@ -352,6 +371,7 @@ export const api = {
       image_model?: string;
       image_style?: string;
       image_style_prompt?: string;
+      slide_palette?: SlidePalette;
     },
   ) =>
     request<AgentProfile>(`/api/agents/${agentType}/profiles`, {
@@ -375,6 +395,7 @@ export const api = {
         | "image_model"
         | "image_style"
         | "image_style_prompt"
+        | "slide_palette"
       >
     > & { model?: string; note?: string },
   ) =>
@@ -428,6 +449,27 @@ export const api = {
         body: JSON.stringify({ prompt }),
       },
     ),
+  previewSlidePalette: async (artifactId: string, palette: SlidePalette) => {
+    const response = await fetch(`/api/artifacts/${artifactId}/palette/preview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ palette }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new ApiError(response.status, body.detail ?? response.statusText);
+    }
+    return response.blob();
+  },
+  applySlidePalette: (
+    artifactId: string,
+    palette: SlidePalette,
+    scope: "deck" | "project",
+  ) =>
+    request<Artifact[]>(`/api/artifacts/${artifactId}/palette`, {
+      method: "POST",
+      body: JSON.stringify({ palette, scope }),
+    }),
   selectArtifact: (id: string) =>
     request<Artifact>(`/api/artifacts/${id}/select`, { method: "POST" }),
   deleteArtifact: (id: string) =>

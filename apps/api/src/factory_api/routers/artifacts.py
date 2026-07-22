@@ -24,10 +24,19 @@ from factory_agents.tools.marp import (
     available_renders,
     inline_local_images,
     legacy_vertical_render_is_current,
+    marp_available,
     normalize_marp_canvas,
     render_deck,
     render_manifest_path,
     vertical_theme_path,
+)
+from factory_agents.tools.palette import (
+    DEFAULT_SLIDE_PALETTE,
+    apply_slide_palette,
+    normalize_palette,
+    palette_contrast,
+    palette_preset_name,
+    palette_warnings,
 )
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, Response
@@ -51,6 +60,8 @@ from factory_api.schemas import (
     ArtifactRead,
     ArtifactVersionRead,
     SlideImageRegenerate,
+    SlidePaletteApply,
+    SlidePalettePreview,
 )
 
 router = APIRouter(prefix="/api", tags=["artifacts"])
@@ -133,9 +144,12 @@ def _clone_slide_assets(
     asset_dir_name = f"slide-assets-{suffix}-{uuid.uuid4().hex[:8]}"
     storage_asset_dir = f"artifacts/{project_id}/{asset_dir_name}"
     output_dir = get_settings().data_dir / storage_asset_dir
-    for image in cloned.get("images", []):
-        stored_path = image.get("path")
-        markdown_path = image.get("markdown_path")
+    asset_records = list(cloned.get("images", []))
+    if isinstance(cloned.get("logo"), dict):
+        asset_records.append(cloned["logo"])
+    for asset in asset_records:
+        stored_path = asset.get("path")
+        markdown_path = asset.get("markdown_path")
         if not stored_path or not markdown_path:
             continue
         source = _safe_stored_asset(str(stored_path))
@@ -146,8 +160,8 @@ def _clone_slide_assets(
         shutil.copy2(source, target)
         new_markdown_path = f"{asset_dir_name}/{source.name}"
         markdown = markdown.replace(str(markdown_path), new_markdown_path)
-        image["path"] = f"{storage_asset_dir}/{source.name}"
-        image["markdown_path"] = new_markdown_path
+        asset["path"] = f"{storage_asset_dir}/{source.name}"
+        asset["markdown_path"] = new_markdown_path
     return markdown, cloned, output_dir, storage_asset_dir
 
 
@@ -155,8 +169,11 @@ def _remove_slide_assets(metadata: dict, project_id: str) -> None:
     """Best-effort cleanup of the private asset directory owned by one deck version."""
     root = (get_settings().data_dir / "artifacts" / project_id).resolve()
     directories: set[Path] = set()
-    for image in metadata.get("images", []):
-        stored_path = image.get("path")
+    asset_records = list(metadata.get("images", []))
+    if isinstance(metadata.get("logo"), dict):
+        asset_records.append(metadata["logo"])
+    for asset in asset_records:
+        stored_path = asset.get("path")
         if not stored_path:
             continue
         path = _safe_stored_asset(str(stored_path))
@@ -514,6 +531,168 @@ def regenerate_slide_image(
         },
     )
     return _artifact_read(db, artifact, include_content=True)
+
+
+def _normalize_palette_request(palette: dict[str, str]) -> dict[str, str]:
+    try:
+        return normalize_palette(palette)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _cleanup_palette_files(paths: list[Path], metadata: list[dict], project_id: str) -> None:
+    for path in paths:
+        renders = available_renders(path)
+        for candidate in [path, render_manifest_path(path), *renders.values()]:
+            Path(candidate).unlink(missing_ok=True)
+    for item in metadata:
+        _remove_slide_assets(item, project_id)
+
+
+@router.post("/artifacts/{artifact_id}/palette/preview")
+def preview_slide_palette(
+    artifact_id: str,
+    body: SlidePalettePreview,
+    user: CurrentUser,
+    db: DB,
+):
+    artifact = _check_owner(db, user.id, db.get(Artifact, artifact_id))
+    if artifact.type != "slide_deck":
+        raise HTTPException(status_code=422, detail="El artefacto no es un deck de slides")
+    if not marp_available():
+        raise HTTPException(status_code=503, detail="Marp CLI no está disponible")
+    palette = _normalize_palette_request(body.palette)
+    source = get_settings().data_dir / artifact.path
+    if not source.is_file():
+        raise HTTPException(status_code=404, detail="Fichero no encontrado")
+    preview = source.with_name(f".palette-preview-{uuid.uuid4().hex[:8]}.md")
+    preview.write_text(
+        apply_slide_palette(source.read_text(encoding="utf-8"), palette),
+        encoding="utf-8",
+    )
+    try:
+        rendered = render_deck(preview)
+        html = rendered.get("html")
+        if not html:
+            raise HTTPException(status_code=503, detail="No se pudo generar la preview")
+        return Response(content=Path(html).read_bytes(), media_type="text/html")
+    finally:
+        _cleanup_palette_files([preview], [], artifact.project_id)
+
+
+@router.post(
+    "/artifacts/{artifact_id}/palette",
+    response_model=list[ArtifactRead],
+)
+def apply_artifact_palette(
+    artifact_id: str,
+    body: SlidePaletteApply,
+    user: CurrentUser,
+    db: DB,
+):
+    """Create self-contained deck versions with new canonical palette renders."""
+    original = _check_owner(db, user.id, db.get(Artifact, artifact_id))
+    if original.type != "slide_deck":
+        raise HTTPException(status_code=422, detail="El artefacto no es un deck de slides")
+    if not marp_available():
+        raise HTTPException(status_code=503, detail="Marp CLI no está disponible")
+    palette = _normalize_palette_request(body.palette)
+    if body.scope == "project":
+        targets = _selected_artifacts(db, original.project_id, "slide_deck")
+    else:
+        targets = [original]
+    if not targets:
+        raise HTTPException(status_code=409, detail="No hay decks activos que actualizar")
+
+    settings = get_settings()
+    for target in targets:
+        if not (settings.data_dir / target.path).is_file():
+            raise HTTPException(
+                status_code=409,
+                detail=f"Falta el fichero del deck «{target.title}»",
+            )
+
+    prepared: list[tuple[Artifact, str, Path, dict]] = []
+    created_paths: list[Path] = []
+    cloned_metadata: list[dict] = []
+    try:
+        for target in targets:
+            source = settings.data_dir / target.path
+            markdown = source.read_text(encoding="utf-8")
+            current_metadata = artifact_metadata(target)
+            markdown, metadata, _asset_dir, _storage_dir = _clone_slide_assets(
+                markdown,
+                current_metadata,
+                target.project_id,
+                suffix="palette",
+            )
+            warnings = palette_warnings(palette)
+            metadata.update(
+                {
+                    "source_artifact_id": target.id,
+                    "palette_previous": normalize_palette(
+                        current_metadata.get("slide_palette")
+                        or DEFAULT_SLIDE_PALETTE
+                    ),
+                    "slide_palette": palette,
+                    "palette_name": palette_preset_name(palette),
+                    "palette_contrast": palette_contrast(palette),
+                    "palette_warnings": warnings,
+                    "version_reason": "palette_edit",
+                }
+            )
+            relative = (
+                f"artifacts/{target.project_id}/slide_deck-palette-"
+                f"{uuid.uuid4().hex[:10]}.md"
+            )
+            output = settings.data_dir / relative
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(apply_slide_palette(markdown, palette), encoding="utf-8")
+            created_paths.append(output)
+            cloned_metadata.append(metadata)
+            rendered = render_deck(output)
+            missing = {"html", "pdf", "pptx"} - set(rendered)
+            if missing:
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        f"No se pudo renderizar «{target.title}»: "
+                        + ", ".join(sorted(missing))
+                    ),
+                )
+            prepared.append((target, relative, output, metadata))
+
+        created: list[Artifact] = []
+        for target, relative, _output, metadata in prepared:
+            created.append(
+                add_artifact_version(
+                    db,
+                    project_id=target.project_id,
+                    type_="slide_deck",
+                    format_="markdown",
+                    title=target.title,
+                    path=relative,
+                    metadata=metadata,
+                )
+            )
+        db.commit()
+        for artifact in created:
+            db.refresh(artifact)
+        logger.info(
+            "Slide palette applied as new artifact versions",
+            extra={
+                "project_id": original.project_id,
+                "source_artifact_id": original.id,
+                "artifact_count": len(created),
+                "palette_name": palette_preset_name(palette),
+                "scope": body.scope,
+            },
+        )
+        return [_artifact_read(db, artifact, include_content=True) for artifact in created]
+    except Exception:
+        db.rollback()
+        _cleanup_palette_files(created_paths, cloned_metadata, original.project_id)
+        raise
 
 
 @router.patch("/artifacts/{artifact_id}", response_model=ArtifactRead)

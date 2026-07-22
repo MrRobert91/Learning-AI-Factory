@@ -475,6 +475,13 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
     from factory_agents.contracts import CoursePlan
     from factory_agents.tools.images import generate_deck_images, parse_image_slots
     from factory_agents.tools.marp import marp_available, render_deck
+    from factory_agents.tools.palette import (
+        apply_slide_palette,
+        normalize_palette,
+        palette_contrast,
+        palette_preset_name,
+        palette_warnings,
+    )
 
     settings = get_settings()
     plan_json = _require_artifact(
@@ -513,10 +520,27 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
     image_model = payload.get("image_model", "bytedance-seed/seedream-4.5")
     image_style = payload.get("image_style", "editorial_vector")
     image_style_prompt = payload.get("image_style_prompt", "")
+    slide_palette = normalize_palette(payload.get("slide_palette"))
+    palette_name = palette_preset_name(slide_palette)
+    contrast_warnings = palette_warnings(slide_palette)
+    append_event(
+        job_id,
+        "stage",
+        f"Paleta congelada para el run: {palette_name}",
+        {
+            "palette_name": palette_name,
+            "slide_palette": slide_palette,
+            "contrast_warnings": contrast_warnings,
+        },
+    )
     artifact_ids: list[str] = []
     for title, (_lesson_id, rel_path) in by_title.items():
         append_event(job_id, "stage", f"Diseñando slides de {title}…")
         lesson_md = (settings.data_dir / rel_path).read_text(encoding="utf-8")
+        palette_instruction = (
+            "\n\nPaleta visual obligatoria (la aplicación final será programática):\n"
+            + json.dumps(slide_palette, ensure_ascii=False)
+        )
         deck = run_slides(
             _augment_input(
                 render_slides_input(
@@ -524,7 +548,8 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
                     plan.course_title,
                     payload.get("style", ""),
                     orientation,
-                ),
+                )
+                + palette_instruction,
                 payload,
             ),
             client=client,
@@ -534,6 +559,7 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
             orientation=orientation,
             images_enabled=images_enabled,
         )
+        deck = apply_slide_palette(deck, slide_palette)
         image_records: list[dict] = []
         if images_enabled:
             slots = parse_image_slots(deck)
@@ -576,6 +602,10 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
                 "orientation": orientation,
                 "width": width,
                 "height": height,
+                "slide_palette": slide_palette,
+                "palette_name": palette_name,
+                "palette_contrast": palette_contrast(slide_palette),
+                "palette_warnings": contrast_warnings,
                 "images": image_records,
                 "image_generation": {
                     "enabled": images_enabled,
