@@ -94,6 +94,21 @@ class JobRunner:
             return
         try:
             result = handler(job_id, payload)
+            direct_agent = (
+                kind.removesuffix("_run")
+                if kind in {f"{agent}_run" for agent in AGENT_OUTPUT_TYPE}
+                else None
+            )
+            if direct_agent is not None:
+                result, review_summary = _run_automatic_review(
+                    job_id,
+                    direct_agent,
+                    handler,
+                    payload,
+                    result,
+                )
+                if review_summary is not None:
+                    result = {**result, "automatic_review": review_summary}
             if isinstance(result, dict) and result.get("__waiting__"):
                 self._set_waiting(job_id)
             else:
@@ -611,6 +626,7 @@ def run_pipeline_job(job_id: str, payload: dict) -> dict:
     """Fixed content chain: curator → planner → lessons → slides."""
     stages = payload.get("stages", {})
     results: dict[str, dict] = {}
+    review_summaries: dict[str, dict] = {}
 
     steps = [
         ("curator", "① Curador de contenido", run_curator_job),
@@ -621,7 +637,20 @@ def run_pipeline_job(job_id: str, payload: dict) -> dict:
     for agent, label, handler in steps:
         append_event(job_id, "stage", f"{label} — iniciando")
         stage_payload = {**payload, **stages.get(agent, {})}
-        results[agent] = handler(job_id, stage_payload)
+        result = handler(job_id, stage_payload)
+        result, review_summary = _run_automatic_review(
+            job_id,
+            agent,
+            handler,
+            stage_payload,
+            result,
+        )
+        results[agent] = result
+        if review_summary is not None:
+            review_summaries[agent] = review_summary
+
+    if review_summaries:
+        results["_automatic_reviews"] = review_summaries
 
     return results
 
@@ -1127,6 +1156,105 @@ AGENT_OUTPUT_TYPE = {
 }
 
 
+def _run_automatic_review(
+    job_id: str,
+    agent: str,
+    handler,
+    payload: dict,
+    initial_result: dict,
+) -> tuple[dict, dict | None]:
+    """Apply a frozen profile review policy outside declarative workflows."""
+    if not payload.get("automatic_review_enabled", False):
+        return initial_result, None
+
+    max_regenerations = int(payload.get("max_automatic_regenerations", 0) or 0)
+    evaluator_model = payload.get("evaluator_model") or get_settings().openrouter_model
+    result = initial_result
+    evaluations = 0
+    regenerations = 0
+    while True:
+        append_event(
+            job_id,
+            "evaluation",
+            f"Evaluación automática de {agent} iniciada",
+            {
+                "agent": agent,
+                "status": "running",
+                "model": evaluator_model,
+                "evaluation": evaluations + 1,
+            },
+        )
+        try:
+            verdict, feedback = evaluate_stage(job_id, agent, result)
+        except Exception as exc:
+            append_event(
+                job_id,
+                "evaluation",
+                f"La evaluación de {agent} falló; la ejecución continúa",
+                {
+                    "agent": agent,
+                    "status": "warning",
+                    "technical_error": True,
+                    "error": str(exc),
+                    "model": evaluator_model,
+                },
+            )
+            return result, {
+                "agent": agent,
+                "evaluations": evaluations + 1,
+                "regenerations": regenerations,
+                "final_result": "evaluator_error",
+                "model": evaluator_model,
+            }
+        evaluations += 1
+        if verdict == "pass":
+            return result, {
+                "agent": agent,
+                "evaluations": evaluations,
+                "regenerations": regenerations,
+                "final_result": "pass",
+                "model": evaluator_model,
+            }
+        if regenerations >= max_regenerations:
+            append_event(
+                job_id,
+                "evaluation",
+                f"{agent} agotó {max_regenerations} regeneraciones; "
+                "la ejecución continúa con advertencia",
+                {
+                    "agent": agent,
+                    "status": "warning",
+                    "verdict": verdict,
+                    "feedback": feedback,
+                    "destination": "continue",
+                },
+            )
+            return result, {
+                "agent": agent,
+                "evaluations": evaluations,
+                "regenerations": regenerations,
+                "final_result": "exhausted",
+                "destination": "continue",
+                "feedback": feedback,
+                "model": evaluator_model,
+            }
+        regenerations += 1
+        append_event(
+            job_id,
+            "evaluation",
+            f"Regeneración {regenerations}/{max_regenerations} de {agent} "
+            "con feedback del evaluador…",
+            {
+                "agent": agent,
+                "status": "regenerating",
+                "regeneration": regenerations,
+                "max_regenerations": max_regenerations,
+                "feedback": feedback,
+            },
+        )
+        result = handler(job_id, {**payload, "revision_feedback": feedback})
+
+
 def evaluate_stage(job_id: str, agent: str, result: dict | None) -> tuple[str, str]:
     """Judge a stage's artifacts. Returns (verdict, feedback)."""
     from factory_agents.evals import run_evaluator
@@ -1134,6 +1262,18 @@ def evaluate_stage(job_id: str, agent: str, result: dict | None) -> tuple[str, s
     settings = get_settings()
     artifact_type = AGENT_OUTPUT_TYPE.get(agent)
     if artifact_type is None or not result:
+        append_event(
+            job_id,
+            "evaluation",
+            f"Evaluación de {agent} omitida: no hay una rúbrica aplicable",
+            {
+                "agent": agent,
+                "status": "done",
+                "verdict": "pass",
+                "skipped": True,
+                "model": settings.openrouter_model,
+            },
+        )
         return "pass", ""
     ids = result.get("artifact_ids") or (
         [result["artifact_id"]] if result.get("artifact_id") else []
@@ -1148,6 +1288,18 @@ def evaluate_stage(job_id: str, agent: str, result: dict | None) -> tuple[str, s
             if path.is_file():
                 excerpts.append(f"[{artifact.title}]\n" + path.read_text(encoding="utf-8"))
     if not excerpts:
+        append_event(
+            job_id,
+            "evaluation",
+            f"Evaluación de {agent} omitida: no hay contenido legible",
+            {
+                "agent": agent,
+                "status": "done",
+                "verdict": "pass",
+                "skipped": True,
+                "model": settings.openrouter_model,
+            },
+        )
         return "pass", ""
     evaluation = run_evaluator(
         _client(job_id),
@@ -1161,7 +1313,13 @@ def evaluate_stage(job_id: str, agent: str, result: dict | None) -> tuple[str, s
         "evaluation",
         f"{icon} Evaluación de {agent}: {evaluation.verdict} (nota {evaluation.score}/10)"
         + (f" — {evaluation.feedback}" if evaluation.feedback else ""),
-        {"agent": agent, "verdict": evaluation.verdict, "score": evaluation.score},
+        {
+            "agent": agent,
+            "status": "done",
+            "verdict": evaluation.verdict,
+            "score": evaluation.score,
+            "model": settings.openrouter_model,
+        },
     )
     return evaluation.verdict, evaluation.feedback
 
@@ -1299,7 +1457,12 @@ def run_workflow_job(job_id: str, payload: dict) -> dict:
         if payload.get("_resume") is not None:
             graph_input = Command(resume=payload["_resume"])
         else:
-            graph_input = {"payload": payload, "results": {}}
+            graph_input = {
+                "payload": payload,
+                "results": {},
+                "review_summaries": {},
+                "review_approval_skips": {},
+            }
         try:
             for update in compiled.stream(graph_input, config, stream_mode="updates"):
                 if "__interrupt__" in update:
@@ -1316,7 +1479,11 @@ def run_workflow_job(job_id: str, payload: dict) -> dict:
         except WorkflowRejected as exc:
             raise RuntimeError(str(exc)) from exc
         state = compiled.get_state(config)
-        return dict(state.values.get("results", {}))
+        results = dict(state.values.get("results", {}))
+        review_summaries = dict(state.values.get("review_summaries", {}))
+        if review_summaries:
+            results["_automatic_reviews"] = review_summaries
+        return results
 
 
 HANDLERS = {

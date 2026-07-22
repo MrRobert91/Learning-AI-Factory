@@ -670,6 +670,24 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
             isActive && activeRun?.status === "waiting_approval";
           const done = !isActive && artifactTypes.has(stage.produces);
           const profiles = profilesByAgent[stage.agent] ?? [];
+          const workflowStep = selectedWorkflow?.steps.find(
+            (item) => item.agent === stage.agent,
+          );
+          const configuredProfileId = workflowStep
+            ? workflowStep.profile_id || profiles.find((profile) => profile.is_default)?.id
+            : selectedProfile[stage.agent];
+          const configuredProfile = profiles.find(
+            (profile) => profile.id === configuredProfileId,
+          );
+          const frozenPolicy = activeRun?.review_policies?.[stage.agent];
+          const reviewEnabled =
+            frozenPolicy?.enabled ??
+            configuredProfile?.automatic_review_enabled ??
+            false;
+          const maxRegenerations =
+            frozenPolicy?.max_regenerations ??
+            configuredProfile?.max_automatic_regenerations ??
+            0;
           const missingInputs = stage.consumes.filter(
             (type) => !artifactTypes.has(type),
           );
@@ -724,6 +742,10 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
               </div>
               <p className="mb-3 flex-1 text-xs leading-relaxed text-zinc-500">
                 {stage.description}
+              </p>
+              <p className="mb-2 text-[11px] text-zinc-500">
+                Revisión automática: {reviewEnabled ? `sí · ${maxRegenerations} regeneraciones` : "no"}
+                {frozenPolicy ? " · política congelada del run" : ""}
               </p>
               <div className="flex items-center gap-2">
                 {profiles.length > 0 ? (

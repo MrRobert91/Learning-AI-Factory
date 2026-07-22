@@ -125,6 +125,8 @@ export interface AgentProfile {
   image_model: string | null;
   image_style: string | null;
   image_style_prompt: string | null;
+  automatic_review_enabled: boolean;
+  max_automatic_regenerations: number;
   version: number;
   is_default: boolean;
   created_at: string;
@@ -141,6 +143,8 @@ export interface ProfileVersion {
   image_model: string | null;
   image_style: string | null;
   image_style_prompt: string | null;
+  automatic_review_enabled: boolean;
+  max_automatic_regenerations: number;
   note: string;
   created_at: string;
 }
@@ -192,7 +196,6 @@ export interface WorkflowStep {
   agent: string;
   profile_id?: string | null;
   approval_after?: boolean | null;
-  evaluate?: boolean | null;
 }
 
 export interface Workflow {
@@ -212,6 +215,16 @@ export interface Job {
   error: string;
   project_id: string | null;
   result: { artifact_id?: string } | null;
+  review_policies: Record<
+    string,
+    {
+      enabled: boolean;
+      max_regenerations: number;
+      profile_id: string | null;
+      profile_version: number | null;
+      evaluator_model: string | null;
+    }
+  >;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
@@ -352,6 +365,8 @@ export const api = {
       image_model?: string;
       image_style?: string;
       image_style_prompt?: string;
+      automatic_review_enabled?: boolean;
+      max_automatic_regenerations?: number;
     },
   ) =>
     request<AgentProfile>(`/api/agents/${agentType}/profiles`, {
@@ -375,6 +390,8 @@ export const api = {
         | "image_model"
         | "image_style"
         | "image_style_prompt"
+        | "automatic_review_enabled"
+        | "max_automatic_regenerations"
       >
     > & { model?: string; note?: string },
   ) =>

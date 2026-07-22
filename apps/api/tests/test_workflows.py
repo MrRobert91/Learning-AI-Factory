@@ -75,6 +75,15 @@ def test_workflow_crud_and_validation(auth_client):
     assert auth_client.delete(f"/api/workflows/{wf['id']}").status_code == 204
 
 
+def test_workflow_ignores_legacy_evaluate_flag(auth_client):
+    response = auth_client.post(
+        "/api/workflows",
+        json={"name": "Legacy", "steps": [{"agent": "curator", "evaluate": True}]},
+    )
+    assert response.status_code == 201
+    assert "evaluate" not in response.json()["steps"][0]
+
+
 def test_workflow_run_with_approvals(auth_client, monkeypatch):
     _patch_all(monkeypatch)
     project = _create_project(auth_client)

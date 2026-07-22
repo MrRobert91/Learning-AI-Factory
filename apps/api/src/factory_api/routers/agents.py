@@ -46,8 +46,15 @@ def _profile_config(
     image_model: str | None = None,
     image_style: str | None = None,
     image_style_prompt: str | None = None,
+    automatic_review_enabled: bool | None = None,
+    max_automatic_regenerations: int | None = None,
 ) -> dict:
-    config = {"model": model} if model else {}
+    config = {
+        "automatic_review_enabled": bool(automatic_review_enabled),
+        "max_automatic_regenerations": max_automatic_regenerations or 0,
+    }
+    if model:
+        config["model"] = model
     if agent_type in ORIENTATION_AGENTS:
         config["orientation"] = orientation or "horizontal"
     if agent_type == "slides":
@@ -88,6 +95,15 @@ def _supplied_image_config(body: ProfileCreate | ProfileUpdate) -> dict:
             "image_style_prompt": body.image_style_prompt,
         }.items()
         if value is not None
+    }
+
+
+def _review_fields(config: dict) -> dict:
+    return {
+        "automatic_review_enabled": bool(config.get("automatic_review_enabled", False)),
+        "max_automatic_regenerations": int(
+            config.get("max_automatic_regenerations", 0) or 0
+        ),
     }
 
 
@@ -154,6 +170,7 @@ def _profile_read(p: AgentProfile) -> ProfileRead:
         if p.agent_type in ORIENTATION_AGENTS
         else None,
         **_slide_image_fields(config, p.agent_type),
+        **_review_fields(config),
         version=p.version,
         is_default=p.is_default,
         created_at=p.created_at,
@@ -223,6 +240,8 @@ def create_profile(agent_type: str, body: ProfileCreate, user: CurrentUser, db: 
         image_model=body.image_model,
         image_style=body.image_style,
         image_style_prompt=body.image_style_prompt,
+        automatic_review_enabled=body.automatic_review_enabled,
+        max_automatic_regenerations=body.max_automatic_regenerations,
     )
     profile = AgentProfile(
         agent_type=agent_type,
@@ -274,6 +293,7 @@ def list_profile_versions(profile_id: str, user: CurrentUser, db: DB):
                 if profile.agent_type in ORIENTATION_AGENTS
                 else None,
                 **_slide_image_fields(config, profile.agent_type),
+                **_review_fields(config),
                 note=item.note,
                 created_at=item.created_at,
             )
@@ -305,6 +325,10 @@ def update_profile(profile_id: str, body: ProfileUpdate, user: CurrentUser, db: 
                 detail="Este agente no admite configuración de orientación",
             )
         proposed_config["orientation"] = body.orientation
+    if body.automatic_review_enabled is not None:
+        proposed_config["automatic_review_enabled"] = body.automatic_review_enabled
+    if body.max_automatic_regenerations is not None:
+        proposed_config["max_automatic_regenerations"] = body.max_automatic_regenerations
     _validate_slide_image_config(profile.agent_type, proposed_config)
 
     content_changed = (

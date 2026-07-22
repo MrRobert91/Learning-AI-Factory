@@ -77,10 +77,18 @@ class WorkflowRejected(Exception):
 class WorkflowState(TypedDict, total=False):
     payload: dict[str, Any]
     results: dict[str, Any]
+    review_summaries: dict[str, Any]
+    review_approval_skips: dict[str, bool]
     escalate: dict[str, Any] | None
 
 
-MAX_REVISIONS = 2
+def _review_policy(step: dict) -> tuple[bool, int, str | None]:
+    overrides = step.get("overrides", {})
+    return (
+        bool(overrides.get("automatic_review_enabled", False)),
+        int(overrides.get("max_automatic_regenerations", 0) or 0),
+        overrides.get("evaluator_model"),
+    )
 
 
 def validate_definition(definition: dict) -> list[str]:
@@ -130,8 +138,8 @@ def build_workflow_graph(
     """Compile the declarative chain into a LangGraph StateGraph.
 
     evaluator(agent, result) -> (verdict, feedback) is injected by the
-    runner; steps with evaluate=true get a judge + bounded revise loop and
-    a human-escalation node when revisions run out.
+    runner. The bounded review policy comes exclusively from the frozen
+    profile fields in each step's overrides.
     """
     graph: StateGraph = StateGraph(WorkflowState)
     steps = definition["steps"]
@@ -152,7 +160,8 @@ def build_workflow_graph(
                 stage_payload = {**state["payload"], **step.get("overrides", {})}
                 result = handlers[f"{agent}_run"](job_id, stage_payload)
                 results = {**state.get("results", {}), agent: result}
-                if not step.get("evaluate") or evaluator is None:
+                review_enabled, _, _ = _review_policy(step)
+                if not review_enabled or evaluator is None:
                     append_event(
                         job_id,
                         "stage",
@@ -167,47 +176,169 @@ def build_workflow_graph(
         graph.add_edge(previous, node_name)
         previous = node_name
 
-        if step.get("evaluate") and evaluator is not None:
+        review_enabled, max_regenerations, evaluator_model = _review_policy(step)
+        review_key = f"{i + 1}:{agent}"
+        if review_enabled and evaluator is not None:
             eval_name = f"eval{i + 1}_{agent}"
             escalate_name = f"escalate{i + 1}_{agent}"
 
-            def make_eval_node(step=step, agent=agent, index=i):
+            def make_eval_node(
+                step=step,
+                agent=agent,
+                index=i,
+                max_regenerations=max_regenerations,
+                evaluator_model=evaluator_model,
+                review_key=review_key,
+            ):
                 def node(state: WorkflowState) -> WorkflowState:
                     results = dict(state.get("results", {}))
+                    summaries = dict(state.get("review_summaries", {}))
                     stage_payload = {**state["payload"], **step.get("overrides", {})}
-                    attempts = 0
+                    evaluations = 0
+                    regenerations = 0
                     while True:
-                        verdict, feedback = evaluator(agent, results.get(agent))
+                        evaluation_number = evaluations + 1
+                        append_event(
+                            job_id,
+                            "evaluation",
+                            f"Evaluación automática de {agent} iniciada",
+                            {
+                                "agent": agent,
+                                "step": index + 1,
+                                "status": "running",
+                                "model": evaluator_model,
+                                "evaluation": evaluation_number,
+                            },
+                        )
+                        try:
+                            verdict, feedback = evaluator(agent, results.get(agent))
+                        except Exception as exc:
+                            append_event(
+                                job_id,
+                                "evaluation",
+                                f"La evaluación de {agent} falló; el workflow continúa",
+                                {
+                                    "agent": agent,
+                                    "step": index + 1,
+                                    "status": "warning",
+                                    "technical_error": True,
+                                    "error": str(exc),
+                                    "model": evaluator_model,
+                                },
+                            )
+                            summaries[review_key] = {
+                                "agent": agent,
+                                "evaluations": evaluation_number,
+                                "regenerations": regenerations,
+                                "final_result": "evaluator_error",
+                                "model": evaluator_model,
+                            }
+                            append_event(
+                                job_id,
+                                "stage",
+                                f"Paso {index + 1}: {agent} completado con advertencia",
+                                {"agent": agent, "step": index + 1, "status": "done"},
+                            )
+                            return {
+                                "results": results,
+                                "review_summaries": summaries,
+                                "escalate": None,
+                            }
+                        evaluations = evaluation_number
                         if verdict == "pass":
+                            summaries[review_key] = {
+                                "agent": agent,
+                                "evaluations": evaluations,
+                                "regenerations": regenerations,
+                                "final_result": "pass",
+                                "model": evaluator_model,
+                            }
                             append_event(
                                 job_id,
                                 "stage",
                                 f"Paso {index + 1}: {agent} completado",
                                 {"agent": agent, "step": index + 1, "status": "done"},
                             )
-                            return {"results": results, "escalate": None}
-                        if attempts >= MAX_REVISIONS:
+                            return {
+                                "results": results,
+                                "review_summaries": summaries,
+                                "escalate": None,
+                            }
+                        if regenerations >= max_regenerations:
+                            destination = (
+                                "human_approval" if step.get("approval_after") else "continue"
+                            )
+                            summaries[review_key] = {
+                                "agent": agent,
+                                "evaluations": evaluations,
+                                "regenerations": regenerations,
+                                "final_result": "exhausted",
+                                "destination": destination,
+                                "feedback": feedback,
+                                "model": evaluator_model,
+                            }
+                            if step.get("approval_after"):
+                                append_event(
+                                    job_id,
+                                    "stage",
+                                    f"Paso {index + 1}: {agent} espera revisión humana",
+                                    {
+                                        "agent": agent,
+                                        "step": index + 1,
+                                        "status": "waiting_approval",
+                                    },
+                                )
+                                return {
+                                    "results": results,
+                                    "review_summaries": summaries,
+                                    "escalate": {
+                                        "step": index + 1,
+                                        "agent": agent,
+                                        "type": "evaluation",
+                                        "feedback": feedback,
+                                        "evaluations": evaluations,
+                                        "regenerations": regenerations,
+                                    },
+                                }
+                            append_event(
+                                job_id,
+                                "evaluation",
+                                f"{agent} agotó {max_regenerations} regeneraciones; "
+                                "el workflow continúa con advertencia",
+                                {
+                                    "agent": agent,
+                                    "step": index + 1,
+                                    "status": "warning",
+                                    "verdict": verdict,
+                                    "feedback": feedback,
+                                    "destination": "continue",
+                                },
+                            )
                             append_event(
                                 job_id,
                                 "stage",
-                                f"Paso {index + 1}: {agent} espera revision",
-                                {"agent": agent, "step": index + 1, "status": "waiting_approval"},
+                                f"Paso {index + 1}: {agent} completado con advertencia",
+                                {"agent": agent, "step": index + 1, "status": "done"},
                             )
                             return {
                                 "results": results,
-                                "escalate": {
-                                    "step": index + 1,
-                                    "agent": agent,
-                                    "type": "evaluation",
-                                    "feedback": feedback,
-                                },
+                                "review_summaries": summaries,
+                                "escalate": None,
                             }
-                        attempts += 1
+                        regenerations += 1
                         append_event(
                             job_id,
-                            "stage",
-                            f"Revisión {attempts}/{MAX_REVISIONS} de {agent} "
+                            "evaluation",
+                            f"Regeneración {regenerations}/{max_regenerations} de {agent} "
                             f"con feedback del evaluador…",
+                            {
+                                "agent": agent,
+                                "step": index + 1,
+                                "status": "regenerating",
+                                "regeneration": regenerations,
+                                "max_regenerations": max_regenerations,
+                                "feedback": feedback,
+                            },
                         )
                         results[agent] = handlers[f"{agent}_run"](
                             job_id,
@@ -219,7 +350,7 @@ def build_workflow_graph(
             # Escalation lives in its own node (interrupt must not share a
             # node with expensive work) and no-ops when there is nothing
             # to escalate, keeping the graph linear.
-            def make_escalate_node(agent=agent, index=i):
+            def make_escalate_node(agent=agent, index=i, review_key=review_key):
                 def node(state: WorkflowState) -> WorkflowState:
                     info = state.get("escalate")
                     if not info:
@@ -230,7 +361,15 @@ def build_workflow_graph(
                             f"paso {index + 1} ({agent}, evaluación)",
                             (decision or {}).get("feedback", ""),
                         )
-                    return {"escalate": None}
+                    skips = dict(state.get("review_approval_skips", {}))
+                    skips[review_key] = True
+                    append_event(
+                        job_id,
+                        "stage",
+                        f"Paso {index + 1}: {agent} aprobado tras agotar la revisión",
+                        {"agent": agent, "step": index + 1, "status": "done"},
+                    )
+                    return {"escalate": None, "review_approval_skips": skips}
 
                 return node
 
@@ -246,8 +385,10 @@ def build_workflow_graph(
             # Approval lives in its own node: on resume LangGraph re-runs the
             # node from its start, so the expensive agent node must not share
             # a node with interrupt().
-            def make_approval_node(agent=agent, index=i, approval_name=approval_name):
+            def make_approval_node(agent=agent, index=i, review_key=review_key):
                 def node(state: WorkflowState) -> WorkflowState:
+                    if state.get("review_approval_skips", {}).get(review_key):
+                        return {}
                     decision = interrupt(
                         {
                             "step": index + 1,

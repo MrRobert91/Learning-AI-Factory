@@ -28,6 +28,9 @@ docker compose up --build                # stack completo (2 contenedores)
   registrado (registry en `runtime.py`) con prompt base + perfil
   (`soul.md`/`agents.md`) editable por el usuario y versionado en BD.
   El prompt se compone base + agents.md + soul.md; el base marca límites.
+- **Revisión automática**: vive exclusivamente en el perfil versionado
+  (`automatic_review_enabled` + `max_automatic_regenerations`, 0–5). El run
+  congela la política; los workflows no declaran ni permiten `evaluate`.
 - **Contratos de artefactos** en `factory_agents/contracts/`: los tipos
   (course_idea_brief, research_brief, course_plan, lesson_content,
   slide_deck…) son la columna vertebral — los agentes declaran consumes/

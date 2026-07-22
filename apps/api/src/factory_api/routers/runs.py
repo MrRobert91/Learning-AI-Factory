@@ -33,6 +33,40 @@ def _event_read(e: JobEvent) -> JobEventRead:
 
 
 def _job_read(job: Job, include_events: bool = True) -> JobRead:
+    payload = json.loads(job.payload_json or "{}")
+    review_policies: dict[str, dict] = {}
+    if job.kind == "workflow_run":
+        for step in payload.get("definition", {}).get("steps", []):
+            overrides = step.get("overrides", {})
+            review_policies[step.get("agent", "")] = {
+                "enabled": bool(overrides.get("automatic_review_enabled", False)),
+                "max_regenerations": int(
+                    overrides.get("max_automatic_regenerations", 0) or 0
+                ),
+                "profile_id": overrides.get("profile_id"),
+                "profile_version": overrides.get("profile_version"),
+                "evaluator_model": overrides.get("evaluator_model"),
+            }
+    elif job.kind == "pipeline_run":
+        for agent, fields in payload.get("stages", {}).items():
+            review_policies[agent] = {
+                "enabled": bool(fields.get("automatic_review_enabled", False)),
+                "max_regenerations": int(
+                    fields.get("max_automatic_regenerations", 0) or 0
+                ),
+                "profile_id": fields.get("profile_id"),
+                "profile_version": fields.get("profile_version"),
+                "evaluator_model": fields.get("evaluator_model"),
+            }
+    elif job.kind.endswith("_run"):
+        agent = job.kind.removesuffix("_run")
+        review_policies[agent] = {
+            "enabled": bool(payload.get("automatic_review_enabled", False)),
+            "max_regenerations": int(payload.get("max_automatic_regenerations", 0) or 0),
+            "profile_id": payload.get("profile_id"),
+            "profile_version": payload.get("profile_version"),
+            "evaluator_model": payload.get("evaluator_model"),
+        }
     return JobRead(
         id=job.id,
         kind=job.kind,
@@ -40,6 +74,7 @@ def _job_read(job: Job, include_events: bool = True) -> JobRead:
         error=job.error,
         project_id=job.project_id,
         result=json.loads(job.result_json) if job.result_json else None,
+        review_policies=review_policies,
         created_at=job.created_at,
         started_at=job.started_at,
         finished_at=job.finished_at,
@@ -60,6 +95,9 @@ RUNNABLE_AGENTS = (
 
 
 def _profile_fields(profile: AgentProfile | None) -> dict:
+    from factory_api.config import get_settings
+
+    evaluator_model = get_settings().openrouter_model
     if profile is None:
         return {
             "soul_md": "",
@@ -70,6 +108,11 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
             "image_model": DEFAULT_IMAGE_MODEL,
             "image_style": DEFAULT_IMAGE_STYLE,
             "image_style_prompt": "",
+            "profile_id": None,
+            "profile_version": None,
+            "automatic_review_enabled": False,
+            "max_automatic_regenerations": 0,
+            "evaluator_model": evaluator_model,
         }
     config = json.loads(profile.config_json or "{}")
     return {
@@ -81,6 +124,13 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
         "image_model": config.get("image_model") or DEFAULT_IMAGE_MODEL,
         "image_style": config.get("image_style") or DEFAULT_IMAGE_STYLE,
         "image_style_prompt": config.get("image_style_prompt") or "",
+        "profile_id": profile.id,
+        "profile_version": profile.version,
+        "automatic_review_enabled": bool(config.get("automatic_review_enabled", False)),
+        "max_automatic_regenerations": int(
+            config.get("max_automatic_regenerations", 0) or 0
+        ),
+        "evaluator_model": evaluator_model,
     }
 
 
