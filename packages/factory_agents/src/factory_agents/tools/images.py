@@ -26,7 +26,10 @@ IMAGE_MODEL_OPTIONS: dict[str, dict[str, Any]] = {
     "bytedance-seed/seedream-4.5": {
         "label": "Seedream 4.5",
         "price_hint": "≈ $0.04 por imagen",
-        "supports_aspect_ratio": True,
+        # The current OpenRouter endpoint for Seedream exposes resolution + seed, but
+        # rejects aspect_ratio with HTTP 400. Keep slide orientation in the prompt
+        # instead of sending an unsupported request parameter.
+        "supports_aspect_ratio": False,
         "supports_seed": True,
         "request": {"resolution": "1K"},
     },

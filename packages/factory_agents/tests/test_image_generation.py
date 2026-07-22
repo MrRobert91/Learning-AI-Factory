@@ -37,7 +37,7 @@ def test_parse_image_slots_limits_cost_and_keeps_one_per_slide():
     assert len({slot.slide_number for slot in slots}) == 6
 
 
-def test_generate_image_retries_twice_and_uses_orientation(monkeypatch):
+def test_generate_image_retries_twice_and_uses_supported_orientation(monkeypatch):
     monkeypatch.setattr(images.time, "sleep", lambda _seconds: None)
 
     class FakeResponse:
@@ -69,6 +69,7 @@ def test_generate_image_retries_twice_and_uses_orientation(monkeypatch):
     result = images.generate_image(
         "A concept",
         api_key="test",
+        model="sourceful/riverflow-v2.5-fast",
         orientation="vertical",
         seed=123,
         client=client,
@@ -77,8 +78,48 @@ def test_generate_image_retries_twice_and_uses_orientation(monkeypatch):
     assert result.content.startswith(b"\x89PNG")
     assert result.cost_usd == 0.04
     assert len(client.calls) == 3
-    assert client.calls[-1]["json"]["aspect_ratio"] == "9:16"
-    assert client.calls[-1]["json"]["seed"] == 123
+    assert "aspect_ratio" not in client.calls[-1]["json"]
+    assert "seed" not in client.calls[-1]["json"]
+
+
+def test_generate_image_keeps_default_seedream_payload_openrouter_compatible():
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "data": [
+                    {
+                        "b64_json": base64.b64encode(b"\x89PNG image").decode(),
+                        "media_type": "image/png",
+                    }
+                ],
+                "usage": {"cost": 0.04},
+            }
+
+    class FakeClient:
+        def post(self, _url, **kwargs):
+            captured.update(kwargs["json"])
+            return FakeResponse()
+
+    images.generate_image(
+        "A vertical slide concept",
+        api_key="test",
+        orientation="vertical",
+        seed=123,
+        client=FakeClient(),
+    )
+
+    assert captured == {
+        "model": images.DEFAULT_IMAGE_MODEL,
+        "prompt": "A vertical slide concept",
+        "n": 1,
+        "resolution": "1K",
+        "seed": 123,
+    }
 
 
 def test_generate_deck_images_persists_assets_and_metadata(tmp_path, monkeypatch):
