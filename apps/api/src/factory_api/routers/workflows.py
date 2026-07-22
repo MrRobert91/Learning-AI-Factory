@@ -29,14 +29,14 @@ TEMPLATES = [
     {
         "name": "Curso completo (hasta slides)",
         "description": (
-            "Investiga, diseña el plan (con tu aprobación), escribe las lecciones "
-            "y genera las slides (con tu aprobación final)."
+            "Investiga, diseña el plan, escribe las lecciones y genera las slides. "
+            "Cada perfil decide si su fase requiere aprobación humana."
         ),
         "steps": [
             {"agent": "curator"},
-            {"agent": "planner", "approval_after": True},
+            {"agent": "planner"},
             {"agent": "lessons"},
-            {"agent": "slides", "approval_after": True},
+            {"agent": "slides"},
         ],
     },
     {
@@ -51,7 +51,7 @@ TEMPLATES = [
         ),
         "steps": [
             {"agent": "lessons"},
-            {"agent": "slides", "approval_after": True},
+            {"agent": "slides"},
         ],
     },
     {
@@ -62,14 +62,14 @@ TEMPLATES = [
     {
         "name": "Curso completo con vídeo",
         "description": (
-            "El flujo entero: investigación, plan (aprobación), lecciones, slides "
-            "(aprobación), guion docente, narración TTS y montaje del vídeo."
+            "El flujo entero: investigación, plan, lecciones, slides, guion docente, "
+            "narración TTS y montaje del vídeo. Los perfiles controlan las aprobaciones."
         ),
         "steps": [
             {"agent": "curator"},
-            {"agent": "planner", "approval_after": True},
+            {"agent": "planner"},
             {"agent": "lessons"},
-            {"agent": "slides", "approval_after": True},
+            {"agent": "slides"},
             {"agent": "script"},
             {"agent": "voice"},
             {"agent": "video"},
@@ -106,13 +106,22 @@ def seed_template_workflows(db: Session) -> None:
                     is_template=True,
                 )
             )
+        else:
+            # Factory templates are canonical. This also strips historical
+            # workflow-owned approval_after flags from existing databases.
+            exists.description = template["description"]
+            exists.definition_json = json.dumps({"steps": template["steps"]})
     db.commit()
 
 
 def _workflow_read(w: Workflow) -> WorkflowRead:
     definition = json.loads(w.definition_json)
     steps = [
-        {key: value for key, value in step.items() if key != "evaluate"}
+        {
+            key: value
+            for key, value in step.items()
+            if key not in {"evaluate", "approval_after"}
+        }
         for step in definition.get("steps", [])
     ]
     return WorkflowRead(
@@ -260,8 +269,13 @@ def approve_run(job_id: str, body: ApprovalRequest, user: CurrentUser, db: DB):
         raise HTTPException(status_code=404, detail="Ejecución no encontrada")
     if job.status != "waiting_approval":
         raise HTTPException(status_code=409, detail="La ejecución no espera aprobación")
+    if not body.approved and not body.feedback.strip():
+        raise HTTPException(status_code=422, detail="Escribe feedback para regenerar la fase")
     payload = json.loads(job.payload_json)
-    payload["_resume"] = {"approved": body.approved, "feedback": body.feedback}
+    payload["_resume"] = {
+        "approved": body.approved,
+        "feedback": body.feedback.strip(),
+    }
     job.payload_json = json.dumps(payload)
     job.status = "queued"
     db.commit()
@@ -269,7 +283,7 @@ def approve_run(job_id: str, body: ApprovalRequest, user: CurrentUser, db: DB):
     append_event(
         job_id,
         "approval",
-        ("Aprobado" if body.approved else "Rechazado")
+        ("Aprobado" if body.approved else "Feedback enviado para regenerar")
         + (f": {body.feedback}" if body.feedback else ""),
     )
     runner.enqueue(job.id)

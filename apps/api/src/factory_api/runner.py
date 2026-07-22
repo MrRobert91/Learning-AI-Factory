@@ -93,22 +93,75 @@ class JobRunner:
             self._finish(job_id, error=f"Tipo de job desconocido: {kind}")
             return
         try:
-            result = handler(job_id, payload)
             direct_agent = (
                 kind.removesuffix("_run")
-                if kind in {f"{agent}_run" for agent in AGENT_OUTPUT_TYPE}
+                if kind
+                in {
+                    f"{agent}_run"
+                    for agent in (
+                        "curator",
+                        "planner",
+                        "lessons",
+                        "slides",
+                        "script",
+                        "voice",
+                        "video",
+                        "publisher",
+                    )
+                }
                 else None
             )
-            if direct_agent is not None:
+            resume = payload.get("_resume") or {}
+            if direct_agent is not None and resume.get("approved") is True:
+                result = dict(payload.get("_pending_result") or {})
+                result["human_review"] = {
+                    "agent": direct_agent,
+                    "feedback_cycles": list(
+                        payload.get("_human_feedback_history", [])
+                    ),
+                    "final_decision": "approved",
+                }
+            else:
+                effective_payload = dict(payload)
+                if direct_agent is not None and resume.get("approved") is False:
+                    effective_payload["revision_feedback"] = resume.get("feedback", "")
+                result = handler(job_id, effective_payload)
+            if direct_agent is not None and resume.get("approved") is not True:
                 result, review_summary = _run_automatic_review(
                     job_id,
                     direct_agent,
                     handler,
-                    payload,
+                    effective_payload,
                     result,
                 )
                 if review_summary is not None:
                     result = {**result, "automatic_review": review_summary}
+                if payload.get("human_review_enabled", False):
+                    history = list(payload.get("_human_feedback_history", []))
+                    if resume.get("approved") is False:
+                        history.append(
+                            {
+                                "cycle": len(history) + 1,
+                                "feedback": resume.get("feedback", ""),
+                            }
+                        )
+                    pending_payload = dict(payload)
+                    pending_payload.pop("_resume", None)
+                    pending_payload["_pending_result"] = result
+                    pending_payload["_human_feedback_history"] = history
+                    append_event(
+                        job_id,
+                        "approval_required",
+                        f"Aprobación requerida para {direct_agent}",
+                        {
+                            "agent": direct_agent,
+                            "status": "waiting_approval",
+                            "result": result,
+                            "human_cycles": len(history),
+                        },
+                    )
+                    self._set_waiting(job_id, pending_payload, result)
+                    return
             if isinstance(result, dict) and result.get("__waiting__"):
                 self._set_waiting(job_id)
             else:
@@ -119,11 +172,20 @@ class JobRunner:
             logger.exception("Job %s failed", job_id)
             self._finish(job_id, error=str(exc))
 
-    def _set_waiting(self, job_id: str) -> None:
+    def _set_waiting(
+        self,
+        job_id: str,
+        payload: dict | None = None,
+        result: dict | None = None,
+    ) -> None:
         with SessionLocal() as db:
             job = db.get(Job, job_id)
             if job is not None:
                 job.status = "waiting_approval"
+                if payload is not None:
+                    job.payload_json = json.dumps(payload, ensure_ascii=False)
+                if result is not None:
+                    job.result_json = json.dumps(result, ensure_ascii=False)
                 db.commit()
                 logger.info(
                     "Job waiting for approval",
@@ -653,36 +715,15 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
 
 
 def run_pipeline_job(job_id: str, payload: dict) -> dict:
-    """Fixed content chain: curator → planner → lessons → slides."""
+    """Run the fixed chain through the same resumable workflow engine."""
     stages = payload.get("stages", {})
-    results: dict[str, dict] = {}
-    review_summaries: dict[str, dict] = {}
-
-    steps = [
-        ("curator", "① Curador de contenido", run_curator_job),
-        ("planner", "② Diseñador de curso", run_planner_job),
-        ("lessons", "③ Generador de lecciones", run_lessons_job),
-        ("slides", "④ Diseñador de slides", run_slides_job),
-    ]
-    for agent, label, handler in steps:
-        append_event(job_id, "stage", f"{label} — iniciando")
-        stage_payload = {**payload, **stages.get(agent, {})}
-        result = handler(job_id, stage_payload)
-        result, review_summary = _run_automatic_review(
-            job_id,
-            agent,
-            handler,
-            stage_payload,
-            result,
-        )
-        results[agent] = result
-        if review_summary is not None:
-            review_summaries[agent] = review_summary
-
-    if review_summaries:
-        results["_automatic_reviews"] = review_summaries
-
-    return results
+    definition = {
+        "steps": [
+            {"agent": agent, "overrides": stages.get(agent, {})}
+            for agent in ("curator", "planner", "lessons", "slides")
+        ]
+    }
+    return run_workflow_job(job_id, {**payload, "definition": definition})
 
 
 def _register_artifact_file(
@@ -1246,25 +1287,31 @@ def _run_automatic_review(
                 "model": evaluator_model,
             }
         if regenerations >= max_regenerations:
-            append_event(
-                job_id,
-                "evaluation",
-                f"{agent} agotó {max_regenerations} regeneraciones; "
-                "la ejecución continúa con advertencia",
-                {
-                    "agent": agent,
-                    "status": "warning",
-                    "verdict": verdict,
-                    "feedback": feedback,
-                    "destination": "continue",
-                },
+            destination = (
+                "human_approval"
+                if payload.get("human_review_enabled", False)
+                else "continue"
             )
+            if destination == "continue":
+                append_event(
+                    job_id,
+                    "evaluation",
+                    f"{agent} agotó {max_regenerations} regeneraciones; "
+                    "la ejecución continúa con advertencia",
+                    {
+                        "agent": agent,
+                        "status": "warning",
+                        "verdict": verdict,
+                        "feedback": feedback,
+                        "destination": destination,
+                    },
+                )
             return result, {
                 "agent": agent,
                 "evaluations": evaluations,
                 "regenerations": regenerations,
                 "final_result": "exhausted",
-                "destination": "continue",
+                "destination": destination,
                 "feedback": feedback,
                 "model": evaluator_model,
             }
@@ -1467,11 +1514,7 @@ def run_workflow_job(job_id: str, payload: dict) -> dict:
     """Execute (or resume) a declarative workflow via LangGraph."""
     from langgraph.types import Command
 
-    from factory_api.workflow_engine import (
-        WorkflowRejected,
-        build_workflow_graph,
-        open_checkpointer,
-    )
+    from factory_api.workflow_engine import build_workflow_graph, open_checkpointer
 
     definition = payload["definition"]
     graph = build_workflow_graph(
@@ -1491,28 +1534,29 @@ def run_workflow_job(job_id: str, payload: dict) -> dict:
                 "payload": payload,
                 "results": {},
                 "review_summaries": {},
-                "review_approval_skips": {},
+                "human_reviews": {},
+                "human_actions": {},
             }
-        try:
-            for update in compiled.stream(graph_input, config, stream_mode="updates"):
-                if "__interrupt__" in update:
-                    intr = update["__interrupt__"][0]
-                    value = intr.value if isinstance(intr.value, dict) else {}
-                    append_event(
-                        job_id,
-                        "approval_required",
-                        f"Aprobación requerida tras el paso {value.get('step', '?')} "
-                        f"({value.get('agent', '?')})",
-                        value,
-                    )
-                    return {"__waiting__": True}
-        except WorkflowRejected as exc:
-            raise RuntimeError(str(exc)) from exc
+        for update in compiled.stream(graph_input, config, stream_mode="updates"):
+            if "__interrupt__" in update:
+                intr = update["__interrupt__"][0]
+                value = intr.value if isinstance(intr.value, dict) else {}
+                append_event(
+                    job_id,
+                    "approval_required",
+                    f"Aprobación requerida tras el paso {value.get('step', '?')} "
+                    f"({value.get('agent', '?')})",
+                    value,
+                )
+                return {"__waiting__": True}
         state = compiled.get_state(config)
         results = dict(state.values.get("results", {}))
         review_summaries = dict(state.values.get("review_summaries", {}))
         if review_summaries:
             results["_automatic_reviews"] = review_summaries
+        human_reviews = dict(state.values.get("human_reviews", {}))
+        if human_reviews:
+            results["_human_reviews"] = human_reviews
         return results
 
 

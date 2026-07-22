@@ -219,6 +219,11 @@ export default function ProfilesPage() {
                           Paleta
                         </span>
                       )}
+                      {p.human_review_enabled && (
+                        <span className="badge-warning shrink-0">
+                          Aprobación humana
+                        </span>
+                      )}
                       <span className="shrink-0 text-xs text-zinc-500">
                         v{p.version}
                       </span>

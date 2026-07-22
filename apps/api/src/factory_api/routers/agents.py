@@ -52,11 +52,13 @@ def _profile_config(
     image_style_prompt: str | None = None,
     automatic_review_enabled: bool | None = None,
     max_automatic_regenerations: int | None = None,
+    human_review_enabled: bool | None = None,
     slide_palette: dict[str, str] | None = None,
 ) -> dict:
     config = {
         "automatic_review_enabled": bool(automatic_review_enabled),
         "max_automatic_regenerations": max_automatic_regenerations or 0,
+        "human_review_enabled": bool(human_review_enabled),
     }
     if model:
         config["model"] = model
@@ -118,6 +120,7 @@ def _review_fields(config: dict) -> dict:
         "max_automatic_regenerations": int(
             config.get("max_automatic_regenerations", 0) or 0
         ),
+        "human_review_enabled": bool(config.get("human_review_enabled", False)),
     }
 
 
@@ -279,6 +282,7 @@ def create_profile(agent_type: str, body: ProfileCreate, user: CurrentUser, db: 
         image_style_prompt=body.image_style_prompt,
         automatic_review_enabled=body.automatic_review_enabled,
         max_automatic_regenerations=body.max_automatic_regenerations,
+        human_review_enabled=body.human_review_enabled,
         slide_palette=slide_palette,
     )
     profile = AgentProfile(
@@ -371,6 +375,8 @@ def update_profile(profile_id: str, body: ProfileUpdate, user: CurrentUser, db: 
         proposed_config["automatic_review_enabled"] = body.automatic_review_enabled
     if body.max_automatic_regenerations is not None:
         proposed_config["max_automatic_regenerations"] = body.max_automatic_regenerations
+    if body.human_review_enabled is not None:
+        proposed_config["human_review_enabled"] = body.human_review_enabled
     _validate_slide_image_config(profile.agent_type, proposed_config)
 
     content_changed = (

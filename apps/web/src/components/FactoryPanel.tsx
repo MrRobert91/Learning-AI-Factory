@@ -593,7 +593,8 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
     if (running) activeWorkflowAgent ??= nextWorkflowAgent;
   }
   const directActiveAgent =
-    running && activeRun?.kind.endsWith("_run")
+    (running || activeRun?.status === "waiting_approval") &&
+    activeRun?.kind.endsWith("_run")
       ? activeRun.kind.replace(/_run$/, "")
       : undefined;
   const activeStageAgent =
@@ -688,7 +689,9 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
             (item) => item.agent === stage.agent,
           );
           const configuredProfileId = workflowStep
-            ? workflowStep.profile_id || profiles.find((profile) => profile.is_default)?.id
+            ? workflowStep.profile_id ||
+              profiles.find((profile) => profile.is_default)?.id ||
+              profiles[0]?.id
             : selectedProfile[stage.agent];
           const configuredProfile = profiles.find(
             (profile) => profile.id === configuredProfileId,
@@ -702,6 +705,10 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
             frozenPolicy?.max_regenerations ??
             configuredProfile?.max_automatic_regenerations ??
             0;
+          const humanReviewEnabled =
+            frozenPolicy?.human_review_enabled ??
+            configuredProfile?.human_review_enabled ??
+            false;
           const missingInputs = stage.consumes.filter(
             (type) => !artifactTypes.has(type),
           );
@@ -759,6 +766,10 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
               </p>
               <p className="mb-2 text-[11px] text-zinc-500">
                 Revisión automática: {reviewEnabled ? `sí · ${maxRegenerations} regeneraciones` : "no"}
+                {frozenPolicy ? " · política congelada del run" : ""}
+              </p>
+              <p className="mb-2 text-[11px] text-zinc-500">
+                Aprobación humana: {humanReviewEnabled ? "sí" : "no"}
                 {frozenPolicy ? " · política congelada del run" : ""}
               </p>
               <div className="flex items-center gap-2">
@@ -875,13 +886,13 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
             <div className="border-b-2 border-indigo-400/30 bg-[#fbf6ea] px-4 py-4">
               <p className="mb-3 flex items-center gap-2 text-sm font-semibold text-[#241d18]">
                 <IconHand size={16} />
-                El workflow está en pausa esperando tu revisión. Comprueba el
-                último artefacto generado y decide.
+                El run está esperando tu revisión. Comprueba el último artefacto
+                generado y decide.
               </p>
               <input
                 value={feedback}
                 onChange={(e) => setFeedback(e.target.value)}
-                placeholder="Feedback opcional (obligatorio si rechazas)"
+                placeholder="Feedback para regenerar esta fase"
                 className="input mb-3"
               />
               <div className="flex flex-wrap gap-2">
@@ -899,12 +910,12 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
                   title={
                     feedback.trim()
                       ? undefined
-                      : "Escribe feedback para poder rechazar"
+                      : "Escribe feedback para regenerar"
                   }
                   className="btn-danger"
                 >
                   <IconX size={15} />
-                  Rechazar con feedback
+                  Enviar feedback y regenerar
                 </button>
               </div>
             </div>

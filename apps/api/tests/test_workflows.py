@@ -19,13 +19,37 @@ def _template_id(auth_client, name):
     return next(w["id"] for w in workflows if w["name"] == name)
 
 
+def _human_profile(auth_client, agent, name=None):
+    return auth_client.post(
+        f"/api/agents/{agent}/profiles",
+        json={
+            "name": name or f"{agent} con aprobación",
+            "human_review_enabled": True,
+        },
+    ).json()
+
+
+def _approval_workflow(auth_client, agents=("planner", "slides")):
+    profiles = {agent: _human_profile(auth_client, agent) for agent in agents}
+    steps = []
+    for agent in ("curator", "planner", "lessons", "slides"):
+        step = {"agent": agent}
+        if agent in profiles:
+            step["profile_id"] = profiles[agent]["id"]
+        steps.append(step)
+    return auth_client.post(
+        "/api/workflows",
+        json={"name": "Workflow con aprobación de perfil", "steps": steps},
+    ).json()
+
+
 def test_templates_seeded(auth_client):
     workflows = auth_client.get("/api/workflows").json()
     names = [w["name"] for w in workflows if w["is_template"]]
     assert "Curso completo (hasta slides)" in names
     full = next(w for w in workflows if w["name"] == "Curso completo (hasta slides)")
     assert [s["agent"] for s in full["steps"]] == ["curator", "planner", "lessons", "slides"]
-    assert full["steps"][1]["approval_after"] is True
+    assert all("approval_after" not in step for step in full["steps"])
 
 
 def test_workflow_crud_and_validation(auth_client):
@@ -41,7 +65,7 @@ def test_workflow_crud_and_validation(auth_client):
         json={"steps": [{"agent": "curator", "approval_after": True}]},
     )
     assert resp.status_code == 200
-    assert resp.json()["steps"][0]["approval_after"] is True
+    assert "approval_after" not in resp.json()["steps"][0]
 
     resp = auth_client.post("/api/workflows", json={"name": "Malo", "steps": [{"agent": "nope"}]})
     assert resp.status_code == 422
@@ -84,10 +108,19 @@ def test_workflow_ignores_legacy_evaluate_flag(auth_client):
     assert "evaluate" not in response.json()["steps"][0]
 
 
+def test_workflow_ignores_legacy_approval_after_flag(auth_client):
+    response = auth_client.post(
+        "/api/workflows",
+        json={"name": "Legacy approval", "steps": [{"agent": "curator", "approval_after": True}]},
+    )
+    assert response.status_code == 201
+    assert "approval_after" not in response.json()["steps"][0]
+
+
 def test_workflow_run_with_approvals(auth_client, monkeypatch):
     _patch_all(monkeypatch)
     project = _create_project(auth_client)
-    workflow_id = _template_id(auth_client, "Curso completo (hasta slides)")
+    workflow_id = _approval_workflow(auth_client)["id"]
 
     job_id = auth_client.post(
         f"/api/projects/{project['id']}/workflow-runs",
@@ -112,7 +145,8 @@ def test_workflow_run_with_approvals(auth_client, monkeypatch):
     auth_client.post(f"/api/runs/{job_id}/approve", json={"approved": True})
     job = _wait_for_job(auth_client, job_id)
     assert job["status"] == "done"
-    assert set(job["result"].keys()) == {"curator", "planner", "lessons", "slides"}
+    assert {"curator", "planner", "lessons", "slides"} <= set(job["result"].keys())
+    assert set(job["result"]["_human_reviews"]) == {"2:planner", "4:slides"}
     artifacts = auth_client.get(f"/api/projects/{project['id']}/artifacts").json()
     assert {a["type"] for a in artifacts} == {
         "research_brief",
@@ -125,7 +159,14 @@ def test_workflow_run_with_approvals(auth_client, monkeypatch):
 def test_workflow_rejection(auth_client, monkeypatch):
     _patch_all(monkeypatch)
     project = _create_project(auth_client)
-    workflow_id = _template_id(auth_client, "Curso completo (hasta slides)")
+    profile = _human_profile(auth_client, "curator")
+    workflow_id = auth_client.post(
+        "/api/workflows",
+        json={
+            "name": "Curador con feedback",
+            "steps": [{"agent": "curator", "profile_id": profile["id"]}],
+        },
+    ).json()["id"]
     job_id = auth_client.post(
         f"/api/projects/{project['id']}/workflow-runs",
         json={"workflow_id": workflow_id},
@@ -136,15 +177,32 @@ def test_workflow_rejection(auth_client, monkeypatch):
         f"/api/runs/{job_id}/approve",
         json={"approved": False, "feedback": "el plan es demasiado largo"},
     )
+    job = _wait_for_status(auth_client, job_id, ["waiting_approval", "failed"])
+    assert job["status"] == "waiting_approval"
+    artifacts = auth_client.get(f"/api/projects/{project['id']}/artifacts").json()
+    brief = next(item for item in artifacts if item["type"] == "research_brief")
+    assert brief["version"] == 2
+    auth_client.post(f"/api/runs/{job_id}/approve", json={"approved": True})
     job = _wait_for_job(auth_client, job_id)
-    assert job["status"] == "failed"
-    assert "demasiado largo" in job["error"]
+    assert job["status"] == "done"
+    history = job["result"]["_human_reviews"]["1:curator"]
+    assert [cycle["decision"] for cycle in history["cycles"]] == [
+        "regenerate",
+        "approved",
+    ]
 
 
 def test_cancel_waiting_run(auth_client, monkeypatch):
     _patch_all(monkeypatch)
     project = _create_project(auth_client)
-    workflow_id = _template_id(auth_client, "Curso completo (hasta slides)")
+    profile = _human_profile(auth_client, "curator")
+    workflow_id = auth_client.post(
+        "/api/workflows",
+        json={
+            "name": "Cancelar aprobación",
+            "steps": [{"agent": "curator", "profile_id": profile["id"]}],
+        },
+    ).json()["id"]
     job_id = auth_client.post(
         f"/api/projects/{project['id']}/workflow-runs",
         json={"workflow_id": workflow_id},

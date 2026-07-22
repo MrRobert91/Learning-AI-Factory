@@ -96,6 +96,7 @@ class ProfileCreate(BaseModel):
     image_style_prompt: str | None = None
     automatic_review_enabled: bool | None = None
     max_automatic_regenerations: int | None = Field(default=None, ge=0, le=5)
+    human_review_enabled: bool | None = None
     slide_palette: dict[str, str] | None = None
 
 
@@ -111,6 +112,7 @@ class ProfileUpdate(BaseModel):
     image_style_prompt: str | None = None
     automatic_review_enabled: bool | None = None
     max_automatic_regenerations: int | None = Field(default=None, ge=0, le=5)
+    human_review_enabled: bool | None = None
     slide_palette: dict[str, str] | None = None
     is_default: bool | None = None
     note: str = ""
@@ -130,6 +132,7 @@ class ProfileRead(BaseModel):
     image_style_prompt: str | None = None
     automatic_review_enabled: bool
     max_automatic_regenerations: int
+    human_review_enabled: bool
     slide_palette: dict[str, str] | None = None
     version: int
     is_default: bool
@@ -149,6 +152,7 @@ class ProfileVersionRead(BaseModel):
     image_style_prompt: str | None = None
     automatic_review_enabled: bool
     max_automatic_regenerations: int
+    human_review_enabled: bool
     slide_palette: dict[str, str] | None = None
     note: str
     created_at: datetime
@@ -195,7 +199,6 @@ class ImprovementProposalRead(BaseModel):
 class WorkflowStep(BaseModel):
     agent: str
     profile_id: str | None = None
-    approval_after: bool | None = None
 
 
 class AutomaticReviewPolicyRead(BaseModel):
@@ -204,6 +207,7 @@ class AutomaticReviewPolicyRead(BaseModel):
     profile_id: str | None = None
     profile_version: int | None = None
     evaluator_model: str | None = None
+    human_review_enabled: bool = False
 
 
 class WorkflowCreate(BaseModel):

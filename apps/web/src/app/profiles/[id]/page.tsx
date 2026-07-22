@@ -39,6 +39,7 @@ export default function ProfileEditorPage() {
   const [imageStylePrompt, setImageStylePrompt] = useState("");
   const [automaticReviewEnabled, setAutomaticReviewEnabled] = useState(false);
   const [maxAutomaticRegenerations, setMaxAutomaticRegenerations] = useState(0);
+  const [humanReviewEnabled, setHumanReviewEnabled] = useState(false);
   const [paletteOptions, setPaletteOptions] = useState<PaletteOptions | null>(null);
   const [slidePalette, setSlidePalette] = useState<SlidePalette | null>(null);
   const [paletteWarningsAccepted, setPaletteWarningsAccepted] = useState(false);
@@ -68,6 +69,7 @@ export default function ProfileEditorPage() {
     setImageStylePrompt(p.image_style_prompt ?? "");
     setAutomaticReviewEnabled(p.automatic_review_enabled);
     setMaxAutomaticRegenerations(p.max_automatic_regenerations);
+    setHumanReviewEnabled(p.human_review_enabled);
     setPaletteOptions(palettes);
     setSlidePalette(p.slide_palette ?? palettes.default);
     setPaletteWarningsAccepted(false);
@@ -95,6 +97,7 @@ export default function ProfileEditorPage() {
       image_style_prompt?: string;
       automatic_review_enabled?: boolean;
       max_automatic_regenerations?: number;
+      human_review_enabled?: boolean;
       slide_palette?: SlidePalette;
       note?: string;
     } = {};
@@ -130,6 +133,9 @@ export default function ProfileEditorPage() {
     if (maxAutomaticRegenerations !== profile.max_automatic_regenerations) {
       patch.max_automatic_regenerations = maxAutomaticRegenerations;
     }
+    if (humanReviewEnabled !== profile.human_review_enabled) {
+      patch.human_review_enabled = humanReviewEnabled;
+    }
     if (
       profile.slide_palette !== null &&
       slidePalette !== null &&
@@ -154,6 +160,7 @@ export default function ProfileEditorPage() {
       patch.image_style_prompt !== undefined ||
       patch.automatic_review_enabled !== undefined ||
       patch.max_automatic_regenerations !== undefined ||
+      patch.human_review_enabled !== undefined ||
       patch.slide_palette !== undefined);
   const paletteChanged = patch?.slide_palette !== undefined;
   const currentPaletteWarnings = slidePalette ? paletteWarnings(slidePalette) : [];
@@ -256,6 +263,31 @@ export default function ProfileEditorPage() {
       </p>
 
       <div className="space-y-5">
+        <div className="card p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <label className="label">Aprobación humana</label>
+              <p className="text-xs leading-relaxed text-zinc-500">
+                Detiene el workflow después de esta fase. Puedes aprobarla o
+                enviar feedback para regenerar y volver a revisar. Si todos los
+                perfiles la desactivan, la producción continúa autónomamente hasta vídeo.
+              </p>
+            </div>
+            <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-zinc-200">
+              <input
+                type="checkbox"
+                checked={humanReviewEnabled}
+                onChange={(event) => setHumanReviewEnabled(event.target.checked)}
+              />
+              {humanReviewEnabled ? "Activada" : "Desactivada"}
+            </label>
+          </div>
+          <p className="mt-3 text-xs text-zinc-400">
+            {humanReviewEnabled
+              ? "El run congela esta decisión con la versión del perfil."
+              : "Esta fase continuará automáticamente al terminar su revisión automática."}
+          </p>
+        </div>
         <div className="card p-5">
           <div className="mb-4 flex items-start justify-between gap-4">
             <div>
@@ -567,6 +599,17 @@ export default function ProfileEditorPage() {
                     {v.automatic_review_enabled
                       ? `Revisión · ${v.max_automatic_regenerations} regeneraciones`
                       : "Sin revisión automática"}
+                  </span>
+                  <span
+                    className={
+                      v.human_review_enabled
+                        ? "badge-warning font-normal"
+                        : "badge-neutral font-normal"
+                    }
+                  >
+                    {v.human_review_enabled
+                      ? "Aprobación humana"
+                      : "Sin aprobación humana"}
                   </span>
                   {v.slide_palette && (
                     <span className="badge-neutral font-normal">
