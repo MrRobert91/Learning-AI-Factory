@@ -37,6 +37,8 @@ export default function ProfileEditorPage() {
   const [imageModel, setImageModel] = useState("");
   const [imageStyle, setImageStyle] = useState("");
   const [imageStylePrompt, setImageStylePrompt] = useState("");
+  const [automaticReviewEnabled, setAutomaticReviewEnabled] = useState(false);
+  const [maxAutomaticRegenerations, setMaxAutomaticRegenerations] = useState(0);
   const [paletteOptions, setPaletteOptions] = useState<PaletteOptions | null>(null);
   const [slidePalette, setSlidePalette] = useState<SlidePalette | null>(null);
   const [paletteWarningsAccepted, setPaletteWarningsAccepted] = useState(false);
@@ -64,6 +66,8 @@ export default function ProfileEditorPage() {
     setImageModel(p.image_model ?? options.default_model);
     setImageStyle(p.image_style ?? options.default_style);
     setImageStylePrompt(p.image_style_prompt ?? "");
+    setAutomaticReviewEnabled(p.automatic_review_enabled);
+    setMaxAutomaticRegenerations(p.max_automatic_regenerations);
     setPaletteOptions(palettes);
     setSlidePalette(p.slide_palette ?? palettes.default);
     setPaletteWarningsAccepted(false);
@@ -89,6 +93,8 @@ export default function ProfileEditorPage() {
       image_model?: string;
       image_style?: string;
       image_style_prompt?: string;
+      automatic_review_enabled?: boolean;
+      max_automatic_regenerations?: number;
       slide_palette?: SlidePalette;
       note?: string;
     } = {};
@@ -118,6 +124,12 @@ export default function ProfileEditorPage() {
     ) {
       patch.image_style_prompt = imageStylePrompt;
     }
+    if (automaticReviewEnabled !== profile.automatic_review_enabled) {
+      patch.automatic_review_enabled = automaticReviewEnabled;
+    }
+    if (maxAutomaticRegenerations !== profile.max_automatic_regenerations) {
+      patch.max_automatic_regenerations = maxAutomaticRegenerations;
+    }
     if (
       profile.slide_palette !== null &&
       slidePalette !== null &&
@@ -140,6 +152,8 @@ export default function ProfileEditorPage() {
       patch.image_model !== undefined ||
       patch.image_style !== undefined ||
       patch.image_style_prompt !== undefined ||
+      patch.automatic_review_enabled !== undefined ||
+      patch.max_automatic_regenerations !== undefined ||
       patch.slide_palette !== undefined);
   const paletteChanged = patch?.slide_palette !== undefined;
   const currentPaletteWarnings = slidePalette ? paletteWarnings(slidePalette) : [];
@@ -242,6 +256,51 @@ export default function ProfileEditorPage() {
       </p>
 
       <div className="space-y-5">
+        <div className="card p-5">
+          <div className="mb-4 flex items-start justify-between gap-4">
+            <div>
+              <label className="label">Revisión automática</label>
+              <p className="text-xs leading-relaxed text-zinc-500">
+                Un evaluador revisa la salida de este agente. La política queda
+                congelada con esta versión cuando empieza un run.
+              </p>
+            </div>
+            <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-zinc-200">
+              <input
+                type="checkbox"
+                checked={automaticReviewEnabled}
+                onChange={(event) =>
+                  setAutomaticReviewEnabled(event.target.checked)
+                }
+              />
+              {automaticReviewEnabled ? "Activada" : "Desactivada"}
+            </label>
+          </div>
+          <div className="max-w-xs">
+            <label className="label">Regeneraciones automáticas</label>
+            <select
+              value={maxAutomaticRegenerations}
+              onChange={(event) =>
+                setMaxAutomaticRegenerations(Number(event.target.value))
+              }
+              disabled={!automaticReviewEnabled}
+              className="input"
+            >
+              {[0, 1, 2, 3, 4, 5].map((value) => (
+                <option key={value} value={value}>
+                  {value}
+                </option>
+              ))}
+            </select>
+          </div>
+          <p className="mt-3 text-xs text-zinc-400">
+            {automaticReviewEnabled
+              ? maxAutomaticRegenerations === 0
+                ? "Se evalúa una vez, pero no se regenera."
+                : `Se evalúa el resultado y se permiten hasta ${maxAutomaticRegenerations} regeneraciones adicionales.`
+              : "No se ejecutará el evaluador para este perfil."}
+          </p>
+        </div>
         {supportsOrientation && (
           <div className="card p-5">
             <label className="label">Orientación de salida</label>
@@ -498,6 +557,17 @@ export default function ProfileEditorPage() {
                       {v.images_enabled ? "Con imágenes" : "Sin imágenes"}
                     </span>
                   )}
+                  <span
+                    className={
+                      v.automatic_review_enabled
+                        ? "badge-info font-normal"
+                        : "badge-neutral font-normal"
+                    }
+                  >
+                    {v.automatic_review_enabled
+                      ? `Revisión · ${v.max_automatic_regenerations} regeneraciones`
+                      : "Sin revisión automática"}
+                  </span>
                   {v.slide_palette && (
                     <span className="badge-neutral font-normal">
                       <span

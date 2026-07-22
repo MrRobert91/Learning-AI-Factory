@@ -21,6 +21,8 @@ def test_default_profiles_seeded(auth_client):
     assert slides[0]["slide_palette"]["background"] == "#F8F1E3"
     assert slides[0]["slide_palette"]["primary"] == "#B23A26"
     assert videos[0]["orientation"] == "horizontal"
+    assert slides[0]["automatic_review_enabled"] is False
+    assert slides[0]["max_automatic_regenerations"] == 0
 
 
 def test_slide_profile_image_configuration_is_versioned(auth_client):
@@ -140,6 +142,48 @@ def test_profile_crud_and_versioning(auth_client):
     ][0]
     auth_client.patch(f"/api/agents/profiles/{factory['id']}", json={"is_default": True})
     assert auth_client.delete(f"/api/agents/profiles/{profile['id']}").status_code == 204
+
+
+def test_automatic_review_policy_is_validated_and_versioned(auth_client):
+    response = auth_client.post(
+        "/api/agents/planner/profiles",
+        json={
+            "name": "Planner con revisión",
+            "automatic_review_enabled": True,
+            "max_automatic_regenerations": 5,
+        },
+    )
+    assert response.status_code == 201
+    profile = response.json()
+    assert profile["automatic_review_enabled"] is True
+    assert profile["max_automatic_regenerations"] == 5
+
+    response = auth_client.patch(
+        f"/api/agents/profiles/{profile['id']}",
+        json={
+            "automatic_review_enabled": False,
+            "max_automatic_regenerations": 0,
+            "note": "Desactivar revisión",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["version"] == 2
+
+    versions = auth_client.get(
+        f"/api/agents/profiles/{profile['id']}/versions"
+    ).json()
+    assert versions[0]["automatic_review_enabled"] is False
+    assert versions[0]["max_automatic_regenerations"] == 0
+    assert versions[1]["automatic_review_enabled"] is True
+    assert versions[1]["max_automatic_regenerations"] == 5
+
+    assert (
+        auth_client.patch(
+            f"/api/agents/profiles/{profile['id']}",
+            json={"max_automatic_regenerations": 6},
+        ).status_code
+        == 422
+    )
 
 
 def test_unknown_agent_type(auth_client):

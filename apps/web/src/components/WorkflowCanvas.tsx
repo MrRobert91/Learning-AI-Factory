@@ -28,7 +28,6 @@ type StepNodeData = {
   index: number;
   label: string;
   approval: boolean;
-  evaluate: boolean;
   selected: boolean;
   status?: string;
 };
@@ -55,11 +54,6 @@ function StepNode({ data }: NodeProps) {
         </span>
         <span className="font-medium">{d.label}</span>
       </div>
-      {d.evaluate && (
-        <div className="mt-1.5 text-[11px] font-medium text-indigo-600">
-          Evaluación automática
-        </div>
-      )}
       {d.approval && (
         <div className="mt-1 text-[11px] font-medium text-amber-700">
           Aprobación humana
@@ -97,7 +91,6 @@ export default function WorkflowCanvas({
         index: i,
         label: AGENT_LABELS[step.agent] ?? step.agent,
         approval: Boolean(step.approval_after),
-        evaluate: Boolean(step.evaluate),
         selected: selectedIndex === i,
         status: statuses?.[i],
       },

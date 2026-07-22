@@ -225,7 +225,8 @@ export default function WorkflowEditorPage() {
             Puedes empezar por cualquier agente. Los materiales que necesite el
             primero se consideran requisitos del proyecto; los pasos siguientes
             deben consumir resultados ya disponibles. Haz clic en un nodo para
-            configurar su perfil, evaluaci&oacute;n o pausa de aprobaci&oacute;n.
+            configurar su perfil o pausa de aprobaci&oacute;n. La revisi&oacute;n
+            autom&aacute;tica se configura y versiona dentro de cada perfil.
           </p>
           {requiredInitialArtifacts(steps).length > 0 && (
             <p className="mt-2 text-xs font-medium text-amber-300">
@@ -368,24 +369,10 @@ export default function WorkflowEditorPage() {
                   </span>
                 </span>
               </label>
-              <label className="flex items-start gap-2.5 text-sm text-zinc-300">
-                <input
-                  type="checkbox"
-                  checked={Boolean(step.evaluate)}
-                  onChange={(e) =>
-                    updateStep(selected!, { evaluate: e.target.checked })
-                  }
-                  disabled={readOnly}
-                  className="mt-0.5 h-4 w-4 accent-indigo-500"
-                />
-                <span>
-                  Evaluación automática
-                  <span className="block text-xs text-zinc-500">
-                    Un juez LLM revisa el resultado y pide correcciones hasta 2
-                    veces; después escala a ti.
-                  </span>
-                </span>
-              </label>
+              <p className="rounded-md border border-white/[0.08] bg-black/20 p-3 text-xs leading-relaxed text-zinc-400">
+                La revisión automática y sus regeneraciones pertenecen al perfil
+                seleccionado. El workflow congela esa versión al iniciar el run.
+              </p>
             </div>
           </div>
         </section>

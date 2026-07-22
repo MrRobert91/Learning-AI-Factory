@@ -94,6 +94,8 @@ class ProfileCreate(BaseModel):
     image_model: str | None = None
     image_style: str | None = None
     image_style_prompt: str | None = None
+    automatic_review_enabled: bool | None = None
+    max_automatic_regenerations: int | None = Field(default=None, ge=0, le=5)
     slide_palette: dict[str, str] | None = None
 
 
@@ -107,6 +109,8 @@ class ProfileUpdate(BaseModel):
     image_model: str | None = None
     image_style: str | None = None
     image_style_prompt: str | None = None
+    automatic_review_enabled: bool | None = None
+    max_automatic_regenerations: int | None = Field(default=None, ge=0, le=5)
     slide_palette: dict[str, str] | None = None
     is_default: bool | None = None
     note: str = ""
@@ -124,6 +128,8 @@ class ProfileRead(BaseModel):
     image_model: str | None = None
     image_style: str | None = None
     image_style_prompt: str | None = None
+    automatic_review_enabled: bool
+    max_automatic_regenerations: int
     slide_palette: dict[str, str] | None = None
     version: int
     is_default: bool
@@ -141,6 +147,8 @@ class ProfileVersionRead(BaseModel):
     image_model: str | None = None
     image_style: str | None = None
     image_style_prompt: str | None = None
+    automatic_review_enabled: bool
+    max_automatic_regenerations: int
     slide_palette: dict[str, str] | None = None
     note: str
     created_at: datetime
@@ -188,7 +196,14 @@ class WorkflowStep(BaseModel):
     agent: str
     profile_id: str | None = None
     approval_after: bool | None = None
-    evaluate: bool | None = None
+
+
+class AutomaticReviewPolicyRead(BaseModel):
+    enabled: bool = False
+    max_regenerations: int = 0
+    profile_id: str | None = None
+    profile_version: int | None = None
+    evaluator_model: str | None = None
 
 
 class WorkflowCreate(BaseModel):
@@ -242,6 +257,7 @@ class JobRead(BaseModel):
     error: str
     project_id: str | None
     result: dict | None = None
+    review_policies: dict[str, AutomaticReviewPolicyRead] = {}
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None

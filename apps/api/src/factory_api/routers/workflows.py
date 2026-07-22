@@ -34,9 +34,9 @@ TEMPLATES = [
         ),
         "steps": [
             {"agent": "curator"},
-            {"agent": "planner", "evaluate": True, "approval_after": True},
-            {"agent": "lessons", "evaluate": True},
-            {"agent": "slides", "evaluate": True, "approval_after": True},
+            {"agent": "planner", "approval_after": True},
+            {"agent": "lessons"},
+            {"agent": "slides", "approval_after": True},
         ],
     },
     {
@@ -50,8 +50,8 @@ TEMPLATES = [
             "Parte de un course_plan ya generado o subido y produce lecciones y slides."
         ),
         "steps": [
-            {"agent": "lessons", "evaluate": True},
-            {"agent": "slides", "evaluate": True, "approval_after": True},
+            {"agent": "lessons"},
+            {"agent": "slides", "approval_after": True},
         ],
     },
     {
@@ -67,9 +67,9 @@ TEMPLATES = [
         ),
         "steps": [
             {"agent": "curator"},
-            {"agent": "planner", "evaluate": True, "approval_after": True},
-            {"agent": "lessons", "evaluate": True},
-            {"agent": "slides", "evaluate": True, "approval_after": True},
+            {"agent": "planner", "approval_after": True},
+            {"agent": "lessons"},
+            {"agent": "slides", "approval_after": True},
             {"agent": "script"},
             {"agent": "voice"},
             {"agent": "video"},
@@ -111,11 +111,15 @@ def seed_template_workflows(db: Session) -> None:
 
 def _workflow_read(w: Workflow) -> WorkflowRead:
     definition = json.loads(w.definition_json)
+    steps = [
+        {key: value for key, value in step.items() if key != "evaluate"}
+        for step in definition.get("steps", [])
+    ]
     return WorkflowRead(
         id=w.id,
         name=w.name,
         description=w.description,
-        steps=definition.get("steps", []),
+        steps=steps,
         is_template=w.is_template,
         created_at=w.created_at,
         updated_at=w.updated_at,
