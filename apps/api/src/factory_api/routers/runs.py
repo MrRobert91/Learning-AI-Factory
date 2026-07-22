@@ -4,6 +4,7 @@ from typing import Annotated
 
 from factory_agents.agents.curator import render_curator_input
 from factory_agents.tools.images import DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_STYLE
+from factory_agents.tools.palette import DEFAULT_SLIDE_PALETTE, normalize_palette
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
@@ -113,6 +114,7 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
             "automatic_review_enabled": False,
             "max_automatic_regenerations": 0,
             "evaluator_model": evaluator_model,
+            "slide_palette": dict(DEFAULT_SLIDE_PALETTE),
         }
     config = json.loads(profile.config_json or "{}")
     return {
@@ -131,6 +133,7 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
             config.get("max_automatic_regenerations", 0) or 0
         ),
         "evaluator_model": evaluator_model,
+        "slide_palette": normalize_palette(config.get("slide_palette")),
     }
 
 

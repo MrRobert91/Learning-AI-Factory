@@ -256,6 +256,20 @@ function orientationLabel(metadata: Record<string, unknown>): string | null {
       : null;
 }
 
+function paletteLabel(metadata: Record<string, unknown>): string | null {
+  const labels: Record<string, string> = {
+    factory: "Factory",
+    neutral_light: "neutra clara",
+    dark: "oscura",
+    high_contrast: "de alto contraste",
+    warm: "cálida",
+    custom: "personalizada",
+  };
+  return typeof metadata.palette_name === "string"
+    ? `paleta ${labels[metadata.palette_name] ?? metadata.palette_name}`
+    : null;
+}
+
 const ACTIVE_STATUSES: Job["status"][] = ["queued", "running", "waiting_approval"];
 
 export default function FactoryPanel({ projectId }: { projectId: string }) {
@@ -766,6 +780,7 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
                         {p.orientation
                           ? ` · ${p.orientation === "vertical" ? "9:16" : "16:9"}`
                           : ""}
+                        {p.slide_palette ? " · paleta" : ""}
                       </option>
                     ))}
                   </select>
@@ -1134,6 +1149,9 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
                             {orientationLabel(artifact.metadata)
                               ? ` · ${orientationLabel(artifact.metadata)}`
                               : ""}
+                            {paletteLabel(artifact.metadata)
+                              ? ` · ${paletteLabel(artifact.metadata)}`
+                              : ""}
                           </span>
                         </span>
                       </Link>
@@ -1152,6 +1170,9 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
                             v{version.version}
                             {orientationLabel(version.metadata)
                               ? ` · ${orientationLabel(version.metadata)}`
+                              : ""}
+                            {paletteLabel(version.metadata)
+                              ? ` · ${paletteLabel(version.metadata)}`
                               : ""}
                             {version.is_selected ? " · activa" : ""}
                           </option>

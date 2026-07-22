@@ -18,6 +18,8 @@ def test_default_profiles_seeded(auth_client):
     assert slides[0]["images_enabled"] is False
     assert slides[0]["image_model"] == "bytedance-seed/seedream-4.5"
     assert slides[0]["image_style"] == "editorial_vector"
+    assert slides[0]["slide_palette"]["background"] == "#F8F1E3"
+    assert slides[0]["slide_palette"]["primary"] == "#B23A26"
     assert videos[0]["orientation"] == "horizontal"
     assert slides[0]["automatic_review_enabled"] is False
     assert slides[0]["max_automatic_regenerations"] == 0
@@ -57,6 +59,45 @@ def test_slide_profile_image_configuration_is_versioned(auth_client):
         json={"image_style": "custom", "image_style_prompt": ""},
     )
     assert invalid.status_code == 422
+
+
+def test_slide_palette_is_normalized_and_versioned(auth_client):
+    options = auth_client.get("/api/agents/palette-options")
+    assert options.status_code == 200
+    assert len(options.json()["presets"]) == 5
+    palette = dict(options.json()["default"])
+    palette["background"] = "abc"
+
+    response = auth_client.post(
+        "/api/agents/slides/profiles",
+        json={"name": "Slides cálidas", "slide_palette": palette},
+    )
+    assert response.status_code == 201
+    profile = response.json()
+    assert profile["slide_palette"]["background"] == "#AABBCC"
+
+    updated_palette = dict(profile["slide_palette"])
+    updated_palette["primary"] = "#123456"
+    updated = auth_client.patch(
+        f"/api/agents/profiles/{profile['id']}",
+        json={"slide_palette": updated_palette, "note": "Nueva marca"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["version"] == 2
+    versions = auth_client.get(
+        f"/api/agents/profiles/{profile['id']}/versions"
+    ).json()
+    assert versions[0]["slide_palette"]["primary"] == "#123456"
+
+    invalid = dict(updated_palette)
+    invalid["links"] = "#12345678"
+    assert (
+        auth_client.patch(
+            f"/api/agents/profiles/{profile['id']}",
+            json={"slide_palette": invalid},
+        ).status_code
+        == 422
+    )
 
 
 def test_profile_crud_and_versioning(auth_client):

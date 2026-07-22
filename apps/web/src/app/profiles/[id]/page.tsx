@@ -7,8 +7,11 @@ import {
   api,
   type AgentProfile,
   type ImageOptions,
+  type PaletteOptions,
   type ProfileVersion,
+  type SlidePalette,
 } from "@/lib/api";
+import SlidePaletteEditor, { paletteWarnings } from "@/components/SlidePaletteEditor";
 import {
   ConfirmDialog,
   ErrorBanner,
@@ -36,6 +39,9 @@ export default function ProfileEditorPage() {
   const [imageStylePrompt, setImageStylePrompt] = useState("");
   const [automaticReviewEnabled, setAutomaticReviewEnabled] = useState(false);
   const [maxAutomaticRegenerations, setMaxAutomaticRegenerations] = useState(0);
+  const [paletteOptions, setPaletteOptions] = useState<PaletteOptions | null>(null);
+  const [slidePalette, setSlidePalette] = useState<SlidePalette | null>(null);
+  const [paletteWarningsAccepted, setPaletteWarningsAccepted] = useState(false);
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -44,9 +50,10 @@ export default function ProfileEditorPage() {
   const [deleting, setDeleting] = useState(false);
 
   async function load() {
-    const [p, options] = await Promise.all([
+    const [p, options, palettes] = await Promise.all([
       api.getProfile(id),
       api.getImageOptions(),
+      api.getPaletteOptions(),
     ]);
     setProfile(p);
     setImageOptions(options);
@@ -61,6 +68,9 @@ export default function ProfileEditorPage() {
     setImageStylePrompt(p.image_style_prompt ?? "");
     setAutomaticReviewEnabled(p.automatic_review_enabled);
     setMaxAutomaticRegenerations(p.max_automatic_regenerations);
+    setPaletteOptions(palettes);
+    setSlidePalette(p.slide_palette ?? palettes.default);
+    setPaletteWarningsAccepted(false);
     setVersions(await api.getProfileVersions(id));
   }
 
@@ -85,6 +95,7 @@ export default function ProfileEditorPage() {
       image_style_prompt?: string;
       automatic_review_enabled?: boolean;
       max_automatic_regenerations?: number;
+      slide_palette?: SlidePalette;
       note?: string;
     } = {};
     if (name !== profile.name) patch.name = name;
@@ -119,6 +130,13 @@ export default function ProfileEditorPage() {
     if (maxAutomaticRegenerations !== profile.max_automatic_regenerations) {
       patch.max_automatic_regenerations = maxAutomaticRegenerations;
     }
+    if (
+      profile.slide_palette !== null &&
+      slidePalette !== null &&
+      JSON.stringify(slidePalette) !== JSON.stringify(profile.slide_palette)
+    ) {
+      patch.slide_palette = slidePalette;
+    }
     return patch;
   }
 
@@ -135,12 +153,26 @@ export default function ProfileEditorPage() {
       patch.image_style !== undefined ||
       patch.image_style_prompt !== undefined ||
       patch.automatic_review_enabled !== undefined ||
-      patch.max_automatic_regenerations !== undefined);
+      patch.max_automatic_regenerations !== undefined ||
+      patch.slide_palette !== undefined);
+  const paletteChanged = patch?.slide_palette !== undefined;
+  const currentPaletteWarnings = slidePalette ? paletteWarnings(slidePalette) : [];
 
   async function save() {
     if (!patch || !dirty) return;
     if (imageStyle === "custom" && !imageStylePrompt.trim()) {
       setError("El estilo personalizado necesita un prompt.");
+      return;
+    }
+    if (
+      slidePalette &&
+      Object.values(slidePalette).some((value) => !/^#[0-9A-Fa-f]{6}$/.test(value))
+    ) {
+      setError("Todos los colores deben usar HEX de seis dígitos, por ejemplo #F8F1E3.");
+      return;
+    }
+    if (paletteChanged && currentPaletteWarnings.length > 0 && !paletteWarningsAccepted) {
+      setError("Confirma las advertencias de contraste antes de guardar la paleta.");
       return;
     }
     setSaving(true);
@@ -306,6 +338,35 @@ export default function ProfileEditorPage() {
                 </span>
               </label>
             </div>
+          </div>
+        )}
+        {isSlides && paletteOptions && slidePalette && (
+          <div className="card p-5">
+            <div className="mb-4">
+              <label className="label">Paleta de slides</label>
+              <p className="text-xs leading-relaxed text-zinc-500">
+                Se congela con la versión del perfil y se aplica programáticamente al
+                Markdown Marp y a todos sus renders.
+              </p>
+            </div>
+            <SlidePaletteEditor
+              palette={slidePalette}
+              options={paletteOptions}
+              onChange={(value) => {
+                setSlidePalette(value);
+                setPaletteWarningsAccepted(false);
+              }}
+            />
+            {paletteChanged && currentPaletteWarnings.length > 0 && (
+              <label className="mt-3 flex cursor-pointer items-start gap-2 text-xs text-amber-100">
+                <input
+                  type="checkbox"
+                  checked={paletteWarningsAccepted}
+                  onChange={(event) => setPaletteWarningsAccepted(event.target.checked)}
+                />
+                Confirmo que quiero guardar la paleta pese a las advertencias de contraste.
+              </label>
+            )}
           </div>
         )}
         {isSlides && imageOptions && (
@@ -507,6 +568,15 @@ export default function ProfileEditorPage() {
                       ? `Revisión · ${v.max_automatic_regenerations} regeneraciones`
                       : "Sin revisión automática"}
                   </span>
+                  {v.slide_palette && (
+                    <span className="badge-neutral font-normal">
+                      <span
+                        className="mr-1.5 inline-block h-2.5 w-2.5 rounded-full border border-white/20"
+                        style={{ background: v.slide_palette.primary }}
+                      />
+                      Paleta guardada
+                    </span>
+                  )}
                 </span>
                 <span className="text-xs text-zinc-500">
                   {new Date(v.created_at).toLocaleString("es")}

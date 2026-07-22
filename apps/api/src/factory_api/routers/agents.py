@@ -10,6 +10,10 @@ from factory_agents.tools.images import (
     IMAGE_STYLE_PRESETS,
     image_options,
 )
+from factory_agents.tools.palette import (
+    normalize_palette,
+    palette_options,
+)
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -48,6 +52,7 @@ def _profile_config(
     image_style_prompt: str | None = None,
     automatic_review_enabled: bool | None = None,
     max_automatic_regenerations: int | None = None,
+    slide_palette: dict[str, str] | None = None,
 ) -> dict:
     config = {
         "automatic_review_enabled": bool(automatic_review_enabled),
@@ -64,6 +69,7 @@ def _profile_config(
                 "image_model": image_model or DEFAULT_IMAGE_MODEL,
                 "image_style": image_style or DEFAULT_IMAGE_STYLE,
                 "image_style_prompt": image_style_prompt or "",
+                "slide_palette": normalize_palette(slide_palette),
             }
         )
     return config
@@ -82,6 +88,14 @@ def _slide_image_fields(config: dict, agent_type: str) -> dict:
         "image_model": config.get("image_model") or DEFAULT_IMAGE_MODEL,
         "image_style": config.get("image_style") or DEFAULT_IMAGE_STYLE,
         "image_style_prompt": config.get("image_style_prompt") or "",
+    }
+
+
+def _slide_palette_field(config: dict, agent_type: str) -> dict:
+    return {
+        "slide_palette": normalize_palette(config.get("slide_palette"))
+        if agent_type == "slides"
+        else None
     }
 
 
@@ -125,6 +139,22 @@ def _validate_slide_image_config(agent_type: str, config: dict) -> None:
             status_code=422,
             detail="El estilo personalizado necesita un prompt",
         )
+
+
+def _normalize_supplied_palette(
+    agent_type: str, palette: dict[str, str] | None
+) -> dict[str, str] | None:
+    if palette is None:
+        return None
+    if agent_type != "slides":
+        raise HTTPException(
+            status_code=422,
+            detail="Solo el agente de Slides admite configuración de paleta",
+        )
+    try:
+        return normalize_palette(palette)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 def seed_default_profiles(db: Session) -> None:
@@ -171,6 +201,7 @@ def _profile_read(p: AgentProfile) -> ProfileRead:
         else None,
         **_slide_image_fields(config, p.agent_type),
         **_review_fields(config),
+        **_slide_palette_field(config, p.agent_type),
         version=p.version,
         is_default=p.is_default,
         created_at=p.created_at,
@@ -212,6 +243,11 @@ def get_image_options(user: CurrentUser):
     return image_options()
 
 
+@router.get("/palette-options")
+def get_palette_options(user: CurrentUser):
+    return palette_options()
+
+
 @router.get("/{agent_type}/profiles", response_model=list[ProfileRead])
 def list_profiles(agent_type: str, user: CurrentUser, db: DB):
     if agent_type not in REGISTRY:
@@ -232,6 +268,7 @@ def create_profile(agent_type: str, body: ProfileCreate, user: CurrentUser, db: 
         raise HTTPException(status_code=404, detail="Agente desconocido")
     supplied_images = _supplied_image_config(body)
     _validate_slide_image_config(agent_type, supplied_images)
+    slide_palette = _normalize_supplied_palette(agent_type, body.slide_palette)
     config = _profile_config(
         agent_type,
         body.model,
@@ -242,6 +279,7 @@ def create_profile(agent_type: str, body: ProfileCreate, user: CurrentUser, db: 
         image_style_prompt=body.image_style_prompt,
         automatic_review_enabled=body.automatic_review_enabled,
         max_automatic_regenerations=body.max_automatic_regenerations,
+        slide_palette=slide_palette,
     )
     profile = AgentProfile(
         agent_type=agent_type,
@@ -294,6 +332,7 @@ def list_profile_versions(profile_id: str, user: CurrentUser, db: DB):
                 else None,
                 **_slide_image_fields(config, profile.agent_type),
                 **_review_fields(config),
+                **_slide_palette_field(config, profile.agent_type),
                 note=item.note,
                 created_at=item.created_at,
             )
@@ -313,6 +352,9 @@ def update_profile(profile_id: str, body: ProfileUpdate, user: CurrentUser, db: 
     if supplied_images:
         _validate_slide_image_config(profile.agent_type, supplied_images)
         proposed_config.update(supplied_images)
+    slide_palette = _normalize_supplied_palette(profile.agent_type, body.slide_palette)
+    if slide_palette is not None:
+        proposed_config["slide_palette"] = slide_palette
     if body.model is not None:
         if body.model:
             proposed_config["model"] = body.model

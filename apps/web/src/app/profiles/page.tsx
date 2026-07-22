@@ -210,6 +210,15 @@ export default function ProfilesPage() {
                           {p.images_enabled ? "Con imágenes" : "Sin imágenes"}
                         </span>
                       )}
+                      {p.slide_palette && (
+                        <span className="badge-neutral shrink-0">
+                          <span
+                            className="mr-1.5 inline-block h-2.5 w-2.5 rounded-full border border-white/20"
+                            style={{ background: p.slide_palette.primary }}
+                          />
+                          Paleta
+                        </span>
+                      )}
                       <span className="shrink-0 text-xs text-zinc-500">
                         v{p.version}
                       </span>

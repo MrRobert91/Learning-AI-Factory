@@ -62,6 +62,10 @@ docker compose up --build                # stack completo (2 contenedores)
   selecciona como máximo 6 por lección; los originales viven como assets de la
   versión del `slide_deck` y prompts/modelo/coste quedan en sus metadatos. Una
   regeneración individual siempre crea una nueva versión autosuficiente del deck.
+- **Paletas de slides**: los ocho colores viven en el perfil versionado y se
+  aplican mediante el bloque CSS canónico de `tools/palette.py` dentro del
+  Markdown Marp. Cambiar una paleta crea nuevas versiones autosuficientes,
+  clona assets y vuelve a renderizar sin llamar a LLM ni regenerar imágenes.
 
 ## Convenciones
 

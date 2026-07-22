@@ -96,6 +96,7 @@ class ProfileCreate(BaseModel):
     image_style_prompt: str | None = None
     automatic_review_enabled: bool | None = None
     max_automatic_regenerations: int | None = Field(default=None, ge=0, le=5)
+    slide_palette: dict[str, str] | None = None
 
 
 class ProfileUpdate(BaseModel):
@@ -110,6 +111,7 @@ class ProfileUpdate(BaseModel):
     image_style_prompt: str | None = None
     automatic_review_enabled: bool | None = None
     max_automatic_regenerations: int | None = Field(default=None, ge=0, le=5)
+    slide_palette: dict[str, str] | None = None
     is_default: bool | None = None
     note: str = ""
 
@@ -128,6 +130,7 @@ class ProfileRead(BaseModel):
     image_style_prompt: str | None = None
     automatic_review_enabled: bool
     max_automatic_regenerations: int
+    slide_palette: dict[str, str] | None = None
     version: int
     is_default: bool
     created_at: datetime
@@ -146,6 +149,7 @@ class ProfileVersionRead(BaseModel):
     image_style_prompt: str | None = None
     automatic_review_enabled: bool
     max_automatic_regenerations: int
+    slide_palette: dict[str, str] | None = None
     note: str
     created_at: datetime
 
@@ -291,6 +295,15 @@ class ArtifactEdit(BaseModel):
 
 class SlideImageRegenerate(BaseModel):
     prompt: str = Field(min_length=1, max_length=4000)
+
+
+class SlidePaletteApply(BaseModel):
+    palette: dict[str, str]
+    scope: Literal["deck", "project"] = "deck"
+
+
+class SlidePalettePreview(BaseModel):
+    palette: dict[str, str]
 
 
 class ProjectRead(BaseModel):
