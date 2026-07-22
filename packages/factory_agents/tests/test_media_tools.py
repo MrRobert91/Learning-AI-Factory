@@ -7,6 +7,7 @@ from factory_agents.agents.voice import run_voice
 from factory_agents.contracts import VoiceScript
 from factory_agents.tools.tts import synthesize_cached
 from factory_agents.tools.video import (
+    _concat_file_entry,
     _format_srt_time,
     build_srt,
     compose_video,
@@ -91,6 +92,20 @@ def test_build_srt_accumulates_timings():
     srt = build_srt([("Primera frase.", 2.0), ("Segunda frase.", 3.5)])
     assert "1\n00:00:00,000 --> 00:00:02,000\nPrimera frase." in srt
     assert "2\n00:00:02,000 --> 00:00:05,500\nSegunda frase." in srt
+
+
+def test_concat_file_entry_escapes_single_quotes():
+    path = Path(
+        "/tmp/La metáfora del océano: entendiendo "
+        "'sustancia' y 'modos/segment-000.mp4"
+    )
+
+    entry = _concat_file_entry(path)
+
+    assert entry == (
+        "file '/tmp/La metáfora del océano: entendiendo "
+        "'\\''sustancia'\\'' y '\\''modos/segment-000.mp4'\n"
+    )
 
 
 def test_vertical_video_uses_blurred_background_without_cropping_foreground(

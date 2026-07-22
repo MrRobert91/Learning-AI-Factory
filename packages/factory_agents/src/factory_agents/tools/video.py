@@ -80,6 +80,12 @@ def probe_duration(media_path: str | Path) -> float:
     return float(result.stdout.strip())
 
 
+def _concat_file_entry(path: Path) -> str:
+    """Return one ffmpeg concat-demuxer file entry for a possibly quoted path."""
+    escaped = path.as_posix().replace("'", "'\\''")
+    return f"file '{escaped}'\n"
+
+
 def compose_video(
     pairs: list[tuple[Path, Path]],
     out_path: str | Path,
@@ -140,7 +146,7 @@ def compose_video(
 
     concat_list = workdir / "concat.txt"
     concat_list.write_text(
-        "".join(f"file '{p.as_posix()}'\n" for p in segment_paths), encoding="utf-8"
+        "".join(_concat_file_entry(p) for p in segment_paths), encoding="utf-8"
     )
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
