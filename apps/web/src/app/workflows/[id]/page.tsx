@@ -355,6 +355,7 @@ export default function WorkflowEditorPage() {
                     {p.orientation
                       ? ` · ${p.orientation === "vertical" ? "9:16" : "16:9"}`
                       : ""}
+                    {p.logo_mode && p.logo_mode !== "none" ? " · logo" : ""}
                   </option>
                 ))}
               </select>

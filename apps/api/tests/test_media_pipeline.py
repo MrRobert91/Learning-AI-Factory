@@ -1,7 +1,10 @@
+import io
+import zipfile
 from pathlib import Path
 
 from factory_agents.contracts import VoiceScript
 from factory_agents.tools.images import GeneratedImage
+from PIL import Image
 from test_pipeline import _patch_all
 from test_runs import _create_project, _wait_for_job
 
@@ -91,6 +94,61 @@ def test_slides_profile_sets_vertical_artifact_metadata(auth_client, monkeypatch
     assert slides
     assert all(a["metadata"]["orientation"] == "vertical" for a in slides)
     assert all(a["metadata"]["width"] == 1080 for a in slides)
+
+
+def test_slides_profile_copies_frozen_logo_into_every_deck(auth_client, monkeypatch):
+    _patch_media(monkeypatch)
+    monkeypatch.setattr(
+        "factory_agents.tools.images.generate_image",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected image call")),
+    )
+    buffer = io.BytesIO()
+    Image.new("RGBA", (80, 60), (178, 58, 38, 255)).save(buffer, format="PNG")
+
+    project = _create_project(auth_client)
+    for agent in ("curator", "planner", "lessons"):
+        assert _run(auth_client, project["id"], agent)["status"] == "done"
+    profile = auth_client.post(
+        "/api/agents/slides/profiles",
+        json={"name": "Slides con logo congelado", "orientation": "vertical"},
+    ).json()
+    profile = auth_client.post(
+        f"/api/agents/profiles/{profile['id']}/logos/upload",
+        files={"file": ("marca.png", buffer.getvalue(), "image/png")},
+    ).json()
+    logo = profile["logo_candidates"][0]
+    profile = auth_client.patch(
+        f"/api/agents/profiles/{profile['id']}",
+        json={
+            "logo_mode": "uploaded",
+            "active_logo_id": logo["id"],
+            "logo_placement": "bottom-right",
+            "logo_size": "medium",
+        },
+    ).json()
+
+    job = _run(auth_client, project["id"], "slides", profile_id=profile["id"])
+    assert job["status"] == "done", job["error"]
+    assert any("Logo congelado aplicado" in event["summary"] for event in job["events"])
+    artifacts = auth_client.get(f"/api/projects/{project['id']}/artifacts").json()
+    slides = [item for item in artifacts if item["type"] == "slide_deck"]
+    assert slides
+    for slide in slides:
+        logo_metadata = slide["metadata"]["logo"]
+        assert logo_metadata["source_logo_id"] == logo["id"]
+        assert logo_metadata["profile_version"] == profile["version"]
+        assert logo_metadata["placement"] == "bottom-right"
+        deck = auth_client.get(f"/api/artifacts/{slide['id']}").json()
+        assert "factory-logo:start" in deck["content"]
+        assert "brand-logo.png" in deck["content"]
+    exported = auth_client.get(f"/api/projects/{project['id']}/exports/slides.zip")
+    assert exported.status_code == 200, exported.text
+    with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+        names = archive.namelist()
+        assert any(name.endswith("brand-logo.png") for name in names)
+        markdown_name = next(name for name in names if name.endswith(".md"))
+        markdown = archive.read(markdown_name).decode()
+        assert "-assets/brand-logo.png" in markdown
 
 
 def test_slides_profile_generates_selected_images_without_blocking_pipeline(

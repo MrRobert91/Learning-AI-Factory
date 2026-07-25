@@ -792,6 +792,7 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
                           ? ` · ${p.orientation === "vertical" ? "9:16" : "16:9"}`
                           : ""}
                         {p.slide_palette ? " · paleta" : ""}
+                        {p.logo_mode && p.logo_mode !== "none" ? " · logo" : ""}
                       </option>
                     ))}
                   </select>

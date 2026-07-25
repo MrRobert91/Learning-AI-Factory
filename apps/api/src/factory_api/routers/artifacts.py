@@ -975,7 +975,11 @@ def export_slides_zip(project_id: str, user: CurrentUser, db: DB):
             renders = _ensure_slide_renders(source)
             stem = f"{index:02d}-{_safe_filename(artifact.title, 'slides')}"
             markdown = normalize_marp_canvas(source.read_text(encoding="utf-8"))
-            for image in artifact_metadata(artifact).get("images", []):
+            metadata = artifact_metadata(artifact)
+            portable_assets = list(metadata.get("images", []))
+            if isinstance(metadata.get("logo"), dict):
+                portable_assets.append(metadata["logo"])
+            for image in portable_assets:
                 stored_path = image.get("path")
                 markdown_path = image.get("markdown_path")
                 image_path = _safe_stored_asset(str(stored_path or ""))

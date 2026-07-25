@@ -80,6 +80,12 @@ function paletteLabel(metadata: Record<string, unknown>): string | null {
     : null;
 }
 
+function logoLabel(metadata: Record<string, unknown>): string | null {
+  if (typeof metadata.logo !== "object" || metadata.logo === null) return null;
+  const logo = metadata.logo as Record<string, unknown>;
+  return typeof logo.name === "string" && logo.name ? `Logo ${logo.name}` : "Con logo";
+}
+
 interface SlideImageMetadata {
   id: string;
   slide: number;
@@ -341,6 +347,9 @@ export default function ArtifactViewerPage() {
             {paletteLabel(artifact.metadata) && (
               <span className="badge-info">{paletteLabel(artifact.metadata)}</span>
             )}
+            {logoLabel(artifact.metadata) && (
+              <span className="badge-info">{logoLabel(artifact.metadata)}</span>
+            )}
             <span>{new Date(artifact.created_at).toLocaleString("es")}</span>
           </p>
         </div>
@@ -363,6 +372,7 @@ export default function ArtifactViewerPage() {
                   {paletteLabel(version.metadata)
                     ? ` · ${paletteLabel(version.metadata)}`
                     : ""}
+                  {logoLabel(version.metadata) ? ` · ${logoLabel(version.metadata)}` : ""}
                   {version.is_selected ? " · activa" : ""}
                 </option>
               ))}
