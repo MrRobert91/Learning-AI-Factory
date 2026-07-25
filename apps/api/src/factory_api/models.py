@@ -195,7 +195,7 @@ class Workflow(Base):
     owner_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
-    # Linear chain: {"steps": [{"agent", "profile_id"?, "approval_after"?}]}
+    # Linear chain: {"steps": [{"agent", "profile_id"?}]}; review lives in profiles.
     definition_json: Mapped[str] = mapped_column(Text, nullable=False)
     is_template: Mapped[bool] = mapped_column(default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

@@ -5,13 +5,14 @@ from test_runs import _create_project
 from test_workflows import _wait_for_job, _wait_for_status
 
 
-def _make_eval_workflow(auth_client, max_regenerations=1, approval_after=False):
+def _make_eval_workflow(auth_client, max_regenerations=1, human_review=False):
     profile = auth_client.post(
         "/api/agents/planner/profiles",
         json={
             "name": f"Planner review {max_regenerations}",
             "automatic_review_enabled": True,
             "max_automatic_regenerations": max_regenerations,
+            "human_review_enabled": human_review,
         },
     ).json()
     steps = [
@@ -19,7 +20,6 @@ def _make_eval_workflow(auth_client, max_regenerations=1, approval_after=False):
         {
             "agent": "planner",
             "profile_id": profile["id"],
-            "approval_after": approval_after,
         },
     ]
     return auth_client.post(
@@ -124,7 +124,7 @@ def test_evaluator_escalates_after_max_revisions(auth_client, monkeypatch):
     )
     project = _create_project(auth_client)
     workflow = _make_eval_workflow(
-        auth_client, max_regenerations=0, approval_after=True
+        auth_client, max_regenerations=0, human_review=True
     )
     job_id = auth_client.post(
         f"/api/projects/{project['id']}/workflow-runs",
@@ -142,15 +142,16 @@ def test_evaluator_escalates_after_max_revisions(auth_client, monkeypatch):
     assert job["status"] == "done"
 
 
-def test_evaluator_escalation_rejected(auth_client, monkeypatch):
+def test_evaluator_escalation_feedback_regenerates(auth_client, monkeypatch):
     _patch_all(monkeypatch)
+    verdicts = iter([("revise", "no hay manera"), ("pass", "")])
     monkeypatch.setattr(
         "factory_api.runner.evaluate_stage",
-        lambda job_id, agent, result: ("revise", "no hay manera"),
+        lambda job_id, agent, result: next(verdicts),
     )
     project = _create_project(auth_client)
     workflow = _make_eval_workflow(
-        auth_client, max_regenerations=0, approval_after=True
+        auth_client, max_regenerations=0, human_review=True
     )
     job_id = auth_client.post(
         f"/api/projects/{project['id']}/workflow-runs",
@@ -160,9 +161,13 @@ def test_evaluator_escalation_rejected(auth_client, monkeypatch):
     auth_client.post(
         f"/api/runs/{job_id}/approve", json={"approved": False, "feedback": "descartado"}
     )
+    job = _wait_for_status(auth_client, job_id, ["waiting_approval", "failed"])
+    assert job["status"] == "waiting_approval"
+    auth_client.post(f"/api/runs/{job_id}/approve", json={"approved": True})
     job = _wait_for_job(auth_client, job_id)
-    assert job["status"] == "failed"
-    assert "evaluación" in job["error"]
+    assert job["status"] == "done"
+    cycles = job["result"]["_human_reviews"]["2:planner"]["cycles"]
+    assert [cycle["decision"] for cycle in cycles] == ["regenerate", "approved"]
 
 
 def test_evaluator_failure_is_fail_open(auth_client, monkeypatch):
@@ -224,6 +229,10 @@ def test_workflow_freezes_review_policy_from_profile(auth_client, monkeypatch):
         return "pass", ""
 
     monkeypatch.setattr("factory_api.runner.evaluate_stage", passing_evaluator)
+    curator_profile = auth_client.post(
+        "/api/agents/curator/profiles",
+        json={"name": "Curador humano", "human_review_enabled": True},
+    ).json()
     profile = auth_client.post(
         "/api/agents/planner/profiles",
         json={
@@ -237,7 +246,7 @@ def test_workflow_freezes_review_policy_from_profile(auth_client, monkeypatch):
         json={
             "name": "Freeze review",
             "steps": [
-                {"agent": "curator", "approval_after": True},
+                {"agent": "curator", "profile_id": curator_profile["id"]},
                 {"agent": "planner", "profile_id": profile["id"]},
             ],
         },
@@ -286,6 +295,46 @@ def test_direct_agent_run_uses_profile_review_policy(auth_client, monkeypatch):
     assert job["status"] == "done"
     assert job["result"]["automatic_review"]["final_result"] == "exhausted"
     assert job["review_policies"]["curator"]["enabled"] is True
+
+
+def test_direct_agent_human_feedback_regenerates_without_repeating_approval(
+    auth_client, monkeypatch
+):
+    _patch_all(monkeypatch)
+    profile = auth_client.post(
+        "/api/agents/curator/profiles",
+        json={"name": "Curador humano", "human_review_enabled": True},
+    ).json()
+    project = _create_project(auth_client)
+    job_id = auth_client.post(
+        f"/api/projects/{project['id']}/agent-runs",
+        json={"agent": "curator", "profile_id": profile["id"]},
+    ).json()["id"]
+
+    job = _wait_for_status(auth_client, job_id, ["waiting_approval", "failed"])
+    assert job["status"] == "waiting_approval"
+    assert job["review_policies"]["curator"]["human_review_enabled"] is True
+    assert (
+        auth_client.post(
+            f"/api/runs/{job_id}/approve",
+            json={"approved": False, "feedback": ""},
+        ).status_code
+        == 422
+    )
+    auth_client.post(
+        f"/api/runs/{job_id}/approve",
+        json={"approved": False, "feedback": "Añade más fuentes"},
+    )
+    job = _wait_for_status(auth_client, job_id, ["waiting_approval", "failed"])
+    assert job["status"] == "waiting_approval"
+    auth_client.post(f"/api/runs/{job_id}/approve", json={"approved": True})
+    job = _wait_for_job(auth_client, job_id)
+    assert job["status"] == "done"
+    assert job["result"]["human_review"]["final_decision"] == "approved"
+    assert len(job["result"]["human_review"]["feedback_cycles"]) == 1
+    artifacts = auth_client.get(f"/api/projects/{project['id']}/artifacts").json()
+    brief = next(item for item in artifacts if item["type"] == "research_brief")
+    assert brief["version"] == 2
 
 
 class _FakeUsageClient:

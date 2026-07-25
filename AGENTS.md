@@ -31,6 +31,10 @@ docker compose up --build                # stack completo (2 contenedores)
 - **Revisión automática**: vive exclusivamente en el perfil versionado
   (`automatic_review_enabled` + `max_automatic_regenerations`, 0–5). El run
   congela la política; los workflows no declaran ni permiten `evaluate`.
+- **Aprobación humana**: vive exclusivamente en el perfil versionado
+  (`human_review_enabled`, desactivada por defecto). El workflow congela la
+  política, ignora `approval_after` histórico y el feedback regenera la misma
+  fase desde un nodo separado antes de volver a pedir aprobación.
 - **Contratos de artefactos** en `factory_agents/contracts/`: los tipos
   (course_idea_brief, research_brief, course_plan, lesson_content,
   slide_deck…) son la columna vertebral — los agentes declaran consumes/

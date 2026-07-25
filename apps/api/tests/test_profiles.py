@@ -23,6 +23,7 @@ def test_default_profiles_seeded(auth_client):
     assert videos[0]["orientation"] == "horizontal"
     assert slides[0]["automatic_review_enabled"] is False
     assert slides[0]["max_automatic_regenerations"] == 0
+    assert slides[0]["human_review_enabled"] is False
 
 
 def test_slide_profile_image_configuration_is_versioned(auth_client):
@@ -151,18 +152,21 @@ def test_automatic_review_policy_is_validated_and_versioned(auth_client):
             "name": "Planner con revisión",
             "automatic_review_enabled": True,
             "max_automatic_regenerations": 5,
+            "human_review_enabled": True,
         },
     )
     assert response.status_code == 201
     profile = response.json()
     assert profile["automatic_review_enabled"] is True
     assert profile["max_automatic_regenerations"] == 5
+    assert profile["human_review_enabled"] is True
 
     response = auth_client.patch(
         f"/api/agents/profiles/{profile['id']}",
         json={
             "automatic_review_enabled": False,
             "max_automatic_regenerations": 0,
+            "human_review_enabled": False,
             "note": "Desactivar revisión",
         },
     )
@@ -174,8 +178,10 @@ def test_automatic_review_policy_is_validated_and_versioned(auth_client):
     ).json()
     assert versions[0]["automatic_review_enabled"] is False
     assert versions[0]["max_automatic_regenerations"] == 0
+    assert versions[0]["human_review_enabled"] is False
     assert versions[1]["automatic_review_enabled"] is True
     assert versions[1]["max_automatic_regenerations"] == 5
+    assert versions[1]["human_review_enabled"] is True
 
     assert (
         auth_client.patch(

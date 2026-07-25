@@ -151,6 +151,14 @@ export default function WorkflowEditorPage() {
   }
 
   const step = selected !== null ? steps[selected] : null;
+  const selectedStepProfile = step
+    ? step.profile_id
+      ? (profiles[step.agent] ?? []).find(
+          (profile) => profile.id === step.profile_id,
+        )
+      : (profiles[step.agent] ?? []).find((profile) => profile.is_default) ??
+        (profiles[step.agent] ?? [])[0]
+    : undefined;
 
   const workflowProblems = validateWorkflowSteps(steps);
   return (
@@ -225,8 +233,8 @@ export default function WorkflowEditorPage() {
             Puedes empezar por cualquier agente. Los materiales que necesite el
             primero se consideran requisitos del proyecto; los pasos siguientes
             deben consumir resultados ya disponibles. Haz clic en un nodo para
-            configurar su perfil o pausa de aprobaci&oacute;n. La revisi&oacute;n
-            autom&aacute;tica se configura y versiona dentro de cada perfil.
+            configurar su perfil. Las revisiones autom&aacute;tica y humana se
+            configuran y versionan dentro de cada perfil.
           </p>
           {requiredInitialArtifacts(steps).length > 0 && (
             <p className="mt-2 text-xs font-medium text-amber-300">
@@ -351,27 +359,19 @@ export default function WorkflowEditorPage() {
                 ))}
               </select>
             </div>
-            <div className="space-y-3">
-              <label className="flex items-start gap-2.5 text-sm text-zinc-300">
-                <input
-                  type="checkbox"
-                  checked={Boolean(step.approval_after)}
-                  onChange={(e) =>
-                    updateStep(selected!, { approval_after: e.target.checked })
-                  }
-                  disabled={readOnly}
-                  className="mt-0.5 h-4 w-4 accent-indigo-500"
-                />
-                <span>
-                  Pausar para aprobación humana tras este paso
-                  <span className="block text-xs text-zinc-500">
-                    El workflow espera tu revisión antes de continuar.
-                  </span>
-                </span>
-              </label>
+            <div className="space-y-2">
               <p className="rounded-md border border-white/[0.08] bg-black/20 p-3 text-xs leading-relaxed text-zinc-400">
-                La revisión automática y sus regeneraciones pertenecen al perfil
-                seleccionado. El workflow congela esa versión al iniciar el run.
+                Revisión automática: {selectedStepProfile?.automatic_review_enabled
+                  ? `sí · ${selectedStepProfile.max_automatic_regenerations} regeneraciones`
+                  : "no"}
+              </p>
+              <p className="rounded-md border border-white/[0.08] bg-black/20 p-3 text-xs leading-relaxed text-zinc-400">
+                Aprobación humana: {selectedStepProfile?.human_review_enabled
+                  ? "sí · el workflow esperará tu decisión"
+                  : "no · continuará automáticamente"}
+                <span className="mt-1 block text-zinc-500">
+                  Ambas políticas pertenecen al perfil y quedan congeladas al iniciar el run.
+                </span>
               </p>
             </div>
           </div>

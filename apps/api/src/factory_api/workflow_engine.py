@@ -1,11 +1,9 @@
-"""Workflow engine: compiles declarative linear chains into LangGraph graphs.
+"""Compile declarative linear workflows into resumable LangGraph graphs.
 
-A workflow definition is JSON: {"steps": [{"agent": "curator",
-"approval_after": true, "overrides": {...}}, ...]}. Each step becomes a
-graph node that runs the matching job handler; steps marked with
-approval_after are followed by an approval node that pauses the graph via
-LangGraph's interrupt(), persisted in a SQLite checkpointer so the run can
-resume later (even after a restart) when the human approves or rejects.
+Review policy is frozen from the selected profile into each step's overrides.
+Human approval always lives in a node separate from expensive agent calls; a
+feedback decision cycles back to the same agent and creates a new artifact
+version before approval is requested again.
 """
 
 import sqlite3
@@ -38,7 +36,6 @@ AGENT_INPUTS: dict[str, tuple[str, ...]] = {
     "video": ("voice_script", "slide_deck"),
     "publisher": ("video",),
 }
-
 AGENT_OUTPUTS: dict[str, tuple[str, ...]] = {
     "curator": ("research_brief",),
     "planner": ("course_plan",),
@@ -49,6 +46,16 @@ AGENT_OUTPUTS: dict[str, tuple[str, ...]] = {
     "video": ("video", "subtitles"),
     "publisher": ("publication_package", "thumbnail"),
 }
+AGENT_LABELS = {
+    "curator": "Curador de contenido",
+    "planner": "Diseñador de curso",
+    "lessons": "Generador de lecciones",
+    "slides": "Diseñador de slides",
+    "script": "Guion docente",
+    "voice": "Adaptación a voz",
+    "video": "Montaje de vídeo",
+    "publisher": "Publicación",
+}
 
 
 def missing_agent_inputs(agent: str, available: set[str]) -> list[str]:
@@ -56,7 +63,7 @@ def missing_agent_inputs(agent: str, available: set[str]) -> list[str]:
 
 
 def missing_workflow_inputs(definition: dict, available: set[str]) -> list[str]:
-    """Inputs a workflow cannot produce itself before they are needed."""
+    """Return inputs that a workflow cannot produce before they are needed."""
     simulated = set(available)
     missing: list[str] = []
     for step in definition.get("steps", []):
@@ -67,19 +74,12 @@ def missing_workflow_inputs(definition: dict, available: set[str]) -> list[str]:
     return missing
 
 
-class WorkflowRejected(Exception):
-    def __init__(self, step: str, feedback: str):
-        self.step = step
-        self.feedback = feedback
-        super().__init__(f"Rechazado en {step}" + (f": {feedback}" if feedback else ""))
-
-
 class WorkflowState(TypedDict, total=False):
     payload: dict[str, Any]
     results: dict[str, Any]
     review_summaries: dict[str, Any]
-    review_approval_skips: dict[str, bool]
-    escalate: dict[str, Any] | None
+    human_reviews: dict[str, Any]
+    human_actions: dict[str, Any]
 
 
 def _review_policy(step: dict) -> tuple[bool, int, str | None]:
@@ -91,8 +91,12 @@ def _review_policy(step: dict) -> tuple[bool, int, str | None]:
     )
 
 
+def _human_review_enabled(step: dict) -> bool:
+    return bool(step.get("overrides", {}).get("human_review_enabled", False))
+
+
 def validate_definition(definition: dict) -> list[str]:
-    """Returns a list of problems; empty list = valid."""
+    """Return validation problems; an empty list means the definition is valid."""
     problems: list[str] = []
     steps = definition.get("steps")
     if not isinstance(steps, list) or not steps:
@@ -108,12 +112,12 @@ def validate_definition(definition: dict) -> list[str]:
             problems.append(f"Paso {i + 1}: agente inválido '{agent}'")
             continue
         if agent in seen:
-            problems.append(f"Paso {i + 1}: el agente '{agent}' ya est\u00e1 incluido")
+            problems.append(f"Paso {i + 1}: el agente '{agent}' ya está incluido")
         missing = set(AGENT_INPUTS[agent]) - available
         if missing:
             names = ", ".join(sorted(missing))
             problems.append(
-                f"Paso {i + 1}: '{agent}' necesita artefactos que a\u00fan no existen: {names}"
+                f"Paso {i + 1}: '{agent}' necesita artefactos que aún no existen: {names}"
             )
         seen.add(agent)
         available.update(AGENT_OUTPUTS[agent])
@@ -132,41 +136,62 @@ def open_checkpointer():
         conn.close()
 
 
+def _artifact_ids(result: dict | None) -> list[str]:
+    if not result:
+        return []
+    if result.get("artifact_ids"):
+        return list(result["artifact_ids"])
+    return [result["artifact_id"]] if result.get("artifact_id") else []
+
+
 def build_workflow_graph(
     definition: dict, job_id: str, handlers: dict, append_event, evaluator=None
 ):
-    """Compile the declarative chain into a LangGraph StateGraph.
-
-    evaluator(agent, result) -> (verdict, feedback) is injected by the
-    runner. The bounded review policy comes exclusively from the frozen
-    profile fields in each step's overrides.
-    """
+    """Compile a workflow whose automatic and human review policies are frozen."""
     graph: StateGraph = StateGraph(WorkflowState)
-    steps = definition["steps"]
     previous = START
 
-    for i, step in enumerate(steps):
+    for index, step in enumerate(definition["steps"]):
         agent = step["agent"]
-        node_name = f"step{i + 1}_{agent}"
+        step_number = index + 1
+        review_key = f"{step_number}:{agent}"
+        node_name = f"step{step_number}_{agent}"
+        automatic_enabled, max_regenerations, evaluator_model = _review_policy(step)
+        human_enabled = _human_review_enabled(step)
 
-        def make_agent_node(step=step, agent=agent, index=i):
+        def make_agent_node(
+            step=step,
+            agent=agent,
+            step_number=step_number,
+            review_key=review_key,
+            automatic_enabled=automatic_enabled,
+            human_enabled=human_enabled,
+        ):
             def node(state: WorkflowState) -> WorkflowState:
+                action = state.get("human_actions", {}).get(review_key, {})
+                feedback = (
+                    action.get("feedback", "")
+                    if action.get("decision") == "regenerate"
+                    else ""
+                )
                 append_event(
                     job_id,
                     "stage",
-                    f"Paso {index + 1}: {agent} — iniciando",
-                    {"agent": agent, "step": index + 1, "status": "running"},
+                    f"Paso {step_number}: {AGENT_LABELS.get(agent, agent)} — "
+                    + ("regenerando con feedback" if feedback else "iniciando"),
+                    {"agent": agent, "step": step_number, "status": "running"},
                 )
                 stage_payload = {**state["payload"], **step.get("overrides", {})}
+                if feedback:
+                    stage_payload["revision_feedback"] = feedback
                 result = handlers[f"{agent}_run"](job_id, stage_payload)
                 results = {**state.get("results", {}), agent: result}
-                review_enabled, _, _ = _review_policy(step)
-                if not review_enabled or evaluator is None:
+                if not automatic_enabled and not human_enabled:
                     append_event(
                         job_id,
                         "stage",
-                        f"Paso {index + 1}: {agent} completado",
-                        {"agent": agent, "step": index + 1, "status": "done"},
+                        f"Paso {step_number}: {agent} completado",
+                        {"agent": agent, "step": step_number, "status": "done"},
                     )
                 return {"results": results}
 
@@ -174,21 +199,19 @@ def build_workflow_graph(
 
         graph.add_node(node_name, make_agent_node())
         graph.add_edge(previous, node_name)
-        previous = node_name
+        step_exit = node_name
 
-        review_enabled, max_regenerations, evaluator_model = _review_policy(step)
-        review_key = f"{i + 1}:{agent}"
-        if review_enabled and evaluator is not None:
-            eval_name = f"eval{i + 1}_{agent}"
-            escalate_name = f"escalate{i + 1}_{agent}"
+        if automatic_enabled and evaluator is not None:
+            eval_name = f"eval{step_number}_{agent}"
 
             def make_eval_node(
                 step=step,
                 agent=agent,
-                index=i,
+                step_number=step_number,
+                review_key=review_key,
                 max_regenerations=max_regenerations,
                 evaluator_model=evaluator_model,
-                review_key=review_key,
+                human_enabled=human_enabled,
             ):
                 def node(state: WorkflowState) -> WorkflowState:
                     results = dict(state.get("results", {}))
@@ -197,17 +220,17 @@ def build_workflow_graph(
                     evaluations = 0
                     regenerations = 0
                     while True:
-                        evaluation_number = evaluations + 1
+                        evaluations += 1
                         append_event(
                             job_id,
                             "evaluation",
                             f"Evaluación automática de {agent} iniciada",
                             {
                                 "agent": agent,
-                                "step": index + 1,
+                                "step": step_number,
                                 "status": "running",
                                 "model": evaluator_model,
-                                "evaluation": evaluation_number,
+                                "evaluation": evaluations,
                             },
                         )
                         try:
@@ -216,10 +239,10 @@ def build_workflow_graph(
                             append_event(
                                 job_id,
                                 "evaluation",
-                                f"La evaluación de {agent} falló; el workflow continúa",
+                                f"La evaluación de {agent} falló; se conserva la salida",
                                 {
                                     "agent": agent,
-                                    "step": index + 1,
+                                    "step": step_number,
                                     "status": "warning",
                                     "technical_error": True,
                                     "error": str(exc),
@@ -228,23 +251,19 @@ def build_workflow_graph(
                             )
                             summaries[review_key] = {
                                 "agent": agent,
-                                "evaluations": evaluation_number,
+                                "evaluations": evaluations,
                                 "regenerations": regenerations,
                                 "final_result": "evaluator_error",
                                 "model": evaluator_model,
                             }
-                            append_event(
-                                job_id,
-                                "stage",
-                                f"Paso {index + 1}: {agent} completado con advertencia",
-                                {"agent": agent, "step": index + 1, "status": "done"},
-                            )
-                            return {
-                                "results": results,
-                                "review_summaries": summaries,
-                                "escalate": None,
-                            }
-                        evaluations = evaluation_number
+                            if not human_enabled:
+                                append_event(
+                                    job_id,
+                                    "stage",
+                                    f"Paso {step_number}: {agent} completado con advertencia",
+                                    {"agent": agent, "step": step_number, "status": "done"},
+                                )
+                            return {"results": results, "review_summaries": summaries}
                         if verdict == "pass":
                             summaries[review_key] = {
                                 "agent": agent,
@@ -253,21 +272,16 @@ def build_workflow_graph(
                                 "final_result": "pass",
                                 "model": evaluator_model,
                             }
-                            append_event(
-                                job_id,
-                                "stage",
-                                f"Paso {index + 1}: {agent} completado",
-                                {"agent": agent, "step": index + 1, "status": "done"},
-                            )
-                            return {
-                                "results": results,
-                                "review_summaries": summaries,
-                                "escalate": None,
-                            }
+                            if not human_enabled:
+                                append_event(
+                                    job_id,
+                                    "stage",
+                                    f"Paso {step_number}: {agent} completado",
+                                    {"agent": agent, "step": step_number, "status": "done"},
+                                )
+                            return {"results": results, "review_summaries": summaries}
                         if regenerations >= max_regenerations:
-                            destination = (
-                                "human_approval" if step.get("approval_after") else "continue"
-                            )
+                            destination = "human_approval" if human_enabled else "continue"
                             summaries[review_key] = {
                                 "agent": agent,
                                 "evaluations": evaluations,
@@ -277,63 +291,37 @@ def build_workflow_graph(
                                 "feedback": feedback,
                                 "model": evaluator_model,
                             }
-                            if step.get("approval_after"):
+                            if not human_enabled:
+                                append_event(
+                                    job_id,
+                                    "evaluation",
+                                    f"{agent} agotó {max_regenerations} regeneraciones; "
+                                    "el workflow continúa con advertencia",
+                                    {
+                                        "agent": agent,
+                                        "step": step_number,
+                                        "status": "warning",
+                                        "verdict": verdict,
+                                        "feedback": feedback,
+                                        "destination": "continue",
+                                    },
+                                )
                                 append_event(
                                     job_id,
                                     "stage",
-                                    f"Paso {index + 1}: {agent} espera revisión humana",
-                                    {
-                                        "agent": agent,
-                                        "step": index + 1,
-                                        "status": "waiting_approval",
-                                    },
+                                    f"Paso {step_number}: {agent} completado con advertencia",
+                                    {"agent": agent, "step": step_number, "status": "done"},
                                 )
-                                return {
-                                    "results": results,
-                                    "review_summaries": summaries,
-                                    "escalate": {
-                                        "step": index + 1,
-                                        "agent": agent,
-                                        "type": "evaluation",
-                                        "feedback": feedback,
-                                        "evaluations": evaluations,
-                                        "regenerations": regenerations,
-                                    },
-                                }
-                            append_event(
-                                job_id,
-                                "evaluation",
-                                f"{agent} agotó {max_regenerations} regeneraciones; "
-                                "el workflow continúa con advertencia",
-                                {
-                                    "agent": agent,
-                                    "step": index + 1,
-                                    "status": "warning",
-                                    "verdict": verdict,
-                                    "feedback": feedback,
-                                    "destination": "continue",
-                                },
-                            )
-                            append_event(
-                                job_id,
-                                "stage",
-                                f"Paso {index + 1}: {agent} completado con advertencia",
-                                {"agent": agent, "step": index + 1, "status": "done"},
-                            )
-                            return {
-                                "results": results,
-                                "review_summaries": summaries,
-                                "escalate": None,
-                            }
+                            return {"results": results, "review_summaries": summaries}
                         regenerations += 1
                         append_event(
                             job_id,
                             "evaluation",
                             f"Regeneración {regenerations}/{max_regenerations} de {agent} "
-                            f"con feedback del evaluador…",
+                            "con feedback del evaluador…",
                             {
                                 "agent": agent,
-                                "step": index + 1,
+                                "step": step_number,
                                 "status": "regenerating",
                                 "regeneration": regenerations,
                                 "max_regenerations": max_regenerations,
@@ -341,73 +329,114 @@ def build_workflow_graph(
                             },
                         )
                         results[agent] = handlers[f"{agent}_run"](
-                            job_id,
-                            {**stage_payload, "revision_feedback": feedback},
+                            job_id, {**stage_payload, "revision_feedback": feedback}
                         )
-
-                return node
-
-            # Escalation lives in its own node (interrupt must not share a
-            # node with expensive work) and no-ops when there is nothing
-            # to escalate, keeping the graph linear.
-            def make_escalate_node(agent=agent, index=i, review_key=review_key):
-                def node(state: WorkflowState) -> WorkflowState:
-                    info = state.get("escalate")
-                    if not info:
-                        return {}
-                    decision = interrupt(info)
-                    if not (decision or {}).get("approved", False):
-                        raise WorkflowRejected(
-                            f"paso {index + 1} ({agent}, evaluación)",
-                            (decision or {}).get("feedback", ""),
-                        )
-                    skips = dict(state.get("review_approval_skips", {}))
-                    skips[review_key] = True
-                    append_event(
-                        job_id,
-                        "stage",
-                        f"Paso {index + 1}: {agent} aprobado tras agotar la revisión",
-                        {"agent": agent, "step": index + 1, "status": "done"},
-                    )
-                    return {"escalate": None, "review_approval_skips": skips}
 
                 return node
 
             graph.add_node(eval_name, make_eval_node())
-            graph.add_edge(previous, eval_name)
-            graph.add_node(escalate_name, make_escalate_node())
-            graph.add_edge(eval_name, escalate_name)
-            previous = escalate_name
+            graph.add_edge(step_exit, eval_name)
+            step_exit = eval_name
 
-        if step.get("approval_after"):
-            approval_name = f"approval{i + 1}_{agent}"
+        if human_enabled:
+            ready_name = f"ready{step_number}_{agent}"
+            approval_name = f"approval{step_number}_{agent}"
+            done_name = f"approved{step_number}_{agent}"
 
-            # Approval lives in its own node: on resume LangGraph re-runs the
-            # node from its start, so the expensive agent node must not share
-            # a node with interrupt().
-            def make_approval_node(agent=agent, index=i, review_key=review_key):
+            def make_ready_node(agent=agent, step_number=step_number):
                 def node(state: WorkflowState) -> WorkflowState:
-                    if state.get("review_approval_skips", {}).get(review_key):
-                        return {}
-                    decision = interrupt(
-                        {
-                            "step": index + 1,
-                            "agent": agent,
-                            "result": state.get("results", {}).get(agent),
-                        }
+                    append_event(
+                        job_id,
+                        "stage",
+                        f"Paso {step_number}: {agent} espera revisión humana",
+                        {"agent": agent, "step": step_number, "status": "waiting_approval"},
                     )
-                    if not (decision or {}).get("approved", False):
-                        raise WorkflowRejected(
-                            f"paso {index + 1} ({agent})",
-                            (decision or {}).get("feedback", ""),
-                        )
                     return {}
 
                 return node
 
+            def make_approval_node(
+                agent=agent, step_number=step_number, review_key=review_key
+            ):
+                def node(state: WorkflowState) -> WorkflowState:
+                    history = dict(state.get("human_reviews", {}))
+                    current = dict(history.get(review_key, {}))
+                    cycles = list(current.get("cycles", []))
+                    decision = interrupt(
+                        {
+                            "step": step_number,
+                            "agent": agent,
+                            "result": state.get("results", {}).get(agent),
+                            "automatic_review": state.get("review_summaries", {}).get(
+                                review_key
+                            ),
+                            "human_cycles": len(cycles),
+                        }
+                    )
+                    approved = bool((decision or {}).get("approved", False))
+                    feedback = str((decision or {}).get("feedback", "")).strip()
+                    if not approved and not feedback:
+                        raise ValueError("Escribe feedback para regenerar la fase")
+                    result = state.get("results", {}).get(agent)
+                    cycles.append(
+                        {
+                            "cycle": len(cycles) + 1,
+                            "decision": "approved" if approved else "regenerate",
+                            "feedback": feedback,
+                            "artifact_ids": _artifact_ids(result),
+                            "automatic_review": state.get(
+                                "review_summaries", {}
+                            ).get(review_key),
+                        }
+                    )
+                    history[review_key] = {
+                        "agent": agent,
+                        "step": step_number,
+                        "cycles": cycles,
+                        "final_decision": "approved" if approved else None,
+                    }
+                    actions = dict(state.get("human_actions", {}))
+                    actions[review_key] = {
+                        "decision": "approved" if approved else "regenerate",
+                        "feedback": feedback,
+                    }
+                    append_event(
+                        job_id,
+                        "approval",
+                        (
+                            f"Paso {step_number}: {agent} aprobado"
+                            if approved
+                            else f"Paso {step_number}: {agent} se regenerará con feedback"
+                        ),
+                        {
+                            "agent": agent,
+                            "step": step_number,
+                            "status": "done" if approved else "regenerating",
+                            "human_cycle": len(cycles),
+                            "feedback": feedback,
+                        },
+                    )
+                    return {"human_reviews": history, "human_actions": actions}
+
+                return node
+
+            def route_after_approval(state: WorkflowState, review_key=review_key) -> str:
+                action = state.get("human_actions", {}).get(review_key, {})
+                return "regenerate" if action.get("decision") == "regenerate" else "approved"
+
+            graph.add_node(ready_name, make_ready_node())
+            graph.add_edge(step_exit, ready_name)
             graph.add_node(approval_name, make_approval_node())
-            graph.add_edge(previous, approval_name)
-            previous = approval_name
+            graph.add_edge(ready_name, approval_name)
+            graph.add_node(done_name, lambda _state: {})
+            graph.add_conditional_edges(
+                approval_name,
+                route_after_approval,
+                {"regenerate": node_name, "approved": done_name},
+            )
+            step_exit = done_name
+
+        previous = step_exit
 
     graph.add_edge(previous, END)
     return graph

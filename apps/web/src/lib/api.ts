@@ -143,6 +143,7 @@ export interface AgentProfile {
   image_style_prompt: string | null;
   automatic_review_enabled: boolean;
   max_automatic_regenerations: number;
+  human_review_enabled: boolean;
   slide_palette: SlidePalette | null;
   version: number;
   is_default: boolean;
@@ -162,6 +163,7 @@ export interface ProfileVersion {
   image_style_prompt: string | null;
   automatic_review_enabled: boolean;
   max_automatic_regenerations: number;
+  human_review_enabled: boolean;
   slide_palette: SlidePalette | null;
   note: string;
   created_at: string;
@@ -213,7 +215,6 @@ export interface WikiPage {
 export interface WorkflowStep {
   agent: string;
   profile_id?: string | null;
-  approval_after?: boolean | null;
 }
 
 export interface Workflow {
@@ -241,6 +242,7 @@ export interface Job {
       profile_id: string | null;
       profile_version: number | null;
       evaluator_model: string | null;
+      human_review_enabled: boolean;
     }
   >;
   created_at: string;
@@ -386,6 +388,7 @@ export const api = {
       image_style_prompt?: string;
       automatic_review_enabled?: boolean;
       max_automatic_regenerations?: number;
+      human_review_enabled?: boolean;
       slide_palette?: SlidePalette;
     },
   ) =>
@@ -412,6 +415,7 @@ export const api = {
         | "image_style_prompt"
         | "automatic_review_enabled"
         | "max_automatic_regenerations"
+        | "human_review_enabled"
         | "slide_palette"
       >
     > & { model?: string; note?: string },

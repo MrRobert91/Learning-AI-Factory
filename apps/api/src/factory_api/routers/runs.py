@@ -47,6 +47,9 @@ def _job_read(job: Job, include_events: bool = True) -> JobRead:
                 "profile_id": overrides.get("profile_id"),
                 "profile_version": overrides.get("profile_version"),
                 "evaluator_model": overrides.get("evaluator_model"),
+                "human_review_enabled": bool(
+                    overrides.get("human_review_enabled", False)
+                ),
             }
     elif job.kind == "pipeline_run":
         for agent, fields in payload.get("stages", {}).items():
@@ -58,6 +61,9 @@ def _job_read(job: Job, include_events: bool = True) -> JobRead:
                 "profile_id": fields.get("profile_id"),
                 "profile_version": fields.get("profile_version"),
                 "evaluator_model": fields.get("evaluator_model"),
+                "human_review_enabled": bool(
+                    fields.get("human_review_enabled", False)
+                ),
             }
     elif job.kind.endswith("_run"):
         agent = job.kind.removesuffix("_run")
@@ -67,6 +73,7 @@ def _job_read(job: Job, include_events: bool = True) -> JobRead:
             "profile_id": payload.get("profile_id"),
             "profile_version": payload.get("profile_version"),
             "evaluator_model": payload.get("evaluator_model"),
+            "human_review_enabled": bool(payload.get("human_review_enabled", False)),
         }
     return JobRead(
         id=job.id,
@@ -113,6 +120,7 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
             "profile_version": None,
             "automatic_review_enabled": False,
             "max_automatic_regenerations": 0,
+            "human_review_enabled": False,
             "evaluator_model": evaluator_model,
             "slide_palette": dict(DEFAULT_SLIDE_PALETTE),
         }
@@ -132,6 +140,7 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
         "max_automatic_regenerations": int(
             config.get("max_automatic_regenerations", 0) or 0
         ),
+        "human_review_enabled": bool(config.get("human_review_enabled", False)),
         "evaluator_model": evaluator_model,
         "slide_palette": normalize_palette(config.get("slide_palette")),
     }
