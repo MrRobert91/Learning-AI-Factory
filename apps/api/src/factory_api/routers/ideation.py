@@ -4,6 +4,7 @@ from collections.abc import Callable
 from typing import Annotated
 
 from factory_agents.agents.ideation import AgentEvent, HistoryItem, run_ideation_turn
+from factory_agents.contracts import CourseIdeaBrief
 from factory_agents.llm import MissingApiKeyError, get_llm_client
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -292,16 +293,26 @@ def finalize_session(session_id: str, user: CurrentUser, db: DB):
             status_code=409,
             detail="Todavía no hay un brief propuesto: sigue la conversación hasta tenerlo",
         )
-    brief = json.loads(session.brief_json)
+    try:
+        brief = CourseIdeaBrief.model_validate_json(session.brief_json)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "El brief no incluye una duración válida. Pide al asistente que elija "
+                "un preset o una estructura personalizada antes de crear el proyecto."
+            ),
+        ) from exc
     project = Project(
         owner_id=user.id,
-        title=brief.get("working_title") or session.initial_idea[:255],
-        topic=brief.get("topic", ""),
-        audience=brief.get("audience", ""),
-        level=brief.get("level", ""),
-        language=brief.get("language", "es"),
-        style=brief.get("style", ""),
-        output_format=brief.get("output_format", ""),
+        title=brief.working_title or session.initial_idea[:255],
+        topic=brief.topic,
+        audience=brief.audience,
+        level=brief.level,
+        language=brief.language,
+        style=brief.style,
+        output_format=brief.output_format,
+        duration_spec_json=brief.duration_spec.model_dump_json(),
     )
     db.add(project)
     db.flush()

@@ -32,7 +32,7 @@ algo. Prefiere un buen ejemplo ejecutable a tres párrafos de teoría.
 """
 
 DEFAULT_AGENTS_MD = """\
-- Longitud objetivo: 600-1200 palabras por lección (5-15 min de vídeo).
+- Ajusta la longitud al presupuesto programático recibido para esta lección.
 - Todo bloque de código debe haberse ejecutado con éxito en el sandbox.
 - Cierra siempre con "## Resumen" (3-5 bullets) que mapee al objetivo de la lección.
 - Si citas datos del research brief, mantén las referencias [n].

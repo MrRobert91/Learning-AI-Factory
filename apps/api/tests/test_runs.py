@@ -26,7 +26,18 @@ def _wait_for_job(auth_client, job_id, timeout=10):
 
 def _create_project(auth_client):
     return auth_client.post(
-        "/api/projects", json={"title": "Curso LLMs", "topic": "LLMs", "language": "es"}
+        "/api/projects",
+        json={
+            "title": "Curso LLMs",
+            "topic": "LLMs",
+            "language": "es",
+            "duration_spec": {
+                "preset": "custom",
+                "module_count": 1,
+                "videos_per_module": 2,
+                "target_minutes_per_video": 10,
+            },
+        },
     ).json()
 
 

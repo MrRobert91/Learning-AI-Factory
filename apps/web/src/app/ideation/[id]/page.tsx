@@ -202,6 +202,23 @@ function BriefPanel({
         {row("Idioma", brief.language)}
         {row("Estilo", brief.style)}
         {row("Formato", brief.output_format)}
+        {brief.duration_spec ? (
+          <>
+            {row(
+              "Duración",
+              `${brief.duration_spec.total_videos} vídeos · ${brief.duration_spec.total_minutes} min`,
+            )}
+            {row(
+              "Estructura",
+              `${brief.duration_spec.module_count} módulos · ${brief.duration_spec.videos_per_module} vídeos por módulo · ${brief.duration_spec.target_minutes_per_video} min por vídeo`,
+            )}
+          </>
+        ) : (
+          <div className="rounded-lg border border-amber-400/25 bg-amber-500/[0.07] p-3 text-sm text-amber-200">
+            Falta elegir la duración. Pídele al asistente un preset o una
+            estructura personalizada antes de crear el proyecto.
+          </div>
+        )}
         {list("Objetivos", brief.objectives)}
         {list("Alcance", brief.scope_outline)}
         {row("Ángulo diferencial", brief.differential_angle)}
@@ -212,10 +229,14 @@ function BriefPanel({
           <>
             <button
               onClick={onFinalize}
-              disabled={finalizing}
+              disabled={finalizing || !brief.duration_spec}
               className="btn-success w-full"
             >
-              {finalizing ? "Creando proyecto…" : "Crear proyecto desde este brief"}
+              {finalizing
+                ? "Creando proyecto…"
+                : brief.duration_spec
+                  ? "Crear proyecto desde este brief"
+                  : "Completa la duración en el chat"}
             </button>
             <p className="mt-2.5 text-center text-xs text-zinc-500">
               ¿Quieres cambiar algo? Pídeselo al asistente en el chat.

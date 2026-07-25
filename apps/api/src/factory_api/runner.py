@@ -12,6 +12,13 @@ import logging
 import uuid
 from datetime import UTC, datetime
 
+from factory_agents.contracts import DurationSpec
+from factory_agents.duration import (
+    duration_metrics,
+    render_duration_constraints,
+    research_budget,
+    validate_course_plan_structure,
+)
 from sqlalchemy import select
 
 from factory_api.artifact_versions import (
@@ -416,6 +423,59 @@ def _require_artifact(project_id: str, type_: str, hint: str) -> str:
     return content
 
 
+def _duration_spec(payload: dict) -> DurationSpec | None:
+    value = payload.get("duration_spec")
+    return DurationSpec.model_validate(value) if value else None
+
+
+def _duration_metadata(payload: dict, agent: str) -> dict:
+    spec = _duration_spec(payload)
+    if spec is None:
+        return {}
+    orientation = payload.get("orientation", "horizontal")
+    return {
+        "duration_spec": spec.model_dump(),
+        "duration_metrics": duration_metrics(spec, orientation),
+        "duration_agent": agent,
+    }
+
+
+def _emit_duration_event(job_id: str, payload: dict, agent: str) -> None:
+    spec = _duration_spec(payload)
+    if spec is None:
+        return
+    metrics = duration_metrics(spec, payload.get("orientation", "horizontal"))
+    append_event(
+        job_id,
+        "constraints",
+        (
+            f"Duración congelada: {spec.total_videos} vídeos, "
+            f"{spec.total_minutes} min ({spec.preset})"
+        ),
+        {
+            "agent": agent,
+            "duration_spec": spec.model_dump(),
+            "duration_metrics": metrics,
+        },
+    )
+
+
+def _emit_metric_warning(
+    job_id: str, label: str, actual: int, budget: dict[str, int]
+) -> None:
+    if budget["min"] <= actual <= budget["max"]:
+        return
+    append_event(
+        job_id,
+        "warning",
+        (
+            f"{label}: {actual} frente al rango objetivo "
+            f"{budget['min']}–{budget['max']}"
+        ),
+        {"actual": actual, **budget},
+    )
+
+
 def _deactivate_unproduced(project_id: str, type_: str, keep_ids: list[str]) -> None:
     """Replace a generated collection, hiding families absent from the new run."""
     keep = set(keep_ids)
@@ -439,9 +499,11 @@ def run_curator_job(job_id: str, payload: dict) -> dict:
 
     settings = get_settings()
     workspace = settings.data_dir / "runs" / job_id
+    _emit_duration_event(job_id, payload, "curator")
+    spec = _duration_spec(payload)
     final_text = ""
     for event in run_curator(
-        _augment_input(payload["task_input"], payload),
+        _augment_input(payload["task_input"], payload, "curator"),
         model=payload.get("model") or settings.openrouter_model,
         api_key=settings.openrouter_api_key,
         tavily_api_key=settings.tavily_api_key,
@@ -450,6 +512,7 @@ def run_curator_job(job_id: str, payload: dict) -> dict:
         agents_md=payload.get("agents_md", ""),
         recursion_limit=settings.agent_recursion_limit,
         callbacks=_budget_callbacks(job_id),
+        max_searches=research_budget(spec.total_minutes)["searches_max"] if spec else None,
     ):
         if event.type == "result":
             final_text = event.summary
@@ -465,6 +528,7 @@ def run_curator_job(job_id: str, payload: dict) -> dict:
         "research_brief",
         f"Research brief — {payload.get('project_title', '')}".strip(" —"),
         final_text,
+        metadata=_duration_metadata(payload, "curator"),
     )
     append_event(job_id, "artifact", "Research brief generado", {"artifact_id": artifact_id})
     return {"artifact_id": artifact_id}
@@ -477,14 +541,25 @@ def run_planner_job(job_id: str, payload: dict) -> dict:
     brief_md = _require_artifact(
         payload["project_id"], "research_brief", "ejecuta antes el Curador"
     )
+    _emit_duration_event(job_id, payload, "planner")
+    spec = _duration_spec(payload)
     append_event(job_id, "stage", "Diseñando la estructura del curso…")
     plan = run_planner(
-        _augment_input(render_planner_input(payload.get("project", {}), brief_md), payload),
+        _augment_input(
+            render_planner_input(payload.get("project", {}), brief_md),
+            payload,
+            "planner",
+        ),
         client=_client(job_id),
         model=payload.get("model") or settings.openrouter_model,
         soul_md=payload.get("soul_md", ""),
         agents_md=payload.get("agents_md", ""),
+        duration_spec=spec,
     )
+    if spec:
+        problems = validate_course_plan_structure(plan, spec)
+        if problems:
+            raise RuntimeError("El plan no respeta la estructura: " + "; ".join(problems))
     artifact_id = _save_artifact(
         job_id,
         payload["project_id"],
@@ -492,6 +567,7 @@ def run_planner_job(job_id: str, payload: dict) -> dict:
         f"Plan del curso — {plan.course_title}",
         plan.model_dump_json(indent=2),
         format_="json",
+        metadata=_duration_metadata(payload, "planner"),
     )
     total = sum(len(m.lessons) for m in plan.modules)
     append_event(
@@ -515,6 +591,19 @@ def run_lessons_job(job_id: str, payload: dict) -> dict:
         payload["project_id"], "research_brief", "ejecuta antes el Curador"
     )
     plan = CoursePlan.model_validate_json(plan_json)
+    _emit_duration_event(job_id, payload, "lessons")
+    spec = _duration_spec(payload)
+    if spec:
+        problems = validate_course_plan_structure(plan, spec)
+        if problems:
+            raise RuntimeError(
+                "El plan seleccionado no respeta la estructura: " + "; ".join(problems)
+            )
+    metrics = (
+        duration_metrics(spec, payload.get("orientation", "horizontal"))
+        if spec
+        else None
+    )
 
     artifact_ids: list[str] = []
     for mi, li, _module, lesson in plan.iter_lessons():
@@ -522,7 +611,9 @@ def run_lessons_job(job_id: str, payload: dict) -> dict:
         append_event(job_id, "stage", f"Escribiendo lección {label}…")
         final_text = ""
         for event in run_lesson(
-            _augment_input(render_lesson_input(plan, mi, li, brief_md), payload),
+            _augment_input(
+                render_lesson_input(plan, mi, li, brief_md), payload, "lessons"
+            ),
             model=payload.get("model") or settings.openrouter_model,
             api_key=settings.openrouter_api_key,
             workspace_dir=str(settings.data_dir / "runs" / job_id / f"lesson-{mi}-{li}"),
@@ -537,8 +628,20 @@ def run_lessons_job(job_id: str, payload: dict) -> dict:
                 append_event(job_id, event.type, f"[{label}] {event.summary}", event.data)
         if not final_text.strip():
             raise RuntimeError(f"La lección {label} quedó vacía")
+        if metrics:
+            _emit_metric_warning(
+                job_id,
+                f"Extensión de {label}",
+                len(final_text.split()),
+                metrics["lesson_words"],
+            )
         artifact_id = _save_artifact(
-            job_id, payload["project_id"], "lesson_content", label, final_text
+            job_id,
+            payload["project_id"],
+            "lesson_content",
+            label,
+            final_text,
+            metadata=_duration_metadata(payload, "lessons"),
         )
         artifact_ids.append(artifact_id)
         append_event(job_id, "artifact", f"Lección {label} lista", {"artifact_id": artifact_id})
@@ -565,6 +668,14 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
         payload["project_id"], "course_plan", "ejecuta antes el Diseñador de curso"
     )
     plan = CoursePlan.model_validate_json(plan_json)
+    _emit_duration_event(job_id, payload, "slides")
+    duration_spec = _duration_spec(payload)
+    if duration_spec:
+        problems = validate_course_plan_structure(plan, duration_spec)
+        if problems:
+            raise RuntimeError(
+                "El plan seleccionado no respeta la estructura: " + "; ".join(problems)
+            )
     client = _client(job_id)
 
     with SessionLocal() as db:
@@ -628,6 +739,7 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
                 )
                 + palette_instruction,
                 payload,
+                "slides",
             ),
             client=client,
             model=payload.get("model") or settings.openrouter_model,
@@ -637,6 +749,14 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
             images_enabled=images_enabled,
         )
         deck = apply_slide_palette(deck, slide_palette)
+        spec = _duration_spec(payload)
+        if spec:
+            _emit_metric_warning(
+                job_id,
+                f"Número de slides de {title}",
+                max(1, deck.count("\n---\n")),
+                duration_metrics(spec, orientation)["slides"],
+            )
         image_records: list[dict] = []
         if images_enabled:
             slots = parse_image_slots(deck)
@@ -676,6 +796,7 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
             f"Slides — {title}",
             deck,
             metadata={
+                **_duration_metadata(payload, "slides"),
                 "orientation": orientation,
                 "width": width,
                 "height": height,
@@ -803,6 +924,8 @@ def run_script_job(job_id: str, payload: dict) -> dict:
         raise RuntimeError("Falta el artefacto 'slide_deck': genera o sube slides primero")
     lessons = _latest_by_base(payload["project_id"], "lesson_content")
     client = _client(job_id)
+    _emit_duration_event(job_id, payload, "script")
+    spec = _duration_spec(payload)
 
     artifact_ids: list[str] = []
     for base, deck in decks.items():
@@ -816,14 +939,27 @@ def run_script_job(job_id: str, payload: dict) -> dict:
             _augment_input(
                 render_script_input(deck_md, lesson_md, payload.get("project_title", "")),
                 payload,
+                "script",
             ),
             client=client,
             model=payload.get("model") or settings.openrouter_model,
             soul_md=payload.get("soul_md", ""),
             agents_md=payload.get("agents_md", ""),
         )
+        if spec:
+            _emit_metric_warning(
+                job_id,
+                f"Extensión del guion de {base}",
+                len(script_md.split()),
+                duration_metrics(spec)["narration_words"],
+            )
         artifact_id = _save_artifact(
-            job_id, payload["project_id"], "teaching_script", f"Guion — {base}", script_md
+            job_id,
+            payload["project_id"],
+            "teaching_script",
+            f"Guion — {base}",
+            script_md,
+            metadata=_duration_metadata(payload, "script"),
         )
         artifact_ids.append(artifact_id)
         append_event(job_id, "artifact", f"Guion de {base} listo", {"artifact_id": artifact_id})
@@ -842,18 +978,29 @@ def run_voice_job(job_id: str, payload: dict) -> dict:
         )
     client = _client(job_id)
     language = payload.get("project", {}).get("language", "es")
+    _emit_duration_event(job_id, payload, "voice")
+    spec = _duration_spec(payload)
 
     artifact_ids: list[str] = []
     for base, script in scripts.items():
         append_event(job_id, "stage", f"Adaptando a voz {base}…")
         script_md = (settings.data_dir / script.path).read_text(encoding="utf-8")
         voice_script = run_voice(
-            render_voice_input(script_md, base, language),
+            _augment_input(
+                render_voice_input(script_md, base, language), payload, "voice"
+            ),
             client=client,
             model=payload.get("model") or settings.openrouter_model,
             soul_md=payload.get("soul_md", ""),
             agents_md=payload.get("agents_md", ""),
         )
+        if spec:
+            _emit_metric_warning(
+                job_id,
+                f"Extensión de voz de {base}",
+                sum(len(segment.text.split()) for segment in voice_script.segments),
+                duration_metrics(spec)["narration_words"],
+            )
         artifact_id = _save_artifact(
             job_id,
             payload["project_id"],
@@ -861,6 +1008,10 @@ def run_voice_job(job_id: str, payload: dict) -> dict:
             f"Voz — {base}",
             voice_script.model_dump_json(indent=2),
             format_="json",
+            metadata={
+                **_duration_metadata(payload, "voice"),
+                "llm_model": payload.get("model") or settings.openrouter_model,
+            },
         )
         artifact_ids.append(artifact_id)
         append_event(
@@ -896,6 +1047,8 @@ def run_video_job(job_id: str, payload: dict) -> dict:
     workdir_root = settings.data_dir / "runs" / job_id
     orientation = payload.get("orientation", "horizontal")
     width, height = ((1080, 1920) if orientation == "vertical" else (1920, 1080))
+    _emit_duration_event(job_id, payload, "video")
+    spec = _duration_spec(payload)
 
     video_ids: list[str] = []
     subtitle_ids: list[str] = []
@@ -923,6 +1076,11 @@ def run_video_job(job_id: str, payload: dict) -> dict:
             image = images[min(segment.slide, len(images)) - 1]
             pairs.append((image, audio))
             srt_segments.append((segment.text, probe_duration(audio)))
+        duration = sum(value for _text, value in srt_segments)
+        target_seconds = spec.target_minutes_per_video * 60 if spec else None
+        deviation_ratio = (
+            abs(duration - target_seconds) / target_seconds if target_seconds else None
+        )
 
         append_event(
             job_id,
@@ -940,6 +1098,7 @@ def run_video_job(job_id: str, payload: dict) -> dict:
             out_mp4,
             "video",
             metadata={
+                **_duration_metadata(payload, "video"),
                 "orientation": orientation,
                 "width": width,
                 "height": height,
@@ -948,6 +1107,14 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                 ),
                 "slide_deck_id": deck.id,
                 "voice_script_id": voice_artifact.id,
+                "duration_seconds": duration,
+                "target_duration_seconds": target_seconds,
+                "duration_deviation_ratio": deviation_ratio,
+                "duration_within_tolerance": (
+                    deviation_ratio <= spec.tolerance_ratio
+                    if deviation_ratio is not None and spec is not None
+                    else None
+                ),
             },
         )
         srt_id = _save_artifact_if_changed(
@@ -957,11 +1124,28 @@ def run_video_job(job_id: str, payload: dict) -> dict:
             f"Subtítulos — {base}",
             build_srt(srt_segments),
             format_="text",
-            metadata={"voice_script_id": voice_artifact.id},
+            metadata={
+                **_duration_metadata(payload, "video"),
+                "voice_script_id": voice_artifact.id,
+                "duration_seconds": duration,
+            },
         )
         video_ids.append(video_id)
         subtitle_ids.append(srt_id)
-        duration = sum(d for _t, d in srt_segments)
+        if deviation_ratio is not None and spec and deviation_ratio > spec.tolerance_ratio:
+            append_event(
+                job_id,
+                "warning",
+                (
+                    f"Duración real de {base}: {duration / 60:.1f} min; "
+                    f"objetivo {spec.target_minutes_per_video} min (fuera de ±20 %)"
+                ),
+                {
+                    "duration_seconds": duration,
+                    "target_duration_seconds": target_seconds,
+                    "deviation_ratio": deviation_ratio,
+                },
+            )
         append_event(
             job_id,
             "artifact",
@@ -998,9 +1182,18 @@ def _with_wiki(task_input: str, project_id: str) -> str:
     return f"{task_input}\n\n{wiki}" if wiki else task_input
 
 
-def _augment_input(task_input: str, payload: dict) -> str:
+def _augment_input(task_input: str, payload: dict, agent: str | None = None) -> str:
     """Attach wiki memory and (when revising) the evaluator feedback."""
     parts = [_with_wiki(task_input, payload["project_id"])]
+    spec = _duration_spec(payload)
+    if agent and spec:
+        parts.append(
+            render_duration_constraints(
+                spec,
+                agent,
+                orientation=payload.get("orientation", "horizontal"),
+            )
+        )
     feedback = payload.get("revision_feedback")
     if feedback:
         parts.append(

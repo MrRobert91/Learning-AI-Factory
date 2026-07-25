@@ -38,7 +38,7 @@ formato objetivo, tanto en YouTube como en una pantalla móvil.
 """
 
 DEFAULT_AGENTS_MD = """\
-- Entre 8 y 18 slides por lección.
+- Ajusta el número de slides al presupuesto programático y a la orientación recibidos.
 - Títulos de slide de máximo 8 palabras.
 - Si la lección tiene código verificado, inclúyelo tal cual (no lo reescribas).
 - Idioma: el del curso.

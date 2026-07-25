@@ -83,6 +83,7 @@ def test_stage_by_stage_chain(auth_client, monkeypatch):
     ).json()
     assert plan_artifact["type"] == "course_plan"
     assert json.loads(plan_artifact["content"])["course_title"] == "Curso LLMs"
+    assert plan_artifact["metadata"]["duration_spec"]["total_videos"] == 2
 
     lessons_job = _run_agent(auth_client, project["id"], "lessons")
     assert lessons_job["status"] == "done"

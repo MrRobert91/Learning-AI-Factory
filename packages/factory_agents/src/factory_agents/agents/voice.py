@@ -32,7 +32,7 @@ como el contenido.
 """
 
 DEFAULT_AGENTS_MD = """\
-- Longitud por segmento: 40-150 palabras.
+- Ajusta la longitud total al presupuesto programático de narración recibido.
 - No inventes contenido nuevo: solo adapta lo que dice el guion docente.
 - Mantén el idioma del guion original.
 """

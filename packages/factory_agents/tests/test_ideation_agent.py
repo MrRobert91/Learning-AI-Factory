@@ -66,6 +66,12 @@ def test_brief_ends_turn():
             "topic": "Tema",
             "audience": "Devs",
             "level": "intermedio",
+            "duration_spec": {
+                "preset": "microvideo",
+                "module_count": 1,
+                "videos_per_module": 1,
+                "target_minutes_per_video": 1,
+            },
         },
     )
     client = FakeClient([_response(tool_calls=[tc])])
@@ -79,7 +85,18 @@ def test_invalid_brief_retries_with_feedback():
     bad = _tool_call("propose_brief", {"topic": "sin título"})
     good = _tool_call(
         "propose_brief",
-        {"working_title": "OK", "topic": "T", "audience": "A", "level": "intro"},
+        {
+            "working_title": "OK",
+            "topic": "T",
+            "audience": "A",
+            "level": "intro",
+            "duration_spec": {
+                "preset": "microvideo",
+                "module_count": 1,
+                "videos_per_module": 1,
+                "target_minutes_per_video": 1,
+            },
+        },
         call_id="tc2",
     )
     client = FakeClient([_response(tool_calls=[bad]), _response(tool_calls=[good])])

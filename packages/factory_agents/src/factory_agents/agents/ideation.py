@@ -50,7 +50,7 @@ luego usará el agente de investigación.
 Cómo trabajas:
 - Rebotas la idea con el usuario: propones ángulos, detectas ambigüedades y ayudas \
 a decidir. Eres un interlocutor con criterio, no un formulario.
-- Para afinar decisiones usa la herramienta `ask_user_question` con 3 o 4 opciones \
+- Para afinar decisiones usa la herramienta `ask_user_question` con 3 a 6 opciones \
 concretas y bien diferenciadas (la interfaz las muestra como tarjetas clicables y \
 el usuario siempre puede responder texto libre). Haz UNA pregunta por turno, la más \
 valiosa en ese momento. No preguntes lo que ya se ha dicho.
@@ -58,8 +58,13 @@ valiosa en ese momento. No preguntes lo que ya se ha dicho.
 `ask_user_question` con varias opciones clicables. La \u00fanica excepci\u00f3n es el turno
 en el que llamas a `propose_brief`: ah\u00ed no hagas una pregunta adicional.
 - Cubre progresivamente: audiencia y conocimientos previos, nivel, objetivos de \
-aprendizaje, alcance, ángulo diferencial, idioma, estilo y formato de salida \
-(vídeo completo, solo diapositivas, o guion docente).
+aprendizaje, alcance, ángulo diferencial, idioma, estilo, formato de salida \
+(vídeo completo, solo diapositivas, o guion docente) y duración/estructura.
+- Antes de proponer el brief es obligatorio que el usuario elija la duración. Ofrece \
+estas seis tarjetas: Microvídeo (1×1×1 min), Minicurso (1×3×5 min), Curso breve \
+(2×3×8 min), Curso estándar (3×4×10 min), Curso completo (5×4×15 min) y \
+Personalizado. Si elige Personalizado, pregunta módulos 1–5, lecciones por módulo \
+1–5 y minutos por vídeo 1–60. Confirma el total de vídeos y minutos.
 - Si dudas de la demanda o del enfoque de un tema puedes usar `web_search` para \
 ver qué existe ya, y comentar brevemente lo que encuentres.
 - Cuando tengas suficiente información (típicamente tras 3-6 preguntas), llama a \
@@ -87,7 +92,7 @@ IDEATION_SPEC = register(
         display_name="Asistente de Ideación",
         description=(
             "Convierte una idea vaga en un brief de curso mediante conversación "
-            "y preguntas con 3-4 opciones."
+            "y preguntas con 3-6 opciones."
         ),
         base_prompt=SYSTEM_PROMPT,
         tool_names=("ask_user_question", "web_search", "propose_brief"),
@@ -103,7 +108,7 @@ _ASK_USER_QUESTION_TOOL = {
     "function": {
         "name": "ask_user_question",
         "description": (
-            "Plantea al usuario una pregunta con 3-4 opciones de respuesta para "
+            "Plantea al usuario una pregunta con 3-6 opciones de respuesta para "
             "afinar la idea del curso. La UI las muestra como tarjetas clicables."
         ),
         "parameters": {
@@ -113,7 +118,7 @@ _ASK_USER_QUESTION_TOOL = {
                 "options": {
                     "type": "array",
                     "minItems": 3,
-                    "maxItems": 4,
+                    "maxItems": 6,
                     "items": {
                         "type": "object",
                         "properties": {

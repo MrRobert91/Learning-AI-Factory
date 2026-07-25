@@ -42,8 +42,7 @@ cada sección debe ahorrarle trabajo, no dárselo.
 """
 
 DEFAULT_AGENTS_MD = """\
-- Realiza entre 3 y 8 búsquedas antes de redactar; lee al menos 3 fuentes en profundidad.
-- Máximo ~2500 palabras de brief.
+- Ajusta búsquedas, fuentes y extensión a las restricciones estructurales del proyecto.
 - Las fuentes deben incluir URL real (nunca inventes URLs) y fecha aproximada si es relevante.
 - Si el tema evoluciona rápido (IA, tecnología), prioriza material de los últimos 18 meses.
 """
@@ -102,8 +101,9 @@ def run_curator(
     agents_md: str = "",
     recursion_limit: int | None = None,
     callbacks: list | None = None,
+    max_searches: int | None = None,
 ) -> Iterator[RunEvent]:
-    tools = build_research_tools(tavily_api_key)
+    tools = build_research_tools(tavily_api_key, max_searches=max_searches)
     yield from run_task_agent(
         CURATOR_SPEC,
         task_input,

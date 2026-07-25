@@ -35,7 +35,7 @@ respira entre ideas. Cada slide cuenta una historia con principio y fin.
 """
 
 DEFAULT_AGENTS_MD = """\
-- Entre 60 y 180 palabras de guion por slide (≈30-90 segundos hablados).
+- Ajusta la extensión total al presupuesto programático de narración recibido.
 - Nada de acotaciones escénicas ni marcas tipo [pausa]: solo el texto que se dice.
 - Evita muletillas escritas ("como podemos ver", "en esta slide").
 - Mantén la terminología exacta de las slides y lecciones.

@@ -39,6 +39,7 @@ class Project(Base):
     language: Mapped[str] = mapped_column(String(10), default="es", nullable=False)
     style: Mapped[str] = mapped_column(Text, default="", nullable=False)
     output_format: Mapped[str] = mapped_column(String(50), default="", nullable=False)
+    duration_spec_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="draft", nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
@@ -47,6 +48,18 @@ class Project(Base):
     )
 
     owner: Mapped[User] = relationship(back_populates="projects")
+
+    @property
+    def duration_spec(self) -> dict | None:
+        import json
+
+        if not self.duration_spec_json:
+            return None
+        try:
+            value = json.loads(self.duration_spec_json)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        return value if isinstance(value, dict) else None
 
 
 class IdeationSession(Base):

@@ -103,6 +103,12 @@ export default function ProjectDetailPage() {
               <span>Nivel: {LEVEL_LABELS[project.level] ?? project.level}</span>
             )}
             <span>Idioma: {project.language === "en" ? "Inglés" : "Español"}</span>
+            {project.duration_spec && (
+              <span>
+                {project.duration_spec.total_videos} vídeos ·{" "}
+                {project.duration_spec.total_minutes} min
+              </span>
+            )}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -122,6 +128,23 @@ export default function ProjectDetailPage() {
         <p className="mb-4 max-w-3xl text-sm leading-relaxed text-zinc-400">
           {project.topic}
         </p>
+      )}
+
+      {!project.duration_spec && (
+        <button
+          type="button"
+          onClick={() => setShowSettings(true)}
+          className="mb-6 w-full rounded-xl border border-amber-400/30 bg-amber-500/[0.07] p-4 text-left"
+        >
+          <span className="block text-sm font-semibold text-amber-200">
+            Completa la duración y estructura del curso
+          </span>
+          <span className="mt-1 block text-sm text-amber-100/70">
+            Este proyecto es anterior a la configuración estructurada. Elige un
+            preset o valores personalizados para desbloquear planner y las fases
+            posteriores.
+          </span>
+        </button>
       )}
 
       {showSettings && (
@@ -150,7 +173,10 @@ export default function ProjectDetailPage() {
         </section>
       )}
 
-      <FactoryPanel projectId={id} />
+      <FactoryPanel
+        projectId={id}
+        durationConfigured={project.duration_spec !== null}
+      />
       <WikiPanel projectId={id} />
       <ConfirmDialog
         open={confirmDelete}

@@ -45,6 +45,10 @@ docker compose up --build                # stack completo (2 contenedores)
   `interrupt()` en nodos separados del nodo de agente (al reanudar, LangGraph
   re-ejecuta el nodo desde el principio — nunca pongas interrupt en el mismo
   nodo que una llamada cara).
+- **Duración de curso**: `duration_spec` vive en brief/proyecto, fija módulos,
+  lecciones y minutos, y se inyecta como presupuesto derivado en Curator,
+  Planner, Lessons, Slides, Script y Voice. Los proyectos históricos sin ella
+  no pueden iniciar `planner` ni fases posteriores.
 - **Editor de workflows**: los workflows editables empiezan siempre por
   `curator`. La compatibilidad entre pasos depende de los artefactos disponibles
   y se define en `apps/web/src/lib/workflowRules.ts`; debe mantenerse alineada

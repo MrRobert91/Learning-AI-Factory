@@ -46,6 +46,12 @@ def test_ideation_flow(auth_client, monkeypatch):
                     "language": "es",
                     "style": "práctico",
                     "output_format": "video",
+                    "duration_spec": {
+                        "preset": "short",
+                        "module_count": 2,
+                        "videos_per_module": 3,
+                        "target_minutes_per_video": 8,
+                    },
                     "objectives": ["Entender qubits"],
                     "scope_outline": ["Fundamentos", "Algoritmos"],
                     "differential_angle": "Con código real",
@@ -92,6 +98,7 @@ def test_ideation_flow(auth_client, monkeypatch):
     project = resp.json()
     assert project["title"] == "Cuántica para devs"
     assert project["audience"] == "Desarrolladores"
+    assert project["duration_spec"]["total_videos"] == 6
 
     # Session is now finalized and refuses more messages
     resp = auth_client.post(f"/api/ideation/{session_id}/messages", json={"content": "hola"})
