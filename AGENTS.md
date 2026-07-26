@@ -49,6 +49,11 @@ docker compose up --build                # stack completo (2 contenedores)
   lecciones y minutos, y se inyecta como presupuesto derivado en Curator,
   Planner, Lessons, Slides, Script y Voice. Los proyectos históricos sin ella
   no pueden iniciar `planner` ni fases posteriores.
+- **Fuentes de ideación**: cada URL/documento se captura una vez, se extrae en
+  backend y conserva hash + IDs estables al pasar de sesión a proyecto.
+  `provided_only` no expone herramientas web y obliga a citas
+  `[source:<id> <ubicación>]`; Curator reutiliza el mismo corpus y política sin
+  volcar documentos completos al prompt.
 - **Editor de workflows**: los workflows editables empiezan siempre por
   `curator`. La compatibilidad entre pasos depende de los artefactos disponibles
   y se define en `apps/web/src/lib/workflowRules.ts`; debe mantenerse alineada

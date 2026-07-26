@@ -19,9 +19,14 @@ from pydantic import ValidationError
 
 from factory_agents.contracts import CourseIdeaBrief
 from factory_agents.runtime import AgentSpec, compose_system_prompt, register
+from factory_agents.tools.sources import (
+    list_source_documents,
+    read_source_document,
+    search_source_documents,
+)
 from factory_agents.tools.web_search import format_results, web_search
 
-EventKind = Literal["text", "question", "search", "brief"]
+EventKind = Literal["text", "question", "search", "source", "brief"]
 
 
 @dataclass
@@ -67,6 +72,8 @@ Personalizado. Si elige Personalizado, pregunta módulos 1–5, lecciones por m�
 1–5 y minutos por vídeo 1–60. Confirma el total de vídeos y minutos.
 - Si dudas de la demanda o del enfoque de un tema puedes usar `web_search` para \
 ver qué existe ya, y comentar brevemente lo que encuentres.
+- Respeta la política de investigación indicada al final del prompt. Las fuentes \
+aportadas se citan con su ID estable y ubicación; nunca inventes contenido ausente.
 - Cuando tengas suficiente información (típicamente tras 3-6 preguntas), llama a \
 `propose_brief` con el brief completo. No alargues la conversación \
 innecesariamente. Tras proponer el brief, el usuario puede pedir cambios: si lo \
@@ -95,7 +102,14 @@ IDEATION_SPEC = register(
             "y preguntas con 3-6 opciones."
         ),
         base_prompt=SYSTEM_PROMPT,
-        tool_names=("ask_user_question", "web_search", "propose_brief"),
+        tool_names=(
+            "ask_user_question",
+            "list_sources",
+            "search_sources",
+            "read_source",
+            "web_search",
+            "propose_brief",
+        ),
         produces=("course_idea_brief",),
         default_soul_md=DEFAULT_SOUL,
         default_agents_md=DEFAULT_AGENTS_MD,
@@ -167,6 +181,44 @@ _PROPOSE_BRIEF_TOOL = {
     },
 }
 
+_LIST_SOURCES_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "list_sources",
+        "description": "Lista las fuentes aportadas y sus IDs estables.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+_SEARCH_SOURCES_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_sources",
+        "description": "Busca extractos relevantes dentro de las fuentes aportadas.",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+    },
+}
+
+_READ_SOURCE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_source",
+        "description": "Lee una fuente o una ubicación concreta sin volcar todo el corpus.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "source_id": {"type": "string"},
+                "location": {"type": "string"},
+            },
+            "required": ["source_id"],
+        },
+    },
+}
+
 TOOLS = [_ASK_USER_QUESTION_TOOL, _WEB_SEARCH_TOOL, _PROPOSE_BRIEF_TOOL]
 
 MAX_TOOL_ROUNDS = 4
@@ -214,6 +266,11 @@ def run_ideation_turn(
     soul_md: str = "",
     agents_md: str = "",
     on_progress: Callable[[str, str, dict[str, Any]], None] | None = None,
+    research_mode: Literal[
+        "provided_only", "provided_plus_web", "web_only"
+    ] = "web_only",
+    source_documents: list[dict[str, Any]] | None = None,
+    max_source_queries: int | None = None,
 ) -> list[AgentEvent]:
     """Run one agent turn. Returns the events produced (to persist and render)."""
     system = compose_system_prompt(
@@ -221,10 +278,42 @@ def run_ideation_turn(
         soul_md or DEFAULT_SOUL,
         agents_md or DEFAULT_AGENTS_MD,
     )
+    documents = source_documents or []
+    ready_ids = [str(document.get("id")) for document in documents]
+    policy_lines = [
+        "# Política de investigación congelada",
+        f"- Modo: {research_mode}",
+        f"- IDs de fuentes disponibles: {', '.join(ready_ids) if ready_ids else 'ninguna'}",
+    ]
+    if research_mode == "provided_only":
+        policy_lines.extend(
+            [
+                "- No tienes herramientas web y no debes usar conocimiento factual externo.",
+                "- Toda afirmación factual debe citar `[source:<id> <ubicación>]`.",
+                "- Declara literalmente `no cubierto por las fuentes` cuando falte información.",
+            ]
+        )
+    elif research_mode == "provided_plus_web":
+        policy_lines.append(
+            "- Distingue claramente las fuentes aportadas de cualquier fuente web externa."
+        )
+    else:
+        policy_lines.append("- La investigación web libre conserva el flujo habitual.")
+    system += "\n\n" + "\n".join(policy_lines)
+    available_tools = [_ASK_USER_QUESTION_TOOL, _PROPOSE_BRIEF_TOOL]
+    if research_mode != "provided_only":
+        available_tools.insert(1, _WEB_SEARCH_TOOL)
+    if research_mode != "web_only" and documents:
+        available_tools[1:1] = [
+            _LIST_SOURCES_TOOL,
+            _SEARCH_SOURCES_TOOL,
+            _READ_SOURCE_TOOL,
+        ]
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
     messages += _render_history(history)
 
     events: list[AgentEvent] = []
+    source_queries_used = 0
     if on_progress:
         on_progress(
             "stage",
@@ -241,7 +330,7 @@ def run_ideation_turn(
         response = client.chat.completions.create(
             model=model,
             messages=messages,
-            tools=TOOLS,
+            tools=available_tools,
             temperature=0.7,
             tool_choice="required",
         )
@@ -283,6 +372,14 @@ def run_ideation_turn(
                 labels = {
                     "ask_user_question": "Preparando la pregunta más útil para completar el brief.",
                     "web_search": f"Consultando fuentes sobre: {args.get('query', '')}",
+                    "list_sources": "Revisando el corpus aportado por el usuario.",
+                    "search_sources": (
+                        f"Buscando en las fuentes: {args.get('query', '')}"
+                    ),
+                    "read_source": (
+                        f"Leyendo la fuente {args.get('source_id', '')} "
+                        f"{args.get('location', '')}".strip()
+                    ),
                     "propose_brief": "Construyendo y validando el brief estructurado.",
                 }
                 on_progress(
@@ -358,7 +455,65 @@ def run_ideation_turn(
                         "Búsqueda completada; contrastando los resultados con la idea del curso.",
                         {"tool": name, "query": query},
                     )
-            else:
+                continue
+
+            if name in {"list_sources", "search_sources", "read_source"}:
+                source_queries_used += 1
+                if (
+                    max_source_queries is not None
+                    and source_queries_used > max_source_queries
+                ):
+                    result = (
+                        f"(límite de {max_source_queries} consultas al corpus alcanzado; "
+                        "continúa con los extractos ya consultados)"
+                    )
+                elif name == "list_sources":
+                    result = list_source_documents(documents)
+                elif name == "search_sources":
+                    result = search_source_documents(
+                        documents, str(args.get("query") or "")
+                    )
+                else:
+                    result = read_source_document(
+                        documents,
+                        str(args.get("source_id") or ""),
+                        str(args.get("location") or "") or None,
+                    )
+                events.append(
+                    AgentEvent(
+                        kind="source",
+                        content=result,
+                        payload={
+                            "tool": name,
+                            "query": args.get("query"),
+                            "source_id": args.get("source_id"),
+                            "location": args.get("location"),
+                        },
+                    )
+                )
+                messages.append(
+                    {"role": "tool", "tool_call_id": tc.id, "content": result}
+                )
+                if on_progress:
+                    on_progress(
+                        "tool_result",
+                        "Consulta al corpus completada con referencias trazables.",
+                        {
+                            "tool": name,
+                            "source_id": args.get("source_id"),
+                            "query": args.get("query"),
+                        },
+                    )
+                continue
+
+            if name not in {
+                "ask_user_question",
+                "propose_brief",
+                "web_search",
+                "list_sources",
+                "search_sources",
+                "read_source",
+            }:
                 messages.append(
                     {
                         "role": "tool",

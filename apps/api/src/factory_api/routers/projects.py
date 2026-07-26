@@ -1,4 +1,5 @@
 import json
+import shutil
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -6,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from factory_api.auth import CurrentUser
+from factory_api.config import get_settings
 from factory_api.db import get_db
 from factory_api.models import Project
 from factory_api.schemas import ProjectCreate, ProjectRead, ProjectUpdate
@@ -74,5 +76,12 @@ def update_project(project_id: str, body: ProjectUpdate, user: CurrentUser, db: 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_project(project_id: str, user: CurrentUser, db: DB):
     project = _get_owned_project(db, user.id, project_id)
+    root = get_settings().data_dir.resolve()
+    for source in project.sources:
+        if not source.path:
+            continue
+        path = (get_settings().data_dir / source.path).resolve()
+        if path.is_relative_to(root):
+            shutil.rmtree(path.parent, ignore_errors=True)
     db.delete(project)
     db.commit()

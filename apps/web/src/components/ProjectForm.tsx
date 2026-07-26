@@ -69,6 +69,7 @@ export default function ProjectForm({ initial, submitLabel, onSubmit }: Props) {
     style: initial?.style ?? "",
     output_format: initial?.output_format ?? "video",
     duration_spec: initial?.duration_spec ?? durationSpec("standard"),
+    research_mode: initial?.research_mode ?? "web_only",
   });
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
