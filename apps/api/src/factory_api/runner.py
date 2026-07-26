@@ -9,6 +9,7 @@ by appending JobEvents, which the SSE endpoint streams to the UI.
 import asyncio
 import json
 import logging
+import shutil
 import uuid
 from datetime import UTC, datetime
 
@@ -654,6 +655,7 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
     from factory_agents.agents.slides import render_slides_input, run_slides
     from factory_agents.contracts import CoursePlan
     from factory_agents.tools.images import generate_deck_images, parse_image_slots
+    from factory_agents.tools.logos import apply_slide_logo
     from factory_agents.tools.marp import marp_available, render_deck
     from factory_agents.tools.palette import (
         apply_slide_palette,
@@ -708,6 +710,17 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
     image_model = payload.get("image_model", "bytedance-seed/seedream-4.5")
     image_style = payload.get("image_style", "editorial_vector")
     image_style_prompt = payload.get("image_style_prompt", "")
+    slide_logo = payload.get("slide_logo")
+    logo_source = None
+    if isinstance(slide_logo, dict):
+        from factory_api.logo_assets import stored_logo_path
+
+        logo_source = stored_logo_path(str(slide_logo.get("path", "")))
+        if logo_source is None:
+            raise RuntimeError(
+                "El logo congelado del perfil ya no est\u00e1 disponible; "
+                "selecciona otro candidato antes de ejecutar Slides"
+            )
     slide_palette = normalize_palette(payload.get("slide_palette"))
     palette_name = palette_preset_name(slide_palette)
     contrast_warnings = palette_warnings(slide_palette)
@@ -758,6 +771,9 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
                 duration_metrics(spec, orientation)["slides"],
             )
         image_records: list[dict] = []
+        asset_dir_name = f"slide-assets-{job_id}-{uuid.uuid4().hex[:8]}"
+        storage_asset_dir = f"artifacts/{payload['project_id']}/{asset_dir_name}"
+        output_dir = settings.data_dir / storage_asset_dir
         if images_enabled:
             slots = parse_image_slots(deck)
             if not slots:
@@ -767,8 +783,6 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
                     f"El agente no seleccionó imágenes para {title}",
                     {"lesson": title},
                 )
-            asset_dir_name = f"slide-assets-{job_id}-{uuid.uuid4().hex[:8]}"
-            storage_asset_dir = f"artifacts/{payload['project_id']}/{asset_dir_name}"
             deck, image_records = generate_deck_images(
                 deck,
                 api_key=settings.openrouter_api_key,
@@ -777,12 +791,76 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
                 custom_style_prompt=image_style_prompt,
                 orientation=orientation,
                 deck_identity=f"{plan.course_title}:{title}",
-                output_dir=settings.data_dir / storage_asset_dir,
+                output_dir=output_dir,
                 markdown_asset_dir=asset_dir_name,
                 storage_asset_dir=storage_asset_dir,
                 on_event=lambda event_type, summary, data, lesson_title=title: append_event(
                     job_id, event_type, f"[{lesson_title}] {summary}", data
                 ),
+            )
+        logo_record = None
+        if logo_source is not None and isinstance(slide_logo, dict):
+            output_dir.mkdir(parents=True, exist_ok=True)
+            logo_filename = f"brand-logo{logo_source.suffix.lower()}"
+            logo_target = output_dir / logo_filename
+            shutil.copy2(logo_source, logo_target)
+            markdown_path = f"{asset_dir_name}/{logo_filename}"
+            configured_margin = int(slide_logo.get("margin_px", 32))
+            configured_placement = str(slide_logo.get("placement", "top-right"))
+            safe_margin = (
+                72
+                if orientation == "vertical" and configured_placement.startswith("bottom")
+                else 48
+                if configured_placement.startswith("bottom")
+                else 36
+                if orientation == "vertical"
+                else 24
+            )
+            logo_record = {
+                "source_logo_id": slide_logo.get("id"),
+                "source": slide_logo.get("source"),
+                "name": slide_logo.get("name"),
+                "media_type": slide_logo.get("media_type"),
+                "width": slide_logo.get("width"),
+                "height": slide_logo.get("height"),
+                "sha256": slide_logo.get("sha256"),
+                "prompt": slide_logo.get("prompt"),
+                "model": slide_logo.get("model"),
+                "seed": slide_logo.get("seed"),
+                "cost_usd": slide_logo.get("cost_usd"),
+                "profile_id": payload.get("profile_id"),
+                "profile_version": payload.get("profile_version"),
+                "mode": slide_logo.get("mode"),
+                "placement": configured_placement,
+                "size": slide_logo.get("size", "small"),
+                "configured_margin_px": configured_margin,
+                "margin_px": max(configured_margin, safe_margin),
+                "opacity": float(slide_logo.get("opacity", 1.0)),
+                "visibility": slide_logo.get("visibility")
+                or {"cover": True, "content": True, "summary": True},
+                "path": f"{storage_asset_dir}/{logo_filename}",
+                "markdown_path": markdown_path,
+            }
+            deck = apply_slide_logo(
+                deck,
+                markdown_path,
+                orientation=orientation,
+                placement=logo_record["placement"],
+                size=logo_record["size"],
+                margin_px=logo_record["margin_px"],
+                opacity=logo_record["opacity"],
+                visibility=logo_record["visibility"],
+                alt=logo_record.get("name") or "Logo de marca",
+            )
+            append_event(
+                job_id,
+                "stage",
+                f"Logo congelado aplicado a {title}",
+                {
+                    "lesson": title,
+                    "logo_id": logo_record["source_logo_id"],
+                    "profile_version": payload.get("profile_version"),
+                },
             )
         generation_cost = sum(
             float(item["cost_usd"])
@@ -805,6 +883,7 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
                 "palette_contrast": palette_contrast(slide_palette),
                 "palette_warnings": contrast_warnings,
                 "images": image_records,
+                "logo": logo_record,
                 "image_generation": {
                     "enabled": images_enabled,
                     "model": image_model if images_enabled else None,

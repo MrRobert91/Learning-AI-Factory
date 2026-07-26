@@ -149,6 +149,31 @@ export interface PaletteOptions {
   presets: { id: string; label: string; colors: SlidePalette }[];
 }
 
+export interface LogoCandidate {
+  id: string;
+  source: "uploaded" | "generated";
+  name: string;
+  path: string;
+  thumbnail_path: string;
+  media_type: string;
+  width: number;
+  height: number;
+  sha256: string;
+  prompt?: string | null;
+  model?: string | null;
+  seed?: number | null;
+  cost_usd?: number | null;
+  created_at: string;
+  status: "available" | "error";
+  error?: string | null;
+}
+
+export interface LogoVisibility {
+  cover: boolean;
+  content: boolean;
+  summary: boolean;
+}
+
 export interface AgentProfile {
   id: string;
   agent_type: string;
@@ -165,6 +190,14 @@ export interface AgentProfile {
   max_automatic_regenerations: number;
   human_review_enabled: boolean;
   slide_palette: SlidePalette | null;
+  logo_mode: "none" | "uploaded" | "generated" | null;
+  active_logo_id: string | null;
+  logo_placement: "top-left" | "top-right" | "bottom-left" | "bottom-right" | null;
+  logo_size: "small" | "medium" | "large" | null;
+  logo_margin_px: number | null;
+  logo_opacity: number | null;
+  logo_visibility: LogoVisibility | null;
+  logo_candidates: LogoCandidate[] | null;
   version: number;
   is_default: boolean;
   created_at: string;
@@ -185,6 +218,14 @@ export interface ProfileVersion {
   max_automatic_regenerations: number;
   human_review_enabled: boolean;
   slide_palette: SlidePalette | null;
+  logo_mode: "none" | "uploaded" | "generated" | null;
+  active_logo_id: string | null;
+  logo_placement: "top-left" | "top-right" | "bottom-left" | "bottom-right" | null;
+  logo_size: "small" | "medium" | "large" | null;
+  logo_margin_px: number | null;
+  logo_opacity: number | null;
+  logo_visibility: LogoVisibility | null;
+  logo_candidates: LogoCandidate[] | null;
   note: string;
   created_at: string;
 }
@@ -410,6 +451,13 @@ export const api = {
       max_automatic_regenerations?: number;
       human_review_enabled?: boolean;
       slide_palette?: SlidePalette;
+      logo_mode?: "none" | "uploaded" | "generated";
+      active_logo_id?: string | null;
+      logo_placement?: "top-left" | "top-right" | "bottom-left" | "bottom-right";
+      logo_size?: "small" | "medium" | "large";
+      logo_margin_px?: number;
+      logo_opacity?: number;
+      logo_visibility?: LogoVisibility;
     },
   ) =>
     request<AgentProfile>(`/api/agents/${agentType}/profiles`, {
@@ -437,6 +485,13 @@ export const api = {
         | "max_automatic_regenerations"
         | "human_review_enabled"
         | "slide_palette"
+        | "logo_mode"
+        | "active_logo_id"
+        | "logo_placement"
+        | "logo_size"
+        | "logo_margin_px"
+        | "logo_opacity"
+        | "logo_visibility"
       >
     > & { model?: string; note?: string },
   ) =>
@@ -446,6 +501,32 @@ export const api = {
     }),
   deleteProfile: (id: string) =>
     request<void>(`/api/agents/profiles/${id}`, { method: "DELETE" }),
+  uploadProfileLogo: async (id: string, file: File, name = "") => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("name", name);
+    const response = await fetch(`/api/agents/profiles/${id}/logos/upload`, {
+      method: "POST",
+      body: form,
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new ApiError(response.status, body.detail ?? response.statusText);
+    }
+    return response.json() as Promise<AgentProfile>;
+  },
+  generateProfileLogo: (id: string, prompt: string, model: string, name = "") =>
+    request<AgentProfile>(`/api/agents/profiles/${id}/logos/generate`, {
+      method: "POST",
+      body: JSON.stringify({ prompt, model, name }),
+    }),
+  deleteProfileLogo: (id: string, logoId: string) =>
+    request<AgentProfile>(
+      `/api/agents/profiles/${id}/logos/${encodeURIComponent(logoId)}`,
+      { method: "DELETE" },
+    ),
+  profileLogoUrl: (id: string, logoId: string, thumbnail = false) =>
+    `/api/agents/profiles/${id}/logos/${encodeURIComponent(logoId)}${thumbnail ? "?thumbnail=true" : ""}`,
   createAgentRun: (projectId: string, agent: string, profileId?: string) =>
     request<Job>(`/api/projects/${projectId}/agent-runs`, {
       method: "POST",

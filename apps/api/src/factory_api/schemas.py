@@ -87,6 +87,37 @@ class AgentSpecRead(BaseModel):
     produces: list[str]
 
 
+class LogoCandidateRead(BaseModel):
+    id: str
+    source: Literal["uploaded", "generated"]
+    name: str
+    path: str
+    thumbnail_path: str
+    media_type: str
+    width: int
+    height: int
+    sha256: str
+    prompt: str | None = None
+    model: str | None = None
+    seed: int | None = None
+    cost_usd: float | None = None
+    created_at: datetime
+    status: Literal["available", "error"] = "available"
+    error: str | None = None
+
+
+class LogoVisibility(BaseModel):
+    cover: bool = True
+    content: bool = True
+    summary: bool = True
+
+
+class LogoGenerateRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=2000)
+    model: str | None = None
+    name: str = Field(default="", max_length=120)
+
+
 class ProfileCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     soul_md: str = ""
@@ -101,6 +132,15 @@ class ProfileCreate(BaseModel):
     max_automatic_regenerations: int | None = Field(default=None, ge=0, le=5)
     human_review_enabled: bool | None = None
     slide_palette: dict[str, str] | None = None
+    logo_mode: Literal["none", "uploaded", "generated"] | None = None
+    active_logo_id: str | None = None
+    logo_placement: Literal[
+        "top-left", "top-right", "bottom-left", "bottom-right"
+    ] | None = None
+    logo_size: Literal["small", "medium", "large"] | None = None
+    logo_margin_px: int | None = Field(default=None, ge=0, le=128)
+    logo_opacity: float | None = Field(default=None, ge=0, le=1)
+    logo_visibility: LogoVisibility | None = None
 
 
 class ProfileUpdate(BaseModel):
@@ -117,6 +157,15 @@ class ProfileUpdate(BaseModel):
     max_automatic_regenerations: int | None = Field(default=None, ge=0, le=5)
     human_review_enabled: bool | None = None
     slide_palette: dict[str, str] | None = None
+    logo_mode: Literal["none", "uploaded", "generated"] | None = None
+    active_logo_id: str | None = None
+    logo_placement: Literal[
+        "top-left", "top-right", "bottom-left", "bottom-right"
+    ] | None = None
+    logo_size: Literal["small", "medium", "large"] | None = None
+    logo_margin_px: int | None = Field(default=None, ge=0, le=128)
+    logo_opacity: float | None = Field(default=None, ge=0, le=1)
+    logo_visibility: LogoVisibility | None = None
     is_default: bool | None = None
     note: str = ""
 
@@ -137,6 +186,16 @@ class ProfileRead(BaseModel):
     max_automatic_regenerations: int
     human_review_enabled: bool
     slide_palette: dict[str, str] | None = None
+    logo_mode: Literal["none", "uploaded", "generated"] | None = None
+    active_logo_id: str | None = None
+    logo_placement: Literal[
+        "top-left", "top-right", "bottom-left", "bottom-right"
+    ] | None = None
+    logo_size: Literal["small", "medium", "large"] | None = None
+    logo_margin_px: int | None = None
+    logo_opacity: float | None = None
+    logo_visibility: LogoVisibility | None = None
+    logo_candidates: list[LogoCandidateRead] | None = None
     version: int
     is_default: bool
     created_at: datetime
@@ -157,6 +216,16 @@ class ProfileVersionRead(BaseModel):
     max_automatic_regenerations: int
     human_review_enabled: bool
     slide_palette: dict[str, str] | None = None
+    logo_mode: Literal["none", "uploaded", "generated"] | None = None
+    active_logo_id: str | None = None
+    logo_placement: Literal[
+        "top-left", "top-right", "bottom-left", "bottom-right"
+    ] | None = None
+    logo_size: Literal["small", "medium", "large"] | None = None
+    logo_margin_px: int | None = None
+    logo_opacity: float | None = None
+    logo_visibility: LogoVisibility | None = None
+    logo_candidates: list[LogoCandidateRead] | None = None
     note: str
     created_at: datetime
 

@@ -224,6 +224,9 @@ export default function ProfilesPage() {
                           Aprobación humana
                         </span>
                       )}
+                      {p.logo_mode && p.logo_mode !== "none" && (
+                        <span className="badge-info shrink-0">Con logo</span>
+                      )}
                       <span className="shrink-0 text-xs text-zinc-500">
                         v{p.version}
                       </span>

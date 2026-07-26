@@ -74,6 +74,9 @@ docker compose up --build                # stack completo (2 contenedores)
   aplican mediante el bloque CSS canónico de `tools/palette.py` dentro del
   Markdown Marp. Cambiar una paleta crea nuevas versiones autosuficientes,
   clona assets y vuelve a renderizar sin llamar a LLM ni regenerar imágenes.
+- **Logos de slides**: la biblioteca y presentación viven en el perfil
+  versionado. El run copia el logo activo a cada versión del `slide_deck` y lo
+  inyecta con `tools/logos.py`; nunca lo regenera durante la producción.
 
 ## Convenciones
 

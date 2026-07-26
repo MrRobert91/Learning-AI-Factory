@@ -123,8 +123,30 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
             "human_review_enabled": False,
             "evaluator_model": evaluator_model,
             "slide_palette": dict(DEFAULT_SLIDE_PALETTE),
+            "slide_logo": None,
         }
     config = json.loads(profile.config_json or "{}")
+    active_logo_id = config.get("active_logo_id")
+    logo_candidate = next(
+        (
+            item
+            for item in config.get("logo_candidates", [])
+            if item.get("id") == active_logo_id and item.get("status") == "available"
+        ),
+        None,
+    )
+    slide_logo = None
+    if config.get("logo_mode", "none") != "none" and logo_candidate is not None:
+        slide_logo = {
+            **logo_candidate,
+            "mode": config.get("logo_mode"),
+            "placement": config.get("logo_placement", "top-right"),
+            "size": config.get("logo_size", "small"),
+            "margin_px": int(config.get("logo_margin_px", 32)),
+            "opacity": float(config.get("logo_opacity", 1.0)),
+            "visibility": config.get("logo_visibility")
+            or {"cover": True, "content": True, "summary": True},
+        }
     return {
         "soul_md": profile.soul_md,
         "agents_md": profile.agents_md,
@@ -143,6 +165,7 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
         "human_review_enabled": bool(config.get("human_review_enabled", False)),
         "evaluator_model": evaluator_model,
         "slide_palette": normalize_palette(config.get("slide_palette")),
+        "slide_logo": slide_logo,
     }
 
 

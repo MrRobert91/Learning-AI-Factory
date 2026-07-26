@@ -7,6 +7,7 @@ import {
   api,
   type AgentProfile,
   type ImageOptions,
+  type LogoVisibility,
   type PaletteOptions,
   type ProfileVersion,
   type SlidePalette,
@@ -43,6 +44,23 @@ export default function ProfileEditorPage() {
   const [paletteOptions, setPaletteOptions] = useState<PaletteOptions | null>(null);
   const [slidePalette, setSlidePalette] = useState<SlidePalette | null>(null);
   const [paletteWarningsAccepted, setPaletteWarningsAccepted] = useState(false);
+  const [logoMode, setLogoMode] = useState<"none" | "uploaded" | "generated">("none");
+  const [activeLogoId, setActiveLogoId] = useState<string | null>(null);
+  const [logoPlacement, setLogoPlacement] = useState<
+    "top-left" | "top-right" | "bottom-left" | "bottom-right"
+  >("top-right");
+  const [logoSize, setLogoSize] = useState<"small" | "medium" | "large">("small");
+  const [logoMarginPx, setLogoMarginPx] = useState(32);
+  const [logoOpacity, setLogoOpacity] = useState(1);
+  const [logoVisibility, setLogoVisibility] = useState<LogoVisibility>({
+    cover: true,
+    content: true,
+    summary: true,
+  });
+  const [logoName, setLogoName] = useState("");
+  const [logoPrompt, setLogoPrompt] = useState("");
+  const [logoModel, setLogoModel] = useState("");
+  const [logoBusy, setLogoBusy] = useState(false);
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -72,6 +90,16 @@ export default function ProfileEditorPage() {
     setHumanReviewEnabled(p.human_review_enabled);
     setPaletteOptions(palettes);
     setSlidePalette(p.slide_palette ?? palettes.default);
+    setLogoMode(p.logo_mode ?? "none");
+    setActiveLogoId(p.active_logo_id);
+    setLogoPlacement(p.logo_placement ?? "top-right");
+    setLogoSize(p.logo_size ?? "small");
+    setLogoMarginPx(p.logo_margin_px ?? 32);
+    setLogoOpacity(p.logo_opacity ?? 1);
+    setLogoVisibility(
+      p.logo_visibility ?? { cover: true, content: true, summary: true },
+    );
+    setLogoModel((current) => current || p.image_model || options.default_model);
     setPaletteWarningsAccepted(false);
     setVersions(await api.getProfileVersions(id));
   }
@@ -99,6 +127,13 @@ export default function ProfileEditorPage() {
       max_automatic_regenerations?: number;
       human_review_enabled?: boolean;
       slide_palette?: SlidePalette;
+      logo_mode?: "none" | "uploaded" | "generated";
+      active_logo_id?: string | null;
+      logo_placement?: "top-left" | "top-right" | "bottom-left" | "bottom-right";
+      logo_size?: "small" | "medium" | "large";
+      logo_margin_px?: number;
+      logo_opacity?: number;
+      logo_visibility?: LogoVisibility;
       note?: string;
     } = {};
     if (name !== profile.name) patch.name = name;
@@ -143,6 +178,30 @@ export default function ProfileEditorPage() {
     ) {
       patch.slide_palette = slidePalette;
     }
+    if (profile.logo_mode !== null && logoMode !== profile.logo_mode) {
+      patch.logo_mode = logoMode;
+    }
+    if (profile.logo_mode !== null && activeLogoId !== profile.active_logo_id) {
+      patch.active_logo_id = activeLogoId;
+    }
+    if (profile.logo_placement !== null && logoPlacement !== profile.logo_placement) {
+      patch.logo_placement = logoPlacement;
+    }
+    if (profile.logo_size !== null && logoSize !== profile.logo_size) {
+      patch.logo_size = logoSize;
+    }
+    if (profile.logo_margin_px !== null && logoMarginPx !== profile.logo_margin_px) {
+      patch.logo_margin_px = logoMarginPx;
+    }
+    if (profile.logo_opacity !== null && logoOpacity !== profile.logo_opacity) {
+      patch.logo_opacity = logoOpacity;
+    }
+    if (
+      profile.logo_visibility !== null &&
+      JSON.stringify(logoVisibility) !== JSON.stringify(profile.logo_visibility)
+    ) {
+      patch.logo_visibility = logoVisibility;
+    }
     return patch;
   }
 
@@ -161,7 +220,14 @@ export default function ProfileEditorPage() {
       patch.automatic_review_enabled !== undefined ||
       patch.max_automatic_regenerations !== undefined ||
       patch.human_review_enabled !== undefined ||
-      patch.slide_palette !== undefined);
+      patch.slide_palette !== undefined ||
+      patch.logo_mode !== undefined ||
+      patch.active_logo_id !== undefined ||
+      patch.logo_placement !== undefined ||
+      patch.logo_size !== undefined ||
+      patch.logo_margin_px !== undefined ||
+      patch.logo_opacity !== undefined ||
+      patch.logo_visibility !== undefined);
   const paletteChanged = patch?.slide_palette !== undefined;
   const currentPaletteWarnings = slidePalette ? paletteWarnings(slidePalette) : [];
 
@@ -180,6 +246,10 @@ export default function ProfileEditorPage() {
     }
     if (paletteChanged && currentPaletteWarnings.length > 0 && !paletteWarningsAccepted) {
       setError("Confirma las advertencias de contraste antes de guardar la paleta.");
+      return;
+    }
+    if (logoMode !== "none" && !activeLogoId) {
+      setError("Selecciona un logo activo o desactiva el logo.");
       return;
     }
     setSaving(true);
@@ -208,6 +278,52 @@ export default function ProfileEditorPage() {
     router.push("/profiles");
   }
 
+  async function uploadLogo(file: File) {
+    setLogoBusy(true);
+    setError(null);
+    try {
+      await api.uploadProfileLogo(id, file, logoName);
+      setLogoName("");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo subir el logo");
+    } finally {
+      setLogoBusy(false);
+    }
+  }
+
+  async function generateLogo() {
+    if (!logoPrompt.trim()) {
+      setError("Describe el logo que quieres generar.");
+      return;
+    }
+    setLogoBusy(true);
+    setError(null);
+    try {
+      await api.generateProfileLogo(id, logoPrompt.trim(), logoModel, logoName);
+      setLogoPrompt("");
+      setLogoName("");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo generar el logo");
+    } finally {
+      setLogoBusy(false);
+    }
+  }
+
+  async function deleteLogo(logoId: string) {
+    setLogoBusy(true);
+    setError(null);
+    try {
+      await api.deleteProfileLogo(id, logoId);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo eliminar el logo");
+    } finally {
+      setLogoBusy(false);
+    }
+  }
+
   if (!profile) {
     return <LoadingScreen label="Cargando perfil…" />;
   }
@@ -218,6 +334,15 @@ export default function ProfileEditorPage() {
   const selectedImageStyle = imageOptions?.styles.find(
     (option) => option.id === imageStyle,
   );
+  const selectedLogo = profile.logo_candidates?.find(
+    (candidate) => candidate.id === activeLogoId,
+  );
+  const logoPositionStyle = {
+    [logoPlacement.startsWith("top") ? "top" : "bottom"]: `${Math.max(4, logoMarginPx / 4)}px`,
+    [logoPlacement.endsWith("left") ? "left" : "right"]: `${Math.max(4, logoMarginPx / 4)}px`,
+    width: logoSize === "small" ? "12%" : logoSize === "medium" ? "18%" : "24%",
+    opacity: logoOpacity,
+  };
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-8">
@@ -398,6 +523,271 @@ export default function ProfileEditorPage() {
                 />
                 Confirmo que quiero guardar la paleta pese a las advertencias de contraste.
               </label>
+            )}
+          </div>
+        )}
+        {isSlides && imageOptions && (
+          <div className="card p-5">
+            <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <label className="label">Logo de marca</label>
+                <p className="text-xs leading-relaxed text-zinc-500">
+                  La biblioteca pertenece al perfil. El logo activo se copia a cada
+                  versión del deck; cambiarlo no altera artefactos anteriores.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setLogoMode("none");
+                  setActiveLogoId(null);
+                }}
+                className={logoMode === "none" ? "btn-primary btn-sm" : "btn-secondary btn-sm"}
+              >
+                Sin logo
+              </button>
+            </div>
+
+            {(profile.logo_candidates?.length ?? 0) > 0 ? (
+              <div className="grid gap-3 sm:grid-cols-2">
+                {profile.logo_candidates?.map((candidate) => {
+                  const active = candidate.id === activeLogoId && logoMode !== "none";
+                  return (
+                    <div
+                      key={candidate.id}
+                      className={`rounded-lg border p-3 ${
+                        active
+                          ? "border-amber-400/60 bg-amber-400/[0.06]"
+                          : "border-white/[0.08] bg-black/20"
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveLogoId(candidate.id);
+                          setLogoMode(candidate.source);
+                        }}
+                        className="flex w-full items-center gap-3 text-left"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={api.profileLogoUrl(id, candidate.id, true)}
+                          alt={candidate.name}
+                          className="h-16 w-20 rounded bg-white/95 object-contain p-1"
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-sm font-semibold text-zinc-200">
+                            {candidate.name}
+                          </span>
+                          <span className="block text-[11px] text-zinc-500">
+                            {candidate.source === "generated" ? "Generado" : "Subido"}
+                            {candidate.model ? ` · ${candidate.model}` : ""}
+                          </span>
+                          <span className="block text-[11px] text-zinc-600">
+                            {candidate.width}×{candidate.height}
+                            {candidate.cost_usd != null
+                              ? ` · $${candidate.cost_usd.toFixed(4)}`
+                              : ""}
+                          </span>
+                        </span>
+                      </button>
+                      <div className="mt-2 flex items-center justify-between">
+                        <span className={active ? "badge-info" : "badge-neutral"}>
+                          {active ? "Activo" : "Candidato"}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={logoBusy}
+                          onClick={() => deleteLogo(candidate.id)}
+                          className="text-xs text-red-300 hover:text-red-200 disabled:opacity-40"
+                        >
+                          Eliminar
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="rounded-lg border border-dashed border-white/10 p-4 text-center text-xs text-zinc-500">
+                Aún no hay logos en este perfil.
+              </p>
+            )}
+
+            <div className="mt-4 grid gap-4 border-t border-white/[0.08] pt-4 sm:grid-cols-2">
+              <div>
+                <label className="label">Subir logo</label>
+                <input
+                  value={logoName}
+                  onChange={(event) => setLogoName(event.target.value)}
+                  placeholder="Nombre opcional"
+                  className="input mb-2"
+                />
+                <input
+                  type="file"
+                  accept=".png,.webp,.svg,.jpg,.jpeg,image/png,image/webp,image/svg+xml,image/jpeg"
+                  disabled={logoBusy}
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) void uploadLogo(file);
+                    event.target.value = "";
+                  }}
+                  className="block w-full text-xs text-zinc-400 file:mr-3 file:rounded-md file:border-0 file:bg-white/10 file:px-3 file:py-2 file:text-zinc-200"
+                />
+                <p className="mt-1.5 text-[11px] text-zinc-500">
+                  PNG, WebP, SVG, JPG o JPEG · máximo 5 MB.
+                </p>
+              </div>
+              <div>
+                <label className="label">Generar candidato</label>
+                <select
+                  value={logoModel}
+                  onChange={(event) => setLogoModel(event.target.value)}
+                  className="input mb-2"
+                >
+                  {imageOptions.models.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label} · {option.price_hint}
+                    </option>
+                  ))}
+                </select>
+                <textarea
+                  value={logoPrompt}
+                  onChange={(event) => setLogoPrompt(event.target.value)}
+                  rows={3}
+                  placeholder="Símbolo, personalidad, formas y colores…"
+                  className="input resize-y text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={generateLogo}
+                  disabled={logoBusy || !logoPrompt.trim()}
+                  className="btn-secondary btn-sm mt-2"
+                >
+                  {logoBusy ? "Procesando…" : "Generar logo"}
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-5 grid gap-4 border-t border-white/[0.08] pt-4 sm:grid-cols-2">
+              <div>
+                <label className="label">Posición</label>
+                <select
+                  value={logoPlacement}
+                  onChange={(event) =>
+                    setLogoPlacement(
+                      event.target.value as
+                        | "top-left"
+                        | "top-right"
+                        | "bottom-left"
+                        | "bottom-right",
+                    )
+                  }
+                  disabled={logoMode === "none"}
+                  className="input"
+                >
+                  <option value="top-left">Arriba izquierda</option>
+                  <option value="top-right">Arriba derecha</option>
+                  <option value="bottom-left">Abajo izquierda</option>
+                  <option value="bottom-right">Abajo derecha</option>
+                </select>
+              </div>
+              <div>
+                <label className="label">Tamaño</label>
+                <select
+                  value={logoSize}
+                  onChange={(event) =>
+                    setLogoSize(event.target.value as "small" | "medium" | "large")
+                  }
+                  disabled={logoMode === "none"}
+                  className="input"
+                >
+                  <option value="small">Pequeño</option>
+                  <option value="medium">Mediano</option>
+                  <option value="large">Grande</option>
+                </select>
+              </div>
+              <div>
+                <label className="label">Margen: {logoMarginPx}px</label>
+                <input
+                  type="range"
+                  min={0}
+                  max={128}
+                  value={logoMarginPx}
+                  onChange={(event) => setLogoMarginPx(Number(event.target.value))}
+                  disabled={logoMode === "none"}
+                  className="w-full"
+                />
+                <p className="mt-1 text-[11px] text-zinc-500">
+                  El render conserva un margen seguro mínimo para paginación y subtítulos.
+                </p>
+              </div>
+              <div>
+                <label className="label">Opacidad: {Math.round(logoOpacity * 100)}%</label>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={logoOpacity}
+                  onChange={(event) => setLogoOpacity(Number(event.target.value))}
+                  disabled={logoMode === "none"}
+                  className="w-full"
+                />
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-4 text-xs text-zinc-300">
+              {(["cover", "content", "summary"] as const).map((kind) => (
+                <label key={kind} className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={logoVisibility[kind]}
+                    disabled={logoMode === "none"}
+                    onChange={(event) =>
+                      setLogoVisibility((current) => ({
+                        ...current,
+                        [kind]: event.target.checked,
+                      }))
+                    }
+                  />
+                  {kind === "cover"
+                    ? "Portada"
+                    : kind === "content"
+                      ? "Contenido"
+                      : "Resumen"}
+                </label>
+              ))}
+            </div>
+
+            {selectedLogo && logoMode !== "none" && (
+              <div className="mt-5 grid items-start gap-4 sm:grid-cols-2">
+                {[
+                  { label: "Vista 16:9", className: "aspect-video" },
+                  { label: "Vista 9:16", className: "mx-auto aspect-[9/16] w-2/3" },
+                ].map((preview) => (
+                  <div key={preview.label}>
+                    <p className="mb-1 text-[11px] text-zinc-500">{preview.label}</p>
+                    <div
+                      className={`relative overflow-hidden rounded-lg border border-white/10 bg-[#f8f1e3] p-4 ${preview.className}`}
+                    >
+                      <p className="max-w-[70%] text-sm font-semibold text-[#1f2937]">
+                        Título de ejemplo
+                      </p>
+                      <p className="mt-2 max-w-[68%] text-[10px] text-[#4b5563]">
+                        El logo usa la misma configuración programática del deck.
+                      </p>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={api.profileLogoUrl(id, selectedLogo.id)}
+                        alt={selectedLogo.name}
+                        className="absolute max-h-[28%] object-contain"
+                        style={logoPositionStyle}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         )}
@@ -618,6 +1008,11 @@ export default function ProfileEditorPage() {
                         style={{ background: v.slide_palette.primary }}
                       />
                       Paleta guardada
+                    </span>
+                  )}
+                  {v.logo_mode && v.logo_mode !== "none" && v.active_logo_id && (
+                    <span className="badge-info font-normal">
+                      Logo {v.logo_mode === "generated" ? "generado" : "subido"}
                     </span>
                   )}
                 </span>
