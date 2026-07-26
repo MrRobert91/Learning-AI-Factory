@@ -1344,6 +1344,7 @@ def run_script_job(job_id: str, payload: dict) -> dict:
 
 def run_voice_job(job_id: str, payload: dict) -> dict:
     from factory_agents.agents.voice import render_voice_input, run_voice
+    from factory_agents.tools.tts import default_tts_config, resolve_tts_config
 
     settings = get_settings()
     scripts = _latest_by_base(payload["project_id"], "teaching_script")
@@ -1358,6 +1359,20 @@ def run_voice_job(job_id: str, payload: dict) -> dict:
         workflow_step=payload.get("_workflow_step"),
     )
     language = payload.get("project", {}).get("language", "es")
+    tts_candidate = payload.get("tts_config") or default_tts_config(
+        model=settings.tts_model,
+        voice=settings.tts_voice,
+    )
+    try:
+        tts_config = resolve_tts_config(
+            tts_candidate,
+            project_language=language,
+        )
+    except ValueError as exc:
+        raise RuntimeError(
+            f"La configuración TTS del perfil Voice no es compatible con "
+            f"el idioma del proyecto ({language}): {exc}"
+        ) from exc
     _emit_duration_event(job_id, payload, "voice")
     spec = _duration_spec(payload)
 
@@ -1391,6 +1406,12 @@ def run_voice_job(job_id: str, payload: dict) -> dict:
             metadata={
                 **_duration_metadata(payload, "voice"),
                 "llm_model": payload.get("model") or settings.openrouter_model,
+                "tts": {
+                    **tts_config,
+                    "profile_id": payload.get("profile_id"),
+                    "profile_version": payload.get("profile_version"),
+                    "llm_model": payload.get("model") or settings.openrouter_model,
+                },
             },
         )
         artifact_ids.append(artifact_id)
@@ -1407,11 +1428,15 @@ def run_voice_job(job_id: str, payload: dict) -> dict:
 def run_video_job(job_id: str, payload: dict) -> dict:
     from factory_agents.contracts import VoiceScript
     from factory_agents.tools.tts import (
-        OpenAITTSProvider,
+        build_tts_provider,
+        default_tts_config,
+        estimated_tts_cost,
+        resolve_tts_config,
         synthesize_cached_with_status,
     )
     from factory_agents.tools.video import (
         build_srt,
+        burn_subtitles,
         compose_video,
         probe_duration,
         render_slide_images,
@@ -1423,12 +1448,10 @@ def run_video_job(job_id: str, payload: dict) -> dict:
     if not voices:
         raise RuntimeError("Falta el artefacto 'voice_script': ejecuta antes el Adaptador de voz")
 
-    provider = OpenAITTSProvider(
-        settings.openai_api_key, voice=settings.tts_voice, model=settings.tts_model
-    )
     cache_dir = settings.data_dir / "tts-cache"
     workdir_root = settings.data_dir / "runs" / job_id
     orientation = payload.get("orientation", "horizontal")
+    subtitles_mode = payload.get("subtitles_mode", "none")
     width, height = ((1080, 1920) if orientation == "vertical" else (1920, 1080))
     _emit_duration_event(job_id, payload, "video")
     spec = _duration_spec(payload)
@@ -1447,6 +1470,26 @@ def run_video_job(job_id: str, payload: dict) -> dict:
         voice_script = VoiceScript.model_validate_json(
             (settings.data_dir / voice_artifact.path).read_text(encoding="utf-8")
         )
+        voice_metadata = artifact_metadata(voice_artifact)
+        tts_candidate = voice_metadata.get("tts") or default_tts_config(
+            model=settings.tts_model,
+            voice=settings.tts_voice,
+        )
+        try:
+            tts_config = resolve_tts_config(
+                tts_candidate,
+                project_language=payload.get("project", {}).get("language", "es"),
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                f"El voice_script seleccionado para «{base}» tiene una "
+                f"configuración TTS no disponible: {exc}"
+            ) from exc
+        provider = build_tts_provider(
+            tts_config,
+            openai_api_key=settings.openai_api_key,
+            openrouter_api_key=settings.openrouter_api_key,
+        )
         append_event(
             job_id,
             "stage",
@@ -1463,18 +1506,38 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                 workflow_step=payload.get("_workflow_step"),
                 agent="video",
                 operation="tts",
-                provider="openai",
-                model=settings.tts_model,
-                input_characters=len(segment.text),
-                cost_usd=0 if cache_hit else None,
-                cost_source="estimated_catalog" if cache_hit else "unknown",
-                pricing_snapshot=(
-                    {"currency": "USD", "cache_hit": True} if cache_hit else {}
+                provider=tts_config["tts_provider"],
+                model=tts_config["tts_model"],
+                provider_request_id=(
+                    None if cache_hit else getattr(provider, "last_generation_id", None)
                 ),
+                input_characters=len(segment.text),
+                cost_usd=(
+                    0
+                    if cache_hit
+                    else estimated_tts_cost(tts_config, len(segment.text))
+                ),
+                cost_source=(
+                    "provider_actual"
+                    if cache_hit
+                    else (
+                        "estimated_catalog"
+                        if estimated_tts_cost(tts_config, len(segment.text)) is not None
+                        else "unknown"
+                    )
+                ),
+                pricing_snapshot={
+                    "currency": "USD",
+                    "cache_hit": cache_hit,
+                    "price_per_million_characters_usd": tts_config.get(
+                        "price_per_million_characters_usd"
+                    ),
+                },
                 work_unit_key=f"video:{base}:tts:{segment_index}",
                 idempotency_key=f"{job_id}:video:{base}:tts:{segment_index}",
                 metadata={
-                    "voice": settings.tts_voice,
+                    "language": tts_config["tts_language_effective"],
+                    "voice": tts_config["tts_voice"],
                     "cache_hit": cache_hit,
                     "segment": segment_index,
                 },
@@ -1493,8 +1556,23 @@ def run_video_job(job_id: str, payload: dict) -> dict:
             "stage",
             f"Montando vídeo {orientation} de {base} (ffmpeg)…",
         )
+        srt_content = build_srt(srt_segments)
+        srt_path = workdir / "subtitles.srt"
+        subtitle_style = None
+        if subtitles_mode != "none":
+            srt_path.parent.mkdir(parents=True, exist_ok=True)
+            srt_path.write_text(srt_content, encoding="utf-8")
         out_mp4 = workdir / "lesson.mp4"
         compose_video(pairs, out_mp4, workdir / "segments", orientation=orientation)
+        if subtitles_mode == "burned_and_srt":
+            append_event(job_id, "stage", f"Incrustando subtítulos de {base}…")
+            out_mp4, subtitle_style = burn_subtitles(
+                out_mp4,
+                srt_path,
+                workdir / "lesson-subtitled.mp4",
+                orientation=orientation,
+                logo_metadata=(artifact_metadata(deck).get("logo") or {}),
+            )
         record_usage(
             job_id=job_id,
             workflow_step=payload.get("_workflow_step"),
@@ -1509,6 +1587,24 @@ def run_video_job(job_id: str, payload: dict) -> dict:
             metadata={"local_operation": True},
         )
 
+        srt_id = None
+        if subtitles_mode != "none":
+            srt_id = _save_artifact_if_changed(
+                job_id,
+                payload["project_id"],
+                "subtitles",
+                f"Subtítulos — {base}",
+                srt_content,
+                format_="text",
+                metadata={
+                    **_duration_metadata(payload, "video"),
+                    "voice_script_id": voice_artifact.id,
+                    "duration_seconds": duration,
+                    "subtitles_mode": subtitles_mode,
+                    "tts": tts_config,
+                },
+            )
+            subtitle_ids.append(srt_id)
         video_id = _register_artifact_file(
             job_id,
             payload["project_id"],
@@ -1526,6 +1622,10 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                 ),
                 "slide_deck_id": deck.id,
                 "voice_script_id": voice_artifact.id,
+                "tts": tts_config,
+                "subtitles_mode": subtitles_mode,
+                "subtitles_id": srt_id,
+                "subtitles_style": subtitle_style,
                 "duration_seconds": duration,
                 "target_duration_seconds": target_seconds,
                 "duration_deviation_ratio": deviation_ratio,
@@ -1536,21 +1636,7 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                 ),
             },
         )
-        srt_id = _save_artifact_if_changed(
-            job_id,
-            payload["project_id"],
-            "subtitles",
-            f"Subtítulos — {base}",
-            build_srt(srt_segments),
-            format_="text",
-            metadata={
-                **_duration_metadata(payload, "video"),
-                "voice_script_id": voice_artifact.id,
-                "duration_seconds": duration,
-            },
-        )
         video_ids.append(video_id)
-        subtitle_ids.append(srt_id)
         if deviation_ratio is not None and spec and deviation_ratio > spec.tolerance_ratio:
             append_event(
                 job_id,
@@ -1573,6 +1659,7 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                 "artifact_id": video_id,
                 "subtitles_id": srt_id,
                 "orientation": orientation,
+                "subtitles_mode": subtitles_mode,
             },
         )
     _deactivate_unproduced(payload["project_id"], "video", video_ids)

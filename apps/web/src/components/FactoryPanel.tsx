@@ -800,6 +800,27 @@ export default function FactoryPanel({
                 Aprobación humana: {humanReviewEnabled ? "sí" : "no"}
                 {frozenPolicy ? " · política congelada del run" : ""}
               </p>
+              {stage.agent === "voice" && configuredProfile?.tts_model && (
+                <p className="mb-2 text-[11px] text-zinc-500">
+                  TTS: {configuredProfile.tts_provider} · {configuredProfile.tts_model}
+                  {" · "}
+                  {configuredProfile.tts_language === "inherit"
+                    ? "idioma del proyecto"
+                    : configuredProfile.tts_language}
+                  {" · "}
+                  {configuredProfile.tts_voice}
+                </p>
+              )}
+              {stage.agent === "video" && configuredProfile?.subtitles_mode && (
+                <p className="mb-2 text-[11px] text-zinc-500">
+                  Subtítulos:{" "}
+                  {configuredProfile.subtitles_mode === "none"
+                    ? "no"
+                    : configuredProfile.subtitles_mode === "srt"
+                      ? "SRT descargable"
+                      : "incrustados + SRT"}
+                </p>
+              )}
               <div className="flex items-center gap-2">
                 {profiles.length > 0 ? (
                   <select
@@ -821,6 +842,16 @@ export default function FactoryPanel({
                           : ""}
                         {p.slide_palette ? " · paleta" : ""}
                         {p.logo_mode && p.logo_mode !== "none" ? " · logo" : ""}
+                        {p.tts_model ? ` · ${p.tts_model} · ${p.tts_voice}` : ""}
+                        {p.subtitles_mode
+                          ? ` · subtítulos ${
+                              p.subtitles_mode === "none"
+                                ? "no"
+                                : p.subtitles_mode === "srt"
+                                  ? "SRT"
+                                  : "incrustados"
+                            }`
+                          : ""}
                       </option>
                     ))}
                   </select>

@@ -168,6 +168,74 @@ def compose_video(
     return out_path
 
 
+def burn_subtitles(
+    video_path: str | Path,
+    subtitles_path: str | Path,
+    out_path: str | Path,
+    *,
+    orientation: str = "horizontal",
+    logo_metadata: dict | None = None,
+) -> tuple[Path, dict]:
+    """Burn readable subtitles while avoiding the lower logo safe area."""
+
+    if not ffmpeg_available():
+        raise VideoToolError("ffmpeg/ffprobe no están instalados")
+    if orientation not in VIDEO_SIZES:
+        raise VideoToolError(f"Orientación de vídeo desconocida: {orientation}")
+    logo = logo_metadata or {}
+    bottom_logo = str(logo.get("placement", "")).startswith("bottom")
+    font_size = 28 if orientation == "horizontal" else 22
+    margin_v = 72 if orientation == "horizontal" else 140
+    if bottom_logo:
+        size = {"small": 80, "medium": 130, "large": 190}.get(
+            str(logo.get("size", "small")), 80
+        )
+        margin_v += int(logo.get("margin_px", 32) or 32) + size
+    style = {
+        "font": "Arial",
+        "font_size": font_size,
+        "primary_color": "&H00FFFFFF",
+        "outline_color": "&H00111111",
+        "outline": 3,
+        "shadow": 1,
+        "alignment": 2,
+        "margin_v": margin_v,
+    }
+    force_style = (
+        f"FontName={style['font']},FontSize={font_size},"
+        f"PrimaryColour={style['primary_color']},"
+        f"OutlineColour={style['outline_color']},"
+        f"Outline={style['outline']},Shadow={style['shadow']},"
+        f"Alignment={style['alignment']},MarginV={margin_v}"
+    )
+    subtitle_filter_path = (
+        Path(subtitles_path)
+        .resolve()
+        .as_posix()
+        .replace("\\", "/")
+        .replace(":", r"\:")
+        .replace("'", r"\'")
+    )
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    _run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(video_path),
+            "-vf",
+            f"subtitles='{subtitle_filter_path}':force_style='{force_style}'",
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "copy",
+            str(out_path),
+        ]
+    )
+    return out_path, style
+
+
 def _format_srt_time(seconds: float) -> str:
     ms = int(round(seconds * 1000))
     h, rem = divmod(ms, 3600000)

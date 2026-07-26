@@ -370,5 +370,143 @@ def test_automatic_review_policy_is_validated_and_versioned(auth_client):
     )
 
 
+def test_tts_catalog_and_voice_profile_configuration_are_closed_and_versioned(
+    auth_client,
+):
+    options = auth_client.get("/api/agents/tts-options")
+    assert options.status_code == 200
+    models = options.json()["models"]
+    assert {
+        (item["provider"], item["model"])
+        for item in models
+    } == {
+        ("openai", "gpt-4o-mini-tts"),
+        ("openrouter", "hexgrad/kokoro-82m"),
+        ("openrouter", "google/gemini-3.1-flash-tts-preview"),
+        ("openrouter", "microsoft/mai-voice-2"),
+    }
+
+    response = auth_client.post(
+        "/api/agents/voice/profiles",
+        json={
+            "name": "Narración económica",
+            "tts_provider": "openrouter",
+            "tts_model": "hexgrad/kokoro-82m",
+            "tts_language": "es-ES",
+            "tts_voice": "ef_dora",
+        },
+    )
+    assert response.status_code == 201, response.text
+    profile = response.json()
+    assert profile["tts_available"] is True
+    assert profile["tts_voice"] == "ef_dora"
+
+    changed = auth_client.patch(
+        f"/api/agents/profiles/{profile['id']}",
+        json={
+            "tts_model": "microsoft/mai-voice-2",
+            "tts_language": "es-ES",
+            "note": "Cambiar a MAI",
+        },
+    )
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["version"] == 2
+    assert changed.json()["tts_voice"] == "es-ES-Marta:MAI-Voice-2"
+
+    invalid = auth_client.patch(
+        f"/api/agents/profiles/{profile['id']}",
+        json={"tts_voice": "id-arbitrario"},
+    )
+    assert invalid.status_code == 422
+
+    non_voice = auth_client.post(
+        "/api/agents/curator/profiles",
+        json={
+            "name": "Curator inválido",
+            "tts_provider": "openrouter",
+        },
+    )
+    assert non_voice.status_code == 422
+
+    versions = auth_client.get(
+        f"/api/agents/profiles/{profile['id']}/versions"
+    ).json()
+    assert versions[0]["tts_model"] == "microsoft/mai-voice-2"
+    assert versions[1]["tts_model"] == "hexgrad/kokoro-82m"
+
+
+def test_video_subtitles_mode_defaults_to_none_and_is_versioned(auth_client):
+    profile = auth_client.post(
+        "/api/agents/video/profiles",
+        json={"name": "Vídeo sin subtítulos"},
+    ).json()
+    assert profile["subtitles_mode"] == "none"
+
+    updated = auth_client.patch(
+        f"/api/agents/profiles/{profile['id']}",
+        json={"subtitles_mode": "burned_and_srt", "note": "Activar subtítulos"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["version"] == 2
+    assert updated.json()["subtitles_mode"] == "burned_and_srt"
+
+    versions = auth_client.get(
+        f"/api/agents/profiles/{profile['id']}/versions"
+    ).json()
+    assert [item["subtitles_mode"] for item in versions] == [
+        "burned_and_srt",
+        "none",
+    ]
+    assert (
+        auth_client.post(
+            "/api/agents/voice/profiles",
+            json={"name": "Voice inválido", "subtitles_mode": "srt"},
+        ).status_code
+        == 422
+    )
+
+
+def test_tts_preview_returns_audio_without_creating_a_profile_version(
+    auth_client, monkeypatch
+):
+    class FakeProvider:
+        last_generation_id = "gen-preview"
+
+        def synthesize(self, text):
+            assert text == "Hola desde la muestra"
+            return b"ID3preview"
+
+    monkeypatch.setattr(
+        "factory_api.routers.agents.build_tts_provider",
+        lambda *args, **kwargs: FakeProvider(),
+    )
+    profile = auth_client.post(
+        "/api/agents/voice/profiles",
+        json={"name": "Preview de voz"},
+    ).json()
+    response = auth_client.post(
+        f"/api/agents/profiles/{profile['id']}/tts-preview",
+        json={
+            "text": "Hola desde la muestra",
+            "tts_provider": "openai",
+            "tts_model": "gpt-4o-mini-tts",
+            "tts_language": "inherit",
+            "tts_voice": "nova",
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.content == b"ID3preview"
+    assert response.headers["content-type"].startswith("audio/mpeg")
+    assert response.headers["x-generation-id"] == "gen-preview"
+    assert (
+        len(
+            auth_client.get(
+                f"/api/agents/profiles/{profile['id']}/versions"
+            ).json()
+        )
+        == 1
+    )
+
+
 def test_unknown_agent_type(auth_client):
     assert auth_client.get("/api/agents/nope/profiles").status_code == 404

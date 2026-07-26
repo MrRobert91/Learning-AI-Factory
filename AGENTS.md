@@ -70,6 +70,12 @@ docker compose up --build                # stack completo (2 contenedores)
   metadatos del artefacto; no dupliques subtítulos si su contenido no cambia.
   Las slides verticales usan el tema Marp `factory-vertical` con canvas nativo
   1080×1920 en HTML/PDF/PPTX/PNG; un PPTX conjunto nunca mezcla orientaciones.
+- **Voz y subtítulos**: el perfil versionado de `voice` es la fuente de verdad
+  para proveedor/modelo/idioma/voz TTS. Cada `voice_script` congela la
+  combinación efectiva y vídeo debe consumir ese snapshot, no la configuración
+  global mutable. El perfil de `video` guarda `subtitles_mode` (`none` por
+  defecto, `srt` o `burned_and_srt`); la incrustación usa duraciones TTS reales,
+  respeta orientación/logos y nunca añade llamadas LLM.
 - **Imágenes de slides**: son opcionales y se configuran/versionan en el perfil
   de `slides` (modelo OpenRouter + preset o prompt personalizado). El agente
   selecciona como máximo 6 por lección; los originales viven como assets de la
