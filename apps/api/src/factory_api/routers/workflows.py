@@ -222,6 +222,16 @@ def create_workflow_run(
         raise HTTPException(status_code=404, detail="Workflow no encontrado")
 
     definition = json.loads(workflow.definition_json)
+    if project.duration_spec is None and any(
+        step.get("agent") != "curator" for step in definition.get("steps", [])
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Configura la duración y estructura del proyecto antes de ejecutar "
+                "un workflow que incluya planner o fases posteriores."
+            ),
+        )
     available = set(
         db.scalars(
             select(Artifact.type).where(

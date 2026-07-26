@@ -161,12 +161,14 @@ def _base_payload(db: Session, project: Project) -> dict:
         "level": project.level,
         "language": project.language,
         "style": project.style,
+        "duration_spec": project.duration_spec,
     }
     return {
         "project_id": project.id,
         "project_title": project.title,
         "project": project_dict,
         "style": project.style,
+        "duration_spec": project.duration_spec,
         "task_input": render_curator_input(project_dict, brief),
     }
 
@@ -191,6 +193,18 @@ def create_agent_run(project_id: str, body: AgentRunCreate, user: CurrentUser, d
             )
         ).all()
     )
+
+    if project.duration_spec is None and (
+        body.agent == "pipeline"
+        or body.agent in {"planner", "lessons", "slides", "script", "voice", "video", "publisher"}
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Configura la duración y estructura del proyecto antes de ejecutar "
+                "planner o una fase posterior."
+            ),
+        )
 
     if body.agent == "pipeline":
         payload["stages"] = {

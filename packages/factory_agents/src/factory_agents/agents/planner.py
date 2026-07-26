@@ -6,6 +6,8 @@ import re
 from pydantic import ValidationError
 
 from factory_agents.contracts import CoursePlan
+from factory_agents.contracts.duration_spec import DurationSpec
+from factory_agents.duration import validate_course_plan_structure
 from factory_agents.runtime import AgentSpec, compose_system_prompt, register
 
 PLANNER_BASE_PROMPT = """\
@@ -35,8 +37,7 @@ Cada lección debe justificar su existencia con el objetivo que desbloquea.
 """
 
 DEFAULT_AGENTS_MD = """\
-- Entre 2 y 5 módulos; entre 2 y 5 lecciones por módulo.
-- Lecciones de 5 a 20 minutos (formato vídeo).
+- La estructura y duración vienen de las restricciones del proyecto y son obligatorias.
 - Los títulos de lección deben funcionar como títulos de vídeo de YouTube.
 - El idioma del plan es el idioma del curso.
 """
@@ -92,6 +93,7 @@ def run_planner(
     model: str,
     soul_md: str = "",
     agents_md: str = "",
+    duration_spec: DurationSpec | None = None,
 ) -> CoursePlan:
     """One-shot structured generation with validation-driven retries."""
     schema = json.dumps(CoursePlan.model_json_schema(), ensure_ascii=False, indent=2)
@@ -110,7 +112,12 @@ def run_planner(
         )
         text = response.choices[0].message.content or ""
         try:
-            return CoursePlan.model_validate(extract_json(text))
+            plan = CoursePlan.model_validate(extract_json(text))
+            if duration_spec is not None:
+                problems = validate_course_plan_structure(plan, duration_spec)
+                if problems:
+                    raise ValueError("; ".join(problems))
+            return plan
         except (ValueError, ValidationError) as exc:
             last_error = exc
             messages.append({"role": "assistant", "content": text})

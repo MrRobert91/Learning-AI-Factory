@@ -1,3 +1,21 @@
+export type DurationPreset =
+  | "microvideo"
+  | "minicourse"
+  | "short"
+  | "standard"
+  | "complete"
+  | "custom";
+
+export interface DurationSpec {
+  preset: DurationPreset;
+  module_count: number;
+  videos_per_module: number;
+  target_minutes_per_video: number;
+  total_videos: number;
+  total_minutes: number;
+  tolerance_ratio: number;
+}
+
 export interface Project {
   id: string;
   title: string;
@@ -7,6 +25,7 @@ export interface Project {
   language: string;
   style: string;
   output_format: string;
+  duration_spec: DurationSpec | null;
   status: string;
   created_at: string;
   updated_at: string;
@@ -82,6 +101,7 @@ export interface CourseIdeaBrief {
   language: string;
   style: string;
   output_format: string;
+  duration_spec: DurationSpec | null;
   objectives: string[];
   scope_outline: string[];
   differential_angle: string;

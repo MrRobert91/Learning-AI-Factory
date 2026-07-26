@@ -1,3 +1,4 @@
+import json
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -35,7 +36,15 @@ def list_projects(user: CurrentUser, db: DB):
 
 @router.post("", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
 def create_project(body: ProjectCreate, user: CurrentUser, db: DB):
-    project = Project(owner_id=user.id, **body.model_dump())
+    values = body.model_dump(exclude={"duration_spec"})
+    duration_spec = body.duration_spec
+    project = Project(
+        owner_id=user.id,
+        **values,
+        duration_spec_json=(
+            duration_spec.model_dump_json() if duration_spec is not None else None
+        ),
+    )
     db.add(project)
     db.commit()
     db.refresh(project)
@@ -51,7 +60,12 @@ def get_project(project_id: str, user: CurrentUser, db: DB):
 def update_project(project_id: str, body: ProjectUpdate, user: CurrentUser, db: DB):
     project = _get_owned_project(db, user.id, project_id)
     for field, value in body.model_dump(exclude_unset=True).items():
-        setattr(project, field, value)
+        if field == "duration_spec":
+            project.duration_spec_json = (
+                json.dumps(value, ensure_ascii=False) if value is not None else None
+            )
+        else:
+            setattr(project, field, value)
     db.commit()
     db.refresh(project)
     return project

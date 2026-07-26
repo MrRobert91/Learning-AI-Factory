@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Field
 
+from factory_agents.contracts.duration_spec import DurationSpec
+
 
 class CourseIdeaBrief(BaseModel):
     """Refined course specification produced by the Ideation Assistant.
@@ -16,6 +18,9 @@ class CourseIdeaBrief(BaseModel):
     style: str = Field(default="", description="Estilo y tono del curso")
     output_format: str = Field(
         default="video", description="Formato de salida deseado: video, slides o script"
+    )
+    duration_spec: DurationSpec = Field(
+        description="Duración y estructura exactas elegidas por el usuario"
     )
     objectives: list[str] = Field(
         default_factory=list, description="Objetivos de aprendizaje concretos"

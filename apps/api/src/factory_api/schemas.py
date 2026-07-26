@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
+from factory_agents.contracts import DurationSpec
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -24,6 +25,7 @@ class ProjectCreate(BaseModel):
     language: str = "es"
     style: str = ""
     output_format: str = ""
+    duration_spec: DurationSpec | None = None
 
 
 class ProjectUpdate(BaseModel):
@@ -34,6 +36,7 @@ class ProjectUpdate(BaseModel):
     language: str | None = None
     style: str | None = None
     output_format: str | None = None
+    duration_spec: DurationSpec | None = None
     status: str | None = None
 
 
@@ -321,6 +324,7 @@ class ProjectRead(BaseModel):
     language: str
     style: str
     output_format: str
+    duration_spec: DurationSpec | None
     status: str
     created_at: datetime
     updated_at: datetime

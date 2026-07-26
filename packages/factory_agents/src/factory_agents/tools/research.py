@@ -50,12 +50,20 @@ def extract_text(html: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
-def build_research_tools(tavily_api_key: str = ""):
+def build_research_tools(tavily_api_key: str = "", max_searches: int | None = None):
     """Build the search + fetch tools with provider config baked in."""
+    searches_used = 0
 
     @tool
     def search_web(query: str) -> str:
         """Busca en la web. Devuelve títulos, URLs y extractos de los resultados."""
+        nonlocal searches_used
+        if max_searches is not None and searches_used >= max_searches:
+            return (
+                f"(límite de {max_searches} búsquedas alcanzado; "
+                "redacta con las fuentes ya consultadas)"
+            )
+        searches_used += 1
         if tavily_api_key:
             result = _tavily_search(query, tavily_api_key)
             if result is not None:

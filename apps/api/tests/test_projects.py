@@ -11,6 +11,12 @@ def test_project_crud(auth_client):
         "language": "es",
         "style": "práctico",
         "output_format": "video",
+        "duration_spec": {
+            "preset": "standard",
+            "module_count": 99,
+            "videos_per_module": 99,
+            "target_minutes_per_video": 99,
+        },
     }
     resp = auth_client.post("/api/projects", json=payload)
     assert resp.status_code == 201
@@ -18,6 +24,8 @@ def test_project_crud(auth_client):
     project_id = project["id"]
     assert project["title"] == payload["title"]
     assert project["status"] == "draft"
+    assert project["duration_spec"]["module_count"] == 3
+    assert project["duration_spec"]["total_videos"] == 12
 
     resp = auth_client.get("/api/projects")
     assert resp.status_code == 200

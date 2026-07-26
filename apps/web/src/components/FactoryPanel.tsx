@@ -272,7 +272,13 @@ function paletteLabel(metadata: Record<string, unknown>): string | null {
 
 const ACTIVE_STATUSES: Job["status"][] = ["queued", "running", "waiting_approval"];
 
-export default function FactoryPanel({ projectId }: { projectId: string }) {
+export default function FactoryPanel({
+  projectId,
+  durationConfigured = true,
+}: {
+  projectId: string;
+  durationConfigured?: boolean;
+}) {
   const [profilesByAgent, setProfilesByAgent] = useState<
     Record<string, AgentProfile[]>
   >({});
@@ -553,6 +559,8 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
   const selectedWorkflow = workflows.find(
     (workflow) => workflow.id === workflowId,
   );
+  const workflowNeedsDuration =
+    selectedWorkflow?.steps.some((step) => step.agent !== "curator") ?? false;
   const workflowAgents = new Set(
     selectedWorkflow?.steps.map((step) => step.agent) ?? [],
   );
@@ -623,6 +631,17 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
 
   return (
     <section className="mt-10">
+      {!durationConfigured && (
+        <div className="mb-5 rounded-xl border border-amber-400/30 bg-amber-500/[0.07] p-4">
+          <p className="text-sm font-semibold text-amber-200">
+            Falta configurar la duración del curso
+          </p>
+          <p className="mt-1 text-sm text-amber-100/70">
+            Puedes ejecutar el Curador, pero planner y las fases posteriores están
+            bloqueadas hasta elegir módulos, vídeos y minutos por vídeo.
+          </p>
+        </div>
+      )}
       {/* ------ Header + workflow launcher ------ */}
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
@@ -652,9 +671,16 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
           </select>
           <button
             onClick={startWorkflow}
-            disabled={running || !workflowId || workflowMissing.length > 0}
+            disabled={
+              running ||
+              !workflowId ||
+              workflowMissing.length > 0 ||
+              (!durationConfigured && workflowNeedsDuration)
+            }
             title={
-              workflowMissing.length > 0
+              !durationConfigured && workflowNeedsDuration
+                ? "Configura antes la duración y estructura del proyecto"
+                : workflowMissing.length > 0
                 ? `Faltan artefactos previos: ${workflowMissing
                     .map((type) => TYPE_LABELS[type] ?? type)
                     .join(", ")}`
@@ -712,6 +738,8 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
           const missingInputs = stage.consumes.filter(
             (type) => !artifactTypes.has(type),
           );
+          const needsDuration =
+            !durationConfigured && stage.agent !== "curator";
           const inWorkflow = workflowAgents.has(stage.agent);
           const isCurrentWorkflowStep = isActive;
           return (
@@ -802,10 +830,12 @@ export default function FactoryPanel({ projectId }: { projectId: string }) {
                 )}
                 <button
                   onClick={() => start(stage.agent)}
-                  disabled={running || missingInputs.length > 0}
+                  disabled={running || missingInputs.length > 0 || needsDuration}
                   className="btn-secondary btn-sm shrink-0"
                   title={
-                    missingInputs.length > 0
+                    needsDuration
+                      ? "Configura antes la duración y estructura del proyecto"
+                      : missingInputs.length > 0
                       ? `Antes necesitas: ${missingInputs
                           .map((type) => TYPE_LABELS[type] ?? type)
                           .join(", ")}`
