@@ -10,6 +10,7 @@ import {
   type IdeationOption,
   type IdeationProgress,
   type IdeationSession,
+  type ResearchMode,
 } from "@/lib/api";
 import {
   ErrorBanner,
@@ -18,10 +19,20 @@ import {
   IconSparkles,
   IconWrench,
   IconCheck,
+  IconFileText,
+  IconPlus,
+  IconTrash,
+  IconUpload,
   LoadingScreen,
   Spinner,
 } from "@/components/ui";
 import Markdown from "@/components/Markdown";
+
+const RESEARCH_MODE_LABELS: Record<ResearchMode, string> = {
+  web_only: "Investigación web libre",
+  provided_plus_web: "Fuentes proporcionadas + web",
+  provided_only: "Solo fuentes proporcionadas",
+};
 
 function AssistantAvatar() {
   return (
@@ -140,6 +151,166 @@ function QuestionCard({
   );
 }
 
+function SourcesPanel({
+  session,
+  busy,
+  onChangeMode,
+  onAddFile,
+  onAddUrl,
+  onDelete,
+}: {
+  session: IdeationSession;
+  busy: boolean;
+  onChangeMode: (mode: ResearchMode) => Promise<void>;
+  onAddFile: (file: File) => Promise<void>;
+  onAddUrl: (url: string) => Promise<void>;
+  onDelete: (sourceId: string) => Promise<void>;
+}) {
+  const [url, setUrl] = useState("");
+  const editable = session.status === "active";
+  return (
+    <section className="card overflow-hidden">
+      <div className="border-b border-white/[0.06] px-5 py-3">
+        <h3 className="text-sm font-semibold text-zinc-200">
+          Fuentes de investigación
+        </h3>
+      </div>
+      <div className="space-y-4 p-5">
+        <label className="block">
+          <span className="label">Política</span>
+          <select
+            value={session.research_mode}
+            disabled={!editable || busy}
+            onChange={(event) =>
+              void onChangeMode(event.target.value as ResearchMode)
+            }
+            className="input"
+          >
+            {Object.entries(RESEARCH_MODE_LABELS).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {session.research_mode !== "web_only" && editable && (
+          <div className="space-y-2">
+            <label className="btn-secondary w-full cursor-pointer justify-center">
+              <IconUpload size={14} />
+              Adjuntar documento
+              <input
+                type="file"
+                accept=".pdf,.docx,.pptx,.md,.markdown,.txt"
+                className="sr-only"
+                disabled={busy || session.sources.length >= 10}
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) void onAddFile(file);
+                  event.target.value = "";
+                }}
+              />
+            </label>
+            <form
+              className="flex gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!url.trim()) return;
+                void onAddUrl(url.trim()).then(() => setUrl(""));
+              }}
+            >
+              <input
+                value={url}
+                onChange={(event) => setUrl(event.target.value)}
+                disabled={busy || session.sources.length >= 10}
+                placeholder="URL HTML o PDF"
+                className="input min-w-0 flex-1 py-1.5 text-xs"
+              />
+              <button
+                type="submit"
+                disabled={busy || !url.trim()}
+                className="btn-secondary btn-sm"
+                aria-label="Añadir URL"
+              >
+                <IconPlus size={13} />
+              </button>
+            </form>
+          </div>
+        )}
+        {session.sources.length === 0 ? (
+          <p className="text-xs leading-relaxed text-zinc-500">
+            {session.research_mode === "web_only"
+              ? "Esta sesión no usa un corpus proporcionado."
+              : "Todavía no hay fuentes. Puedes añadir hasta 10."}
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {session.sources.map((source) => (
+              <li
+                key={source.id}
+                className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5"
+              >
+                <div className="flex items-start gap-2">
+                  <IconFileText
+                    size={13}
+                    className={
+                      source.status === "ready"
+                        ? "mt-0.5 text-emerald-300"
+                        : "mt-0.5 text-red-300"
+                    }
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-xs font-medium text-zinc-300">
+                      {source.name}
+                    </p>
+                    <p className="mt-0.5 text-[10px] text-zinc-600">
+                      {source.status === "ready"
+                        ? `${source.kind.toUpperCase()} · ${(source.size_bytes / 1024).toFixed(0)} KB · ${source.sha256.slice(0, 8)}`
+                        : source.error}
+                    </p>
+                    {source.status === "ready" && (
+                      <p className="mt-1 flex gap-3 text-[10px]">
+                        <a
+                          href={`/api/ideation/sources/${source.id}/original`}
+                          className="text-indigo-300 hover:underline"
+                        >
+                          Original
+                        </a>
+                        <a
+                          href={`/api/ideation/sources/${source.id}/text`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-indigo-300 hover:underline"
+                        >
+                          Texto extraído
+                        </a>
+                      </p>
+                    )}
+                  </div>
+                  {editable && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void onDelete(source.id)}
+                      className="text-zinc-600 hover:text-red-300"
+                      aria-label={`Eliminar ${source.name}`}
+                    >
+                      <IconTrash size={13} />
+                    </button>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="text-[10px] leading-relaxed text-zinc-600">
+          Las URL se capturan una sola vez. El hash y el texto extraído quedan
+          congelados con el proyecto.
+        </p>
+      </div>
+    </section>
+  );
+}
+
 function BriefPanel({
   brief,
   status,
@@ -202,6 +373,12 @@ function BriefPanel({
         {row("Idioma", brief.language)}
         {row("Estilo", brief.style)}
         {row("Formato", brief.output_format)}
+        {row(
+          "Investigación",
+          RESEARCH_MODE_LABELS[brief.research_mode ?? "web_only"],
+        )}
+        {(brief.source_ids?.length ?? 0) > 0 &&
+          row("Corpus", `${brief.source_ids.length} fuentes congeladas`)}
         {brief.duration_spec ? (
           <>
             {row(
@@ -261,6 +438,7 @@ export default function IdeationSessionPage() {
   const [finalizing, setFinalizing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [liveProgress, setLiveProgress] = useState<IdeationProgress[]>([]);
+  const [sourceBusy, setSourceBusy] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -302,6 +480,21 @@ export default function IdeationSessionPage() {
         err instanceof Error ? err.message : "No se pudo crear el proyecto",
       );
       setFinalizing(false);
+    }
+  }
+
+  async function mutateSources(action: () => Promise<unknown>) {
+    setSourceBusy(true);
+    setError(null);
+    try {
+      await action();
+      setSession(await api.getIdeation(id));
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "No se pudo actualizar las fuentes",
+      );
+    } finally {
+      setSourceBusy(false);
     }
   }
 
@@ -374,6 +567,26 @@ export default function IdeationSessionPage() {
                     <Markdown className="mt-2 text-xs">
                       {m.content}
                     </Markdown>
+                  </details>
+                );
+              }
+              if (m.kind === "source") {
+                return (
+                  <details
+                    key={m.id}
+                    className="ml-10 rounded-xl border border-emerald-400/15 bg-emerald-500/[0.04] px-4 py-2.5 text-xs text-zinc-400"
+                  >
+                    <summary className="flex cursor-pointer items-center gap-2">
+                      <IconFileText size={13} className="text-emerald-300" />
+                      Consulta al corpus:{" "}
+                      <span className="font-medium text-zinc-300">
+                        {(m.payload as { query?: string; source_id?: string })
+                          ?.query ??
+                          (m.payload as { source_id?: string })?.source_id ??
+                          "fuentes disponibles"}
+                      </span>
+                    </summary>
+                    <Markdown className="mt-2 text-xs">{m.content}</Markdown>
                   </details>
                 );
               }
@@ -455,7 +668,23 @@ export default function IdeationSessionPage() {
           {error && <ErrorBanner>{error}</ErrorBanner>}
         </section>
 
-        <aside className="lg:sticky lg:top-8 lg:self-start">
+        <aside className="space-y-4 lg:sticky lg:top-8 lg:self-start">
+          <SourcesPanel
+            session={session}
+            busy={sourceBusy}
+            onChangeMode={(mode) =>
+              mutateSources(() => api.updateIdeationResearchMode(id, mode))
+            }
+            onAddFile={(file) =>
+              mutateSources(() => api.addIdeationSourceFile(id, file))
+            }
+            onAddUrl={(sourceUrl) =>
+              mutateSources(() => api.addIdeationSourceUrl(id, sourceUrl))
+            }
+            onDelete={(sourceId) =>
+              mutateSources(() => api.deleteIdeationSource(id, sourceId))
+            }
+          />
           <BriefPanel
             brief={session.brief}
             status={session.status}

@@ -431,14 +431,49 @@ def _duration_spec(payload: dict) -> DurationSpec | None:
 
 def _duration_metadata(payload: dict, agent: str) -> dict:
     spec = _duration_spec(payload)
-    if spec is None:
-        return {}
-    orientation = payload.get("orientation", "horizontal")
-    return {
-        "duration_spec": spec.model_dump(),
-        "duration_metrics": duration_metrics(spec, orientation),
-        "duration_agent": agent,
+    metadata = {
+        "research_mode": payload.get("research_mode", "web_only"),
+        "source_ids": list(payload.get("source_ids") or []),
     }
+    if spec is not None:
+        orientation = payload.get("orientation", "horizontal")
+        metadata.update(
+            {
+                "duration_spec": spec.model_dump(),
+                "duration_metrics": duration_metrics(spec, orientation),
+                "duration_agent": agent,
+            }
+        )
+    return metadata
+
+
+def _project_source_documents(project_id: str, source_ids: list[str]) -> list[dict]:
+    from factory_api.models import IdeationSource
+
+    if not source_ids:
+        return []
+    with SessionLocal() as db:
+        sources = db.scalars(
+            select(IdeationSource).where(
+                IdeationSource.project_id == project_id,
+                IdeationSource.id.in_(source_ids),
+                IdeationSource.status == "ready",
+            )
+        ).all()
+        by_id = {source.id: source for source in sources}
+        return [
+            {
+                "id": source_id,
+                "name": by_id[source_id].name,
+                "kind": by_id[source_id].kind,
+                "media_type": by_id[source_id].media_type,
+                "size_bytes": by_id[source_id].size_bytes,
+                "text": by_id[source_id].extracted_text,
+                "metadata": by_id[source_id].source_metadata,
+            }
+            for source_id in source_ids
+            if source_id in by_id
+        ]
 
 
 def _emit_duration_event(job_id: str, payload: dict, agent: str) -> None:
@@ -502,6 +537,14 @@ def run_curator_job(job_id: str, payload: dict) -> dict:
     workspace = settings.data_dir / "runs" / job_id
     _emit_duration_event(job_id, payload, "curator")
     spec = _duration_spec(payload)
+    source_documents = _project_source_documents(
+        payload["project_id"], list(payload.get("source_ids") or [])
+    )
+    research_mode = payload.get("research_mode", "web_only")
+    if research_mode == "provided_only" and not source_documents:
+        raise RuntimeError(
+            "El modo «Solo fuentes proporcionadas» requiere al menos una fuente válida"
+        )
     final_text = ""
     for event in run_curator(
         _augment_input(payload["task_input"], payload, "curator"),
@@ -514,6 +557,11 @@ def run_curator_job(job_id: str, payload: dict) -> dict:
         recursion_limit=settings.agent_recursion_limit,
         callbacks=_budget_callbacks(job_id),
         max_searches=research_budget(spec.total_minutes)["searches_max"] if spec else None,
+        research_mode=research_mode,
+        source_documents=source_documents,
+        max_source_queries=(
+            research_budget(spec.total_minutes)["searches_max"] if spec else 12
+        ),
     ):
         if event.type == "result":
             final_text = event.summary
@@ -1273,6 +1321,27 @@ def _augment_input(task_input: str, payload: dict, agent: str | None = None) -> 
                 orientation=payload.get("orientation", "horizontal"),
             )
         )
+    if agent:
+        research_mode = payload.get("research_mode", "web_only")
+        source_ids = list(payload.get("source_ids") or [])
+        policy = [
+            "# Procedencia de investigación congelada",
+            f"- Modo: {research_mode}",
+            f"- IDs del corpus: {', '.join(source_ids) if source_ids else 'ninguno'}",
+            "- Conserva las citas y la procedencia trazable del research brief.",
+        ]
+        if research_mode == "provided_only":
+            if agent == "curator":
+                policy.append(
+                    "- Interpreta el presupuesto de búsquedas como consultas al corpus, "
+                    "fuentes relevantes mínimas y extensión máxima; nunca como permiso web."
+                )
+            else:
+                policy.append(
+                    "- No introduzcas afirmaciones factuales externas al research brief; "
+                    "mantén visibles los huecos no cubiertos por las fuentes."
+                )
+        parts.append("\n".join(policy))
     feedback = payload.get("revision_feedback")
     if feedback:
         parts.append(

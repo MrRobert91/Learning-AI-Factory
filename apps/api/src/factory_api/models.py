@@ -40,6 +40,9 @@ class Project(Base):
     style: Mapped[str] = mapped_column(Text, default="", nullable=False)
     output_format: Mapped[str] = mapped_column(String(50), default="", nullable=False)
     duration_spec_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    research_mode: Mapped[str] = mapped_column(
+        String(30), default="web_only", nullable=False
+    )
     status: Mapped[str] = mapped_column(String(20), default="draft", nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
@@ -48,6 +51,7 @@ class Project(Base):
     )
 
     owner: Mapped[User] = relationship(back_populates="projects")
+    sources: Mapped[list["IdeationSource"]] = relationship(back_populates="project")
 
     @property
     def duration_spec(self) -> dict | None:
@@ -70,6 +74,9 @@ class IdeationSession(Base):
     status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
     initial_idea: Mapped[str] = mapped_column(Text, nullable=False)
     model: Mapped[str] = mapped_column(String(100), nullable=False)
+    research_mode: Mapped[str] = mapped_column(
+        String(30), default="web_only", nullable=False
+    )
     brief_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     project_id: Mapped[str | None] = mapped_column(
         ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
@@ -82,6 +89,47 @@ class IdeationSession(Base):
     messages: Mapped[list["IdeationMessage"]] = relationship(
         back_populates="session", cascade="all, delete-orphan", order_by="IdeationMessage.seq"
     )
+    sources: Mapped[list["IdeationSource"]] = relationship(
+        back_populates="session", order_by="IdeationSource.captured_at"
+    )
+
+
+class IdeationSource(Base):
+    __tablename__ = "ideation_sources"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ideation_sessions.id", ondelete="SET NULL"), nullable=True
+    )
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    original_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    final_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    path: Mapped[str] = mapped_column(Text, nullable=False)
+    extracted_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+    error: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    session: Mapped[IdeationSession | None] = relationship(back_populates="sources")
+    project: Mapped[Project | None] = relationship(back_populates="sources")
+
+    @property
+    def source_metadata(self) -> dict:
+        import json
+
+        try:
+            value = json.loads(self.metadata_json or "{}")
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return value if isinstance(value, dict) else {}
 
 
 class IdeationMessage(Base):

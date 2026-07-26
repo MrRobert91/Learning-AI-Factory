@@ -7,6 +7,11 @@ DuckDuckGo otherwise (or when Tavily fails).
 import httpx
 from langchain_core.tools import tool
 
+from factory_agents.tools.sources import (
+    list_source_documents,
+    read_source_document,
+    search_source_documents,
+)
 from factory_agents.tools.web_search import format_results, web_search
 
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
@@ -50,9 +55,18 @@ def extract_text(html: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
-def build_research_tools(tavily_api_key: str = "", max_searches: int | None = None):
+def build_research_tools(
+    tavily_api_key: str = "",
+    max_searches: int | None = None,
+    *,
+    research_mode: str = "web_only",
+    source_documents: list[dict] | None = None,
+    max_source_queries: int | None = None,
+):
     """Build the search + fetch tools with provider config baked in."""
     searches_used = 0
+    source_queries_used = 0
+    documents = source_documents or []
 
     @tool
     def search_web(query: str) -> str:
@@ -92,4 +106,36 @@ def build_research_tools(tavily_api_key: str = "", max_searches: int | None = No
             text = text[:MAX_PAGE_CHARS] + "\n…(truncado)"
         return text
 
-    return [search_web, fetch_url]
+    @tool
+    def list_sources() -> str:
+        """Lista las fuentes aportadas con su ID estable, nombre, tipo y tamaño."""
+        return list_source_documents(documents)
+
+    def _source_limit() -> str | None:
+        nonlocal source_queries_used
+        if max_source_queries is not None and source_queries_used >= max_source_queries:
+            return (
+                f"(límite de {max_source_queries} consultas al corpus alcanzado; "
+                "redacta con los extractos ya consultados)"
+            )
+        source_queries_used += 1
+        return None
+
+    @tool
+    def search_sources(query: str) -> str:
+        """Busca extractos en las fuentes aportadas y devuelve IDs y ubicaciones."""
+        limit = _source_limit()
+        return limit or search_source_documents(documents, query)
+
+    @tool
+    def read_source(source_id: str, location: str = "") -> str:
+        """Lee de forma controlada una fuente aportada o una ubicación concreta."""
+        limit = _source_limit()
+        return limit or read_source_document(documents, source_id, location or None)
+
+    tools = []
+    if research_mode != "provided_only":
+        tools.extend([search_web, fetch_url])
+    if research_mode != "web_only" and documents:
+        tools.extend([list_sources, search_sources, read_source])
+    return tools

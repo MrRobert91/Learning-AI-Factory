@@ -75,7 +75,24 @@ def render_curator_input(project: dict, brief: dict | None = None) -> str:
         f"- Nivel: {project.get('level', '')}",
         f"- Idioma del curso: {project.get('language', 'es')}",
         f"- Estilo: {project.get('style', '')}",
+        f"- Política de investigación: {project.get('research_mode', 'web_only')}",
     ]
+    source_ids = project.get("source_ids") or []
+    if source_ids:
+        lines.append("- Fuentes aportadas: " + ", ".join(source_ids))
+    research_mode = project.get("research_mode", "web_only")
+    if research_mode == "provided_only":
+        lines.extend(
+            [
+                "- Usa exclusivamente las herramientas del corpus aportado; la web está prohibida.",
+                "- Cita toda afirmación factual como `[source:<id> <ubicación>]`.",
+                "- Si una cuestión no aparece, escribe `no cubierto por las fuentes`.",
+            ]
+        )
+    elif research_mode == "provided_plus_web":
+        lines.append(
+            "- Distingue explícitamente citas del corpus aportado y fuentes web externas."
+        )
     if brief:
         if brief.get("objectives"):
             lines.append("- Objetivos: " + "; ".join(brief["objectives"]))
@@ -102,8 +119,17 @@ def run_curator(
     recursion_limit: int | None = None,
     callbacks: list | None = None,
     max_searches: int | None = None,
+    research_mode: str = "web_only",
+    source_documents: list[dict] | None = None,
+    max_source_queries: int | None = None,
 ) -> Iterator[RunEvent]:
-    tools = build_research_tools(tavily_api_key, max_searches=max_searches)
+    tools = build_research_tools(
+        tavily_api_key,
+        max_searches=max_searches,
+        research_mode=research_mode,
+        source_documents=source_documents,
+        max_source_queries=max_source_queries,
+    )
     yield from run_task_agent(
         CURATOR_SPEC,
         task_input,

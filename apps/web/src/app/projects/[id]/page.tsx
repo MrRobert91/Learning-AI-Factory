@@ -11,6 +11,7 @@ import {
   ConfirmDialog,
   EmptyState,
   IconChevronLeft,
+  IconFileText,
   IconFolder,
   LoadingScreen,
 } from "@/components/ui";
@@ -25,6 +26,12 @@ const LEVEL_LABELS: Record<string, string> = {
   introductorio: "Introductorio",
   intermedio: "Intermedio",
   avanzado: "Avanzado",
+};
+
+const RESEARCH_MODE_LABELS = {
+  web_only: "Investigación web libre",
+  provided_plus_web: "Fuentes proporcionadas + web",
+  provided_only: "Solo fuentes proporcionadas",
 };
 
 export default function ProjectDetailPage() {
@@ -172,6 +179,64 @@ export default function ProjectDetailPage() {
           )}
         </section>
       )}
+
+      <section className="card mb-6 p-5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-semibold text-zinc-200">
+              Fuentes de investigación
+            </h2>
+            <p className="mt-1 text-xs text-zinc-500">
+              {RESEARCH_MODE_LABELS[project.research_mode]}
+            </p>
+          </div>
+          <span className="badge-neutral">
+            {project.sources.length} fuentes
+          </span>
+        </div>
+        {project.sources.length > 0 ? (
+          <ul className="mt-4 grid gap-2 sm:grid-cols-2">
+            {project.sources.map((source) => (
+              <li
+                key={source.id}
+                className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-3"
+              >
+                <div className="flex gap-2">
+                  <IconFileText size={14} className="mt-0.5 text-indigo-300" />
+                  <div className="min-w-0">
+                    <p className="truncate text-sm text-zinc-300">
+                      {source.name}
+                    </p>
+                    <p className="mt-0.5 text-[10px] text-zinc-600">
+                      {source.kind.toUpperCase()} · {source.sha256.slice(0, 12)}
+                    </p>
+                    <p className="mt-2 flex gap-3 text-xs">
+                      <a
+                        href={`/api/ideation/sources/${source.id}/original`}
+                        className="text-indigo-300 hover:underline"
+                      >
+                        Descargar original
+                      </a>
+                      <a
+                        href={`/api/ideation/sources/${source.id}/text`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-indigo-300 hover:underline"
+                      >
+                        Ver texto
+                      </a>
+                    </p>
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-3 text-xs text-zinc-600">
+            Este proyecto no tiene un corpus proporcionado.
+          </p>
+        )}
+      </section>
 
       <FactoryPanel
         projectId={id}

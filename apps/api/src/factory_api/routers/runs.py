@@ -185,6 +185,12 @@ def _base_payload(db: Session, project: Project) -> dict:
         "language": project.language,
         "style": project.style,
         "duration_spec": project.duration_spec,
+        "research_mode": project.research_mode,
+        "source_ids": (
+            [source.id for source in project.sources if source.status == "ready"]
+            if project.research_mode != "web_only"
+            else []
+        ),
     }
     return {
         "project_id": project.id,
@@ -192,6 +198,8 @@ def _base_payload(db: Session, project: Project) -> dict:
         "project": project_dict,
         "style": project.style,
         "duration_spec": project.duration_spec,
+        "research_mode": project.research_mode,
+        "source_ids": project_dict["source_ids"],
         "task_input": render_curator_input(project_dict, brief),
     }
 
