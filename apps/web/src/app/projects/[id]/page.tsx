@@ -7,6 +7,7 @@ import { api, type Project } from "@/lib/api";
 import ProjectForm from "@/components/ProjectForm";
 import FactoryPanel from "@/components/FactoryPanel";
 import WikiPanel from "@/components/WikiPanel";
+import UsagePanel from "@/components/UsagePanel";
 import {
   ConfirmDialog,
   EmptyState,
@@ -238,6 +239,7 @@ export default function ProjectDetailPage() {
         )}
       </section>
 
+      <UsagePanel projectId={id} />
       <FactoryPanel
         projectId={id}
         durationConfigured={project.duration_spec !== null}

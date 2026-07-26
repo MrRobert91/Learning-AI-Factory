@@ -14,6 +14,7 @@ from factory_api.routers import (
     agents,
     artifacts,
     auth,
+    costs,
     ideation,
     improvements,
     projects,
@@ -169,6 +170,8 @@ async def log_request(request: Request, call_next):
 
 app.include_router(auth.router)
 app.include_router(projects.router)
+app.include_router(costs.router)
+app.include_router(costs.preview_router)
 app.include_router(ideation.router)
 app.include_router(agents.router)
 app.include_router(runs.router)

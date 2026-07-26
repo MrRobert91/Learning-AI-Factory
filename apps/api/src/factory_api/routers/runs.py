@@ -16,6 +16,7 @@ from factory_api.models import AgentProfile, Artifact, IdeationSession, Job, Job
 from factory_api.routers.agents import get_default_profile
 from factory_api.runner import runner
 from factory_api.schemas import AgentRunCreate, JobEventRead, JobRead
+from factory_api.usage import job_usage_summary
 from factory_api.workflow_engine import missing_agent_inputs
 
 router = APIRouter(prefix="/api", tags=["runs"])
@@ -75,6 +76,8 @@ def _job_read(job: Job, include_events: bool = True) -> JobRead:
             "evaluator_model": payload.get("evaluator_model"),
             "human_review_enabled": bool(payload.get("human_review_enabled", False)),
         }
+    with SessionLocal() as usage_db:
+        usage_summary = job_usage_summary(usage_db, job.id)
     return JobRead(
         id=job.id,
         kind=job.kind,
@@ -82,6 +85,7 @@ def _job_read(job: Job, include_events: bool = True) -> JobRead:
         error=job.error,
         project_id=job.project_id,
         result=json.loads(job.result_json) if job.result_json else None,
+        usage_summary=usage_summary,
         review_policies=review_policies,
         created_at=job.created_at,
         started_at=job.started_at,

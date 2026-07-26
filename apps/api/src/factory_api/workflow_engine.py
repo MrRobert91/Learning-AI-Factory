@@ -181,7 +181,11 @@ def build_workflow_graph(
                     + ("regenerando con feedback" if feedback else "iniciando"),
                     {"agent": agent, "step": step_number, "status": "running"},
                 )
-                stage_payload = {**state["payload"], **step.get("overrides", {})}
+                stage_payload = {
+                    **state["payload"],
+                    **step.get("overrides", {}),
+                    "_workflow_step": step_number,
+                }
                 if feedback:
                     stage_payload["revision_feedback"] = feedback
                 result = handlers[f"{agent}_run"](job_id, stage_payload)
@@ -216,7 +220,11 @@ def build_workflow_graph(
                 def node(state: WorkflowState) -> WorkflowState:
                     results = dict(state.get("results", {}))
                     summaries = dict(state.get("review_summaries", {}))
-                    stage_payload = {**state["payload"], **step.get("overrides", {})}
+                    stage_payload = {
+                        **state["payload"],
+                        **step.get("overrides", {}),
+                        "_workflow_step": step_number,
+                    }
                     evaluations = 0
                     regenerations = 0
                     while True:
@@ -234,7 +242,9 @@ def build_workflow_graph(
                             },
                         )
                         try:
-                            verdict, feedback = evaluator(agent, results.get(agent))
+                            verdict, feedback = evaluator(
+                                agent, results.get(agent), step_number
+                            )
                         except Exception as exc:
                             append_event(
                                 job_id,

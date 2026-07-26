@@ -370,6 +370,7 @@ class JobRead(BaseModel):
     error: str
     project_id: str | None
     result: dict | None = None
+    usage_summary: dict = Field(default_factory=dict)
     review_policies: dict[str, AutomaticReviewPolicyRead] = {}
     created_at: datetime
     started_at: datetime | None
