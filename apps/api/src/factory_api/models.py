@@ -1,7 +1,17 @@
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from factory_api.db import Base
@@ -322,3 +332,46 @@ class Artifact(Base):
         ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class UsageRecord(Base):
+    """Immutable provider usage without prompts, responses, or credentials."""
+
+    __tablename__ = "usage_records"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_usage_records_idempotency_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    workflow_step: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    agent: Mapped[str] = mapped_column(String(50), default="", nullable=False, index=True)
+    operation: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String(50), default="", nullable=False)
+    model: Mapped[str] = mapped_column(String(255), default="", nullable=False, index=True)
+    provider_request_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    input_characters: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    output_units: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    image_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(20, 10), nullable=True)
+    cost_source: Mapped[str] = mapped_column(
+        String(30), default="unknown", nullable=False, index=True
+    )
+    pricing_snapshot_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    work_unit_key: Mapped[str] = mapped_column(String(320), default="", nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )

@@ -47,6 +47,7 @@ from factory_api.schemas import (
     ProfileUpdate,
     ProfileVersionRead,
 )
+from factory_api.usage import record_usage
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -668,6 +669,23 @@ def generate_profile_logo(
         "created_at": datetime.now(UTC).isoformat(),
         "status": "available",
     }
+    record_usage(
+        agent="slides",
+        operation="image",
+        provider="openrouter",
+        model=model,
+        image_count=1,
+        cost_usd=generated.cost_usd,
+        work_unit_key=f"profile-logo:{profile.id}:{logo_id}",
+        idempotency_key=f"profile-logo:{profile.id}:{logo_id}",
+        metadata={
+            "profile_id": profile.id,
+            "logo_id": logo_id,
+            "seed": candidate["seed"],
+            "preview": True,
+        },
+        emit_event=False,
+    )
     return _save_logo_candidate(db, profile, candidate, note="Logo generado")
 
 

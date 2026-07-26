@@ -42,10 +42,19 @@ class OpenAITTSProvider:
 
 def synthesize_cached(provider: TTSProvider, text: str, cache_dir: str | Path) -> Path:
     """Synthesize a segment, reusing the cache when the text hasn't changed."""
+    path, _cache_hit = synthesize_cached_with_status(provider, text, cache_dir)
+    return path
+
+
+def synthesize_cached_with_status(
+    provider: TTSProvider, text: str, cache_dir: str | Path
+) -> tuple[Path, bool]:
+    """Synthesize one segment and expose whether provider work was avoided."""
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha256(f"{provider.cache_key}\x00{text}".encode()).hexdigest()[:32]
     path = cache_dir / f"{digest}.mp3"
-    if not path.is_file():
+    cache_hit = path.is_file()
+    if not cache_hit:
         path.write_bytes(provider.synthesize(text))
-    return path
+    return path, cache_hit

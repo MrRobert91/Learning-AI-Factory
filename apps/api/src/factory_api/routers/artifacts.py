@@ -63,6 +63,7 @@ from factory_api.schemas import (
     SlidePaletteApply,
     SlidePalettePreview,
 )
+from factory_api.usage import attach_usage_to_artifact, record_usage
 
 router = APIRouter(prefix="/api", tags=["artifacts"])
 logger = logging.getLogger(__name__)
@@ -519,6 +520,26 @@ def regenerate_slide_image(
     )
     db.commit()
     db.refresh(artifact)
+    usage_record_id = record_usage(
+        project_id=artifact.project_id,
+        agent="slides",
+        operation="image",
+        provider="openrouter",
+        model=model,
+        image_count=1,
+        cost_usd=generated.cost_usd,
+        artifact_id=artifact.id,
+        work_unit_key=f"artifact-image:{artifact.id}:{image_id}",
+        idempotency_key=f"artifact-image:{artifact.id}:{image_id}",
+        metadata={"seed": seed, "style": style, "regeneration": True},
+        emit_event=False,
+    )
+    if usage_record_id:
+        attach_usage_to_artifact(
+            db, artifact, usage_record_ids=[usage_record_id]
+        )
+        db.commit()
+        db.refresh(artifact)
     render_deck(path)
     logger.info(
         "Slide image regenerated as a new artifact version",

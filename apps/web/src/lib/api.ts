@@ -55,6 +55,36 @@ export interface Project {
   updated_at: string;
 }
 
+export interface UsageAggregate {
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  input_characters: number;
+  image_count: number;
+  cost_usd: string | null;
+  unknown_cost_records: number;
+}
+
+export interface UsageBreakdown extends UsageAggregate {
+  key: string;
+  has_data?: boolean;
+  kind?: string;
+  status?: string;
+  created_at?: string | null;
+}
+
+export interface ProjectCostSummary {
+  has_data: boolean;
+  historical: UsageAggregate | null;
+  active: UsageAggregate | null;
+  cost_sources: UsageBreakdown[];
+  agents: UsageBreakdown[];
+  models: string[];
+  runs: UsageBreakdown[];
+  last_updated: string | null;
+}
+
 export type ProjectInput = Omit<
   Project,
   "id" | "sources" | "status" | "created_at" | "updated_at"
@@ -324,6 +354,17 @@ export interface Job {
   error: string;
   project_id: string | null;
   result: { artifact_id?: string } | null;
+  usage_summary: {
+    has_data: boolean;
+    records: number;
+    input_tokens?: number;
+    output_tokens?: number;
+    total_tokens?: number;
+    input_characters?: number;
+    image_count?: number;
+    cost_usd?: string | null;
+    unknown_cost_records?: number;
+  };
   review_policies: Record<
     string,
     {
@@ -422,6 +463,8 @@ export const api = {
   logout: () => request<void>("/api/auth/logout", { method: "POST" }),
   listProjects: () => request<Project[]>("/api/projects"),
   getProject: (id: string) => request<Project>(`/api/projects/${id}`),
+  getProjectCostSummary: (id: string) =>
+    request<ProjectCostSummary>(`/api/projects/${id}/costs/summary`),
   createProject: (input: ProjectInput) =>
     request<Project>("/api/projects", {
       method: "POST",
