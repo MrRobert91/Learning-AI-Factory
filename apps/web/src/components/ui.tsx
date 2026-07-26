@@ -85,6 +85,13 @@ export const IconPlay = (p: IconProps) => (
   </Icon>
 );
 
+export const IconPause = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x="6" y="4" width="4" height="16" />
+    <rect x="14" y="4" width="4" height="16" />
+  </Icon>
+);
+
 export const IconSparkles = (p: IconProps) => (
   <Icon {...p}>
     <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z" />
@@ -382,6 +389,7 @@ export function ConfirmDialog({
   title,
   description,
   confirmLabel = "Eliminar",
+  busyLabel = "Eliminando…",
   busy = false,
   onConfirm,
   onCancel,
@@ -390,6 +398,7 @@ export function ConfirmDialog({
   title: string;
   description: string;
   confirmLabel?: string;
+  busyLabel?: string;
   busy?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
@@ -426,7 +435,7 @@ export function ConfirmDialog({
             Cancelar
           </button>
           <button disabled={busy} onClick={onConfirm} className="btn-danger">
-            {busy ? "Eliminando…" : confirmLabel}
+            {busy ? busyLabel : confirmLabel}
           </button>
         </div>
       </div>

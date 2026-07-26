@@ -246,7 +246,16 @@ export interface JobEvent {
     tool?: string;
     artifact_id?: string;
     agent?: string;
-    status?: "running" | "done" | "waiting_approval";
+    status?:
+      | "queued"
+      | "running"
+      | "pausing"
+      | "paused"
+      | "waiting_approval"
+      | "canceling"
+      | "canceled"
+      | "done"
+      | "failed";
     step?: number;
   } | null;
   created_at: string;
@@ -291,10 +300,36 @@ export interface Workflow {
 export interface Job {
   id: string;
   kind: string;
-  status: "queued" | "running" | "waiting_approval" | "done" | "failed";
+  status:
+    | "queued"
+    | "running"
+    | "pausing"
+    | "paused"
+    | "waiting_approval"
+    | "canceling"
+    | "canceled"
+    | "done"
+    | "failed";
   error: string;
   project_id: string | null;
   result: { artifact_id?: string } | null;
+  control: {
+    pause_requested_at?: string;
+    paused_at?: string;
+    cancel_requested_at?: string;
+    canceled_at?: string;
+    resumed_at?: string;
+    resume_count?: number;
+    pause_reason?: string;
+    checkpoint?: {
+      phase?: string;
+      current_unit?: string | null;
+      next_unit?: string | null;
+      last_completed_unit?: string;
+      message?: string;
+      updated_at?: string;
+    };
+  };
   review_policies: Record<
     string,
     {
@@ -668,6 +703,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ approved, feedback }),
     }),
+  pauseRun: (jobId: string) =>
+    request<Job>(`/api/runs/${jobId}/pause`, { method: "POST" }),
+  resumeRun: (jobId: string) =>
+    request<Job>(`/api/runs/${jobId}/resume`, { method: "POST" }),
   cancelRun: (jobId: string) =>
     request<Job>(`/api/runs/${jobId}/cancel`, { method: "POST" }),
 };

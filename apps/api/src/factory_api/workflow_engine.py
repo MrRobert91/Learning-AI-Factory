@@ -15,6 +15,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from factory_api.config import get_settings
+from factory_api.run_control import checkpoint, load_scope_state, save_scope_state
 
 VALID_AGENTS = (
     "curator",
@@ -169,6 +170,8 @@ def build_workflow_graph(
         ):
             def node(state: WorkflowState) -> WorkflowState:
                 action = state.get("human_actions", {}).get(review_key, {})
+                review_history = state.get("human_reviews", {}).get(review_key, {})
+                human_cycle = len(review_history.get("cycles", []))
                 feedback = (
                     action.get("feedback", "")
                     if action.get("decision") == "regenerate"
@@ -182,9 +185,33 @@ def build_workflow_graph(
                     {"agent": agent, "step": step_number, "status": "running"},
                 )
                 stage_payload = {**state["payload"], **step.get("overrides", {})}
+                control_scope = (
+                    f"workflow:{step_number}:{agent}:human-cycle:{human_cycle}"
+                )
+                stage_payload["_control_scope"] = control_scope
                 if feedback:
                     stage_payload["revision_feedback"] = feedback
+                checkpoint(
+                    job_id,
+                    "workflow",
+                    current_unit=None,
+                    next_unit=f"{control_scope}:agent",
+                    message=f"Preparando el paso {step_number}: {agent}",
+                )
                 result = handlers[f"{agent}_run"](job_id, stage_payload)
+                checkpoint(
+                    job_id,
+                    "workflow",
+                    current_unit=f"{control_scope}:agent",
+                    next_unit=(
+                        f"workflow:{step_number}:{agent}:automatic-review"
+                        if automatic_enabled
+                        else f"workflow:{step_number}:{agent}:human-approval"
+                        if human_enabled
+                        else None
+                    ),
+                    message=f"Paso {step_number}: {agent} completado",
+                )
                 results = {**state.get("results", {}), agent: result}
                 if not automatic_enabled and not human_enabled:
                     append_event(
@@ -217,61 +244,135 @@ def build_workflow_graph(
                     results = dict(state.get("results", {}))
                     summaries = dict(state.get("review_summaries", {}))
                     stage_payload = {**state["payload"], **step.get("overrides", {})}
-                    evaluations = 0
-                    regenerations = 0
+                    human_history = state.get("human_reviews", {}).get(review_key, {})
+                    human_cycle = len(human_history.get("cycles", []))
+                    control_scope = (
+                        f"workflow:{step_number}:{agent}:human-cycle:{human_cycle}:"
+                        "automatic-review"
+                    )
+                    review_state = load_scope_state(job_id, control_scope)
+                    if isinstance(review_state.get("result"), dict):
+                        results[agent] = review_state["result"]
+                    evaluations = int(review_state.get("evaluations", 0))
+                    regenerations = int(review_state.get("regenerations", 0))
+                    if isinstance(review_state.get("summary"), dict):
+                        summaries[review_key] = review_state["summary"]
+                        return {"results": results, "review_summaries": summaries}
                     while True:
-                        evaluations += 1
-                        append_event(
-                            job_id,
-                            "evaluation",
-                            f"Evaluación automática de {agent} iniciada",
-                            {
-                                "agent": agent,
-                                "step": step_number,
-                                "status": "running",
-                                "model": evaluator_model,
-                                "evaluation": evaluations,
-                            },
-                        )
-                        try:
-                            verdict, feedback = evaluator(agent, results.get(agent))
-                        except Exception as exc:
+                        verdict = review_state.get("pending_verdict")
+                        feedback = str(review_state.get("pending_feedback", ""))
+                        if verdict is None:
+                            checkpoint(
+                                job_id,
+                                "workflow_evaluation",
+                                current_unit=None,
+                                next_unit=f"{control_scope}:evaluation:{evaluations + 1}",
+                                message=f"Preparando evaluación de {agent}",
+                            )
                             append_event(
                                 job_id,
                                 "evaluation",
-                                f"La evaluación de {agent} falló; se conserva la salida",
+                                f"Evaluación automática de {agent} iniciada",
                                 {
                                     "agent": agent,
                                     "step": step_number,
-                                    "status": "warning",
-                                    "technical_error": True,
-                                    "error": str(exc),
+                                    "status": "running",
                                     "model": evaluator_model,
+                                    "evaluation": evaluations + 1,
                                 },
                             )
-                            summaries[review_key] = {
-                                "agent": agent,
-                                "evaluations": evaluations,
-                                "regenerations": regenerations,
-                                "final_result": "evaluator_error",
-                                "model": evaluator_model,
-                            }
-                            if not human_enabled:
+                            try:
+                                verdict, feedback = evaluator(agent, results.get(agent))
+                            except Exception as exc:
+                                evaluations += 1
+                                summary = {
+                                    "agent": agent,
+                                    "evaluations": evaluations,
+                                    "regenerations": regenerations,
+                                    "final_result": "evaluator_error",
+                                    "model": evaluator_model,
+                                }
+                                save_scope_state(
+                                    job_id,
+                                    control_scope,
+                                    {
+                                        "evaluations": evaluations,
+                                        "regenerations": regenerations,
+                                        "result": results.get(agent),
+                                        "summary": summary,
+                                    },
+                                )
                                 append_event(
                                     job_id,
-                                    "stage",
-                                    f"Paso {step_number}: {agent} completado con advertencia",
-                                    {"agent": agent, "step": step_number, "status": "done"},
+                                    "evaluation",
+                                    f"La evaluación de {agent} falló; se conserva la salida",
+                                    {
+                                        "agent": agent,
+                                        "step": step_number,
+                                        "status": "warning",
+                                        "technical_error": True,
+                                        "error": str(exc),
+                                        "model": evaluator_model,
+                                    },
                                 )
-                            return {"results": results, "review_summaries": summaries}
+                                summaries[review_key] = summary
+                                if not human_enabled:
+                                    append_event(
+                                        job_id,
+                                        "stage",
+                                        f"Paso {step_number}: {agent} completado con advertencia",
+                                        {
+                                            "agent": agent,
+                                            "step": step_number,
+                                            "status": "done",
+                                        },
+                                    )
+                                checkpoint(
+                                    job_id,
+                                    "workflow_evaluation",
+                                    current_unit=f"{control_scope}:evaluation:{evaluations}",
+                                    next_unit=None,
+                                    message=f"Evaluación de {agent} finalizada con advertencia",
+                                )
+                                return {
+                                    "results": results,
+                                    "review_summaries": summaries,
+                                }
+                            evaluations += 1
+                            review_state = {
+                                "evaluations": evaluations,
+                                "regenerations": regenerations,
+                                "pending_verdict": verdict,
+                                "pending_feedback": feedback,
+                                "result": results.get(agent),
+                            }
+                            save_scope_state(job_id, control_scope, review_state)
+                            checkpoint(
+                                job_id,
+                                "workflow_evaluation",
+                                current_unit=f"{control_scope}:evaluation:{evaluations}",
+                                next_unit=(
+                                    f"{control_scope}:regeneration:{regenerations + 1}"
+                                    if verdict != "pass"
+                                    and regenerations < max_regenerations
+                                    else None
+                                ),
+                                message=f"Evaluación {evaluations} de {agent} completada",
+                            )
                         if verdict == "pass":
-                            summaries[review_key] = {
+                            summary = {
                                 "agent": agent,
                                 "evaluations": evaluations,
                                 "regenerations": regenerations,
                                 "final_result": "pass",
                                 "model": evaluator_model,
                             }
+                            summaries[review_key] = summary
+                            save_scope_state(
+                                job_id,
+                                control_scope,
+                                {**review_state, "summary": summary},
+                            )
                             if not human_enabled:
                                 append_event(
                                     job_id,
@@ -282,7 +383,7 @@ def build_workflow_graph(
                             return {"results": results, "review_summaries": summaries}
                         if regenerations >= max_regenerations:
                             destination = "human_approval" if human_enabled else "continue"
-                            summaries[review_key] = {
+                            summary = {
                                 "agent": agent,
                                 "evaluations": evaluations,
                                 "regenerations": regenerations,
@@ -291,6 +392,12 @@ def build_workflow_graph(
                                 "feedback": feedback,
                                 "model": evaluator_model,
                             }
+                            summaries[review_key] = summary
+                            save_scope_state(
+                                job_id,
+                                control_scope,
+                                {**review_state, "summary": summary},
+                            )
                             if not human_enabled:
                                 append_event(
                                     job_id,
@@ -313,23 +420,51 @@ def build_workflow_graph(
                                     {"agent": agent, "step": step_number, "status": "done"},
                                 )
                             return {"results": results, "review_summaries": summaries}
-                        regenerations += 1
+                        next_regeneration = regenerations + 1
+                        checkpoint(
+                            job_id,
+                            "workflow_evaluation",
+                            current_unit=f"{control_scope}:evaluation:{evaluations}",
+                            next_unit=f"{control_scope}:regeneration:{next_regeneration}",
+                            message=f"Preparando regeneración de {agent}",
+                        )
                         append_event(
                             job_id,
                             "evaluation",
-                            f"Regeneración {regenerations}/{max_regenerations} de {agent} "
+                            f"Regeneración {next_regeneration}/{max_regenerations} de {agent} "
                             "con feedback del evaluador…",
                             {
                                 "agent": agent,
                                 "step": step_number,
                                 "status": "regenerating",
-                                "regeneration": regenerations,
+                                "regeneration": next_regeneration,
                                 "max_regenerations": max_regenerations,
                                 "feedback": feedback,
                             },
                         )
                         results[agent] = handlers[f"{agent}_run"](
-                            job_id, {**stage_payload, "revision_feedback": feedback}
+                            job_id,
+                            {
+                                **stage_payload,
+                                "revision_feedback": feedback,
+                                "_control_scope": (
+                                    f"{control_scope}:regeneration:{next_regeneration}"
+                                ),
+                            },
+                        )
+                        regenerations = next_regeneration
+                        review_state = {
+                            "evaluations": evaluations,
+                            "regenerations": regenerations,
+                            "result": results.get(agent),
+                        }
+                        save_scope_state(job_id, control_scope, review_state)
+                        checkpoint(
+                            job_id,
+                            "workflow_evaluation",
+                            current_unit=f"{control_scope}:regeneration:{regenerations}",
+                            next_unit=f"{control_scope}:evaluation:{evaluations + 1}",
+                            message=f"Regeneración {regenerations} de {agent} completada",
                         )
 
                 return node
@@ -345,6 +480,13 @@ def build_workflow_graph(
 
             def make_ready_node(agent=agent, step_number=step_number):
                 def node(state: WorkflowState) -> WorkflowState:
+                    checkpoint(
+                        job_id,
+                        "workflow_approval",
+                        current_unit=f"workflow:{step_number}:{agent}:agent",
+                        next_unit=f"workflow:{step_number}:{agent}:human-approval",
+                        message=f"Preparando revisión humana de {agent}",
+                    )
                     append_event(
                         job_id,
                         "stage",

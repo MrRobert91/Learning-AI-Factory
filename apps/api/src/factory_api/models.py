@@ -223,8 +223,10 @@ class Job(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
     kind: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="queued", nullable=False)
-    # status: queued | running | done | failed
+    # queued | running | pausing | paused | waiting_approval |
+    # canceling | canceled | done | failed
     payload_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    control_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
     result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str] = mapped_column(Text, default="", nullable=False)
     project_id: Mapped[str | None] = mapped_column(

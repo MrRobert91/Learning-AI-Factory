@@ -211,7 +211,7 @@ def test_cancel_waiting_run(auth_client, monkeypatch):
 
     resp = auth_client.post(f"/api/runs/{job_id}/cancel")
     assert resp.status_code == 200
-    assert resp.json()["status"] == "failed"
+    assert resp.json()["status"] == "canceled"
     assert "Cancelado" in resp.json()["error"]
 
     # Approving a cancelled run is refused
