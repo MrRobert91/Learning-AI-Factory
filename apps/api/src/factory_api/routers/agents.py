@@ -1,5 +1,6 @@
 import json
 import secrets
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,8 +22,16 @@ from factory_agents.tools.palette import (
     normalize_palette,
     palette_options,
 )
+from factory_agents.tools.tts import (
+    build_tts_provider,
+    default_tts_config,
+    estimated_tts_cost,
+    normalize_tts_selection,
+    resolve_tts_config,
+    tts_options,
+)
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -46,6 +55,7 @@ from factory_api.schemas import (
     ProfileRead,
     ProfileUpdate,
     ProfileVersionRead,
+    TTSPreviewRequest,
 )
 from factory_api.usage import record_usage
 
@@ -68,7 +78,9 @@ LOGO_CONFIG_KEYS = {
     "logo_opacity",
     "logo_visibility",
 }
+TTS_CONFIG_KEYS = {"tts_provider", "tts_model", "tts_language", "tts_voice"}
 DEFAULT_LOGO_VISIBILITY = {"cover": True, "content": True, "summary": True}
+_TTS_PREVIEW_CALLS: dict[str, list[float]] = {}
 
 
 def _profile_config(
@@ -91,6 +103,11 @@ def _profile_config(
     logo_margin_px: int | None = None,
     logo_opacity: float | None = None,
     logo_visibility: dict[str, bool] | None = None,
+    tts_provider: str | None = None,
+    tts_model: str | None = None,
+    tts_language: str | None = None,
+    tts_voice: str | None = None,
+    subtitles_mode: str | None = None,
 ) -> dict:
     config = {
         "automatic_review_enabled": bool(automatic_review_enabled),
@@ -119,6 +136,22 @@ def _profile_config(
                 "logo_candidates": [],
             }
         )
+    if agent_type == "voice":
+        config.update(
+            default_tts_config(
+                provider=tts_provider or "openai",
+                model=tts_model or get_settings().tts_model,
+                voice=tts_voice or get_settings().tts_voice,
+            )
+        )
+        if tts_language:
+            config["tts_language"] = tts_language
+        try:
+            normalize_tts_selection(config, changed_fields=TTS_CONFIG_KEYS)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if agent_type == "video":
+        config["subtitles_mode"] = subtitles_mode or "none"
     return config
 
 
@@ -168,6 +201,85 @@ def _slide_logo_fields(config: dict, agent_type: str) -> dict:
         "logo_visibility": config.get("logo_visibility") or dict(DEFAULT_LOGO_VISIBILITY),
         "logo_candidates": config.get("logo_candidates") or [],
     }
+
+
+def _voice_tts_fields(config: dict, agent_type: str) -> dict:
+    if agent_type != "voice":
+        return {
+            "tts_provider": None,
+            "tts_model": None,
+            "tts_language": None,
+            "tts_voice": None,
+            "tts_available": None,
+        }
+    effective = dict(config)
+    if not TTS_CONFIG_KEYS.issubset(effective):
+        effective.update(
+            default_tts_config(
+                model=get_settings().tts_model,
+                voice=get_settings().tts_voice,
+            )
+        )
+    try:
+        resolved = resolve_tts_config(effective)
+        available = True
+    except ValueError:
+        resolved = {
+            "tts_provider": effective.get("tts_provider"),
+            "tts_model": effective.get("tts_model"),
+            "tts_language": effective.get("tts_language") or "inherit",
+            "tts_voice": effective.get("tts_voice"),
+        }
+        available = False
+    return {
+        "tts_provider": resolved.get("tts_provider"),
+        "tts_model": resolved.get("tts_model"),
+        "tts_language": resolved.get("tts_language"),
+        "tts_voice": resolved.get("tts_voice"),
+        "tts_available": available,
+    }
+
+
+def _video_subtitles_field(config: dict, agent_type: str) -> dict:
+    return {
+        "subtitles_mode": config.get("subtitles_mode", "none")
+        if agent_type == "video"
+        else None
+    }
+
+
+def _supplied_tts_config(body: ProfileCreate | ProfileUpdate) -> dict:
+    return {
+        key: getattr(body, key)
+        for key in TTS_CONFIG_KEYS
+        if key in body.model_fields_set and getattr(body, key) is not None
+    }
+
+
+def _validate_media_profile_config(
+    agent_type: str,
+    config: dict,
+    *,
+    changed_tts_fields: set[str] | None = None,
+) -> None:
+    if agent_type != "voice" and TTS_CONFIG_KEYS.intersection(config):
+        raise HTTPException(
+            status_code=422,
+            detail="Solo el agente Voice admite configuración TTS",
+        )
+    if agent_type == "voice":
+        try:
+            normalize_tts_selection(
+                config,
+                changed_fields=changed_tts_fields or set(),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if agent_type != "video" and "subtitles_mode" in config:
+        raise HTTPException(
+            status_code=422,
+            detail="Solo el agente Video admite configuración de subtítulos",
+        )
 
 
 def _supplied_image_config(body: ProfileCreate | ProfileUpdate) -> dict:
@@ -312,6 +424,8 @@ def _profile_read(p: AgentProfile) -> ProfileRead:
         else None,
         **_slide_image_fields(config, p.agent_type),
         **_review_fields(config),
+        **_voice_tts_fields(config, p.agent_type),
+        **_video_subtitles_field(config, p.agent_type),
         **_slide_palette_field(config, p.agent_type),
         **_slide_logo_fields(config, p.agent_type),
         version=p.version,
@@ -360,6 +474,11 @@ def get_palette_options(user: CurrentUser):
     return palette_options()
 
 
+@router.get("/tts-options")
+def get_tts_options(user: CurrentUser):
+    return tts_options()
+
+
 @router.get("/{agent_type}/profiles", response_model=list[ProfileRead])
 def list_profiles(agent_type: str, user: CurrentUser, db: DB):
     if agent_type not in REGISTRY:
@@ -383,6 +502,17 @@ def create_profile(agent_type: str, body: ProfileCreate, user: CurrentUser, db: 
     slide_palette = _normalize_supplied_palette(agent_type, body.slide_palette)
     supplied_logo = _supplied_logo_config(body)
     _validate_slide_logo_config(agent_type, supplied_logo)
+    supplied_tts = _supplied_tts_config(body)
+    if supplied_tts and agent_type != "voice":
+        raise HTTPException(
+            status_code=422,
+            detail="Solo el agente Voice admite configuración TTS",
+        )
+    if body.subtitles_mode is not None and agent_type != "video":
+        raise HTTPException(
+            status_code=422,
+            detail="Solo el agente Video admite configuración de subtítulos",
+        )
     config = _profile_config(
         agent_type,
         body.model,
@@ -402,6 +532,16 @@ def create_profile(agent_type: str, body: ProfileCreate, user: CurrentUser, db: 
         logo_margin_px=body.logo_margin_px,
         logo_opacity=body.logo_opacity,
         logo_visibility=body.logo_visibility.model_dump() if body.logo_visibility else None,
+        tts_provider=body.tts_provider,
+        tts_model=body.tts_model,
+        tts_language=body.tts_language,
+        tts_voice=body.tts_voice,
+        subtitles_mode=body.subtitles_mode,
+    )
+    _validate_media_profile_config(
+        agent_type,
+        config,
+        changed_tts_fields=set(supplied_tts),
     )
     profile = AgentProfile(
         agent_type=agent_type,
@@ -435,6 +575,90 @@ def get_profile(profile_id: str, user: CurrentUser, db: DB):
     return _profile_read(profile)
 
 
+@router.post("/profiles/{profile_id}/tts-preview")
+def preview_profile_tts(
+    profile_id: str,
+    body: TTSPreviewRequest,
+    user: CurrentUser,
+    db: DB,
+):
+    profile = db.get(AgentProfile, profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Perfil no encontrado")
+    if profile.agent_type != "voice":
+        raise HTTPException(status_code=422, detail="El perfil no pertenece a Voice")
+
+    now = time.monotonic()
+    calls = [value for value in _TTS_PREVIEW_CALLS.get(user.id, []) if now - value < 60]
+    if len(calls) >= 5:
+        raise HTTPException(
+            status_code=429,
+            detail="Has alcanzado el límite de 5 muestras por minuto",
+        )
+    calls.append(now)
+    _TTS_PREVIEW_CALLS[user.id] = calls
+
+    config = json.loads(profile.config_json or "{}")
+    if not TTS_CONFIG_KEYS.issubset(config):
+        config.update(
+            default_tts_config(
+                model=get_settings().tts_model,
+                voice=get_settings().tts_voice,
+            )
+        )
+    for key in TTS_CONFIG_KEYS:
+        value = getattr(body, key)
+        if value is not None:
+            config[key] = value
+    try:
+        normalize_tts_selection(
+            config,
+            changed_fields={
+                key for key in TTS_CONFIG_KEYS if getattr(body, key) is not None
+            },
+        )
+        resolved = resolve_tts_config(config)
+        provider = build_tts_provider(
+            resolved,
+            openai_api_key=get_settings().openai_api_key,
+            openrouter_api_key=get_settings().openrouter_api_key,
+        )
+        audio = provider.synthesize(body.text)
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    cost = estimated_tts_cost(resolved, len(body.text))
+    generation_id = getattr(provider, "last_generation_id", None)
+    record_usage(
+        agent="voice",
+        operation="tts",
+        provider=resolved["tts_provider"],
+        model=resolved["tts_model"],
+        provider_request_id=generation_id,
+        input_characters=len(body.text),
+        cost_usd=cost,
+        cost_source="estimated_catalog" if cost is not None else "unknown",
+        pricing_snapshot={
+            "currency": "USD",
+            "price_per_million_characters_usd": resolved.get(
+                "price_per_million_characters_usd"
+            ),
+        },
+        work_unit_key=f"tts-preview:{profile.id}:{uuid.uuid4().hex}",
+        metadata={
+            "preview": True,
+            "profile_id": profile.id,
+            "profile_version": profile.version,
+            "language": resolved["tts_language_effective"],
+            "voice": resolved["tts_voice"],
+        },
+    )
+    headers = {"Cache-Control": "no-store"}
+    if generation_id:
+        headers["X-Generation-Id"] = generation_id
+    return Response(content=audio, media_type="audio/mpeg", headers=headers)
+
+
 @router.get("/profiles/{profile_id}/versions", response_model=list[ProfileVersionRead])
 def list_profile_versions(profile_id: str, user: CurrentUser, db: DB):
     profile = db.get(AgentProfile, profile_id)
@@ -454,6 +678,8 @@ def list_profile_versions(profile_id: str, user: CurrentUser, db: DB):
                 else None,
                 **_slide_image_fields(config, profile.agent_type),
                 **_review_fields(config),
+                **_voice_tts_fields(config, profile.agent_type),
+                **_video_subtitles_field(config, profile.agent_type),
                 **_slide_palette_field(config, profile.agent_type),
                 **_slide_logo_fields(config, profile.agent_type),
                 note=item.note,
@@ -471,6 +697,13 @@ def update_profile(profile_id: str, body: ProfileUpdate, user: CurrentUser, db: 
 
     current_config = json.loads(profile.config_json or "{}")
     proposed_config = dict(current_config)
+    if profile.agent_type == "voice" and not TTS_CONFIG_KEYS.issubset(proposed_config):
+        proposed_config.update(
+            default_tts_config(
+                model=get_settings().tts_model,
+                voice=get_settings().tts_voice,
+            )
+        )
     supplied_images = _supplied_image_config(body)
     if supplied_images:
         _validate_slide_image_config(profile.agent_type, supplied_images)
@@ -506,8 +739,28 @@ def update_profile(profile_id: str, body: ProfileUpdate, user: CurrentUser, db: 
         proposed_config["max_automatic_regenerations"] = body.max_automatic_regenerations
     if body.human_review_enabled is not None:
         proposed_config["human_review_enabled"] = body.human_review_enabled
+    supplied_tts = _supplied_tts_config(body)
+    if supplied_tts:
+        if profile.agent_type != "voice":
+            raise HTTPException(
+                status_code=422,
+                detail="Solo el agente Voice admite configuración TTS",
+            )
+        proposed_config.update(supplied_tts)
+    if body.subtitles_mode is not None:
+        if profile.agent_type != "video":
+            raise HTTPException(
+                status_code=422,
+                detail="Solo el agente Video admite configuración de subtítulos",
+            )
+        proposed_config["subtitles_mode"] = body.subtitles_mode
     _validate_slide_image_config(profile.agent_type, proposed_config)
     _validate_slide_logo_config(profile.agent_type, proposed_config)
+    _validate_media_profile_config(
+        profile.agent_type,
+        proposed_config,
+        changed_tts_fields=set(supplied_tts),
+    )
 
     content_changed = (
         (body.soul_md is not None and body.soul_md != profile.soul_md)

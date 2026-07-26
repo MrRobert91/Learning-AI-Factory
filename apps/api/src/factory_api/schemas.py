@@ -155,6 +155,14 @@ class LogoGenerateRequest(BaseModel):
     name: str = Field(default="", max_length=120)
 
 
+class TTSPreviewRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=300)
+    tts_provider: Literal["openai", "openrouter"] | None = None
+    tts_model: str | None = None
+    tts_language: str | None = None
+    tts_voice: str | None = None
+
+
 class ProfileCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     soul_md: str = ""
@@ -168,6 +176,11 @@ class ProfileCreate(BaseModel):
     automatic_review_enabled: bool | None = None
     max_automatic_regenerations: int | None = Field(default=None, ge=0, le=5)
     human_review_enabled: bool | None = None
+    tts_provider: Literal["openai", "openrouter"] | None = None
+    tts_model: str | None = None
+    tts_language: str | None = None
+    tts_voice: str | None = None
+    subtitles_mode: Literal["none", "srt", "burned_and_srt"] | None = None
     slide_palette: dict[str, str] | None = None
     logo_mode: Literal["none", "uploaded", "generated"] | None = None
     active_logo_id: str | None = None
@@ -193,6 +206,11 @@ class ProfileUpdate(BaseModel):
     automatic_review_enabled: bool | None = None
     max_automatic_regenerations: int | None = Field(default=None, ge=0, le=5)
     human_review_enabled: bool | None = None
+    tts_provider: Literal["openai", "openrouter"] | None = None
+    tts_model: str | None = None
+    tts_language: str | None = None
+    tts_voice: str | None = None
+    subtitles_mode: Literal["none", "srt", "burned_and_srt"] | None = None
     slide_palette: dict[str, str] | None = None
     logo_mode: Literal["none", "uploaded", "generated"] | None = None
     active_logo_id: str | None = None
@@ -222,6 +240,12 @@ class ProfileRead(BaseModel):
     automatic_review_enabled: bool
     max_automatic_regenerations: int
     human_review_enabled: bool
+    tts_provider: Literal["openai", "openrouter"] | None = None
+    tts_model: str | None = None
+    tts_language: str | None = None
+    tts_voice: str | None = None
+    tts_available: bool | None = None
+    subtitles_mode: Literal["none", "srt", "burned_and_srt"] | None = None
     slide_palette: dict[str, str] | None = None
     logo_mode: Literal["none", "uploaded", "generated"] | None = None
     active_logo_id: str | None = None
@@ -252,6 +276,12 @@ class ProfileVersionRead(BaseModel):
     automatic_review_enabled: bool
     max_automatic_regenerations: int
     human_review_enabled: bool
+    tts_provider: Literal["openai", "openrouter"] | None = None
+    tts_model: str | None = None
+    tts_language: str | None = None
+    tts_voice: str | None = None
+    tts_available: bool | None = None
+    subtitles_mode: Literal["none", "srt", "burned_and_srt"] | None = None
     slide_palette: dict[str, str] | None = None
     logo_mode: Literal["none", "uploaded", "generated"] | None = None
     active_logo_id: str | None = None

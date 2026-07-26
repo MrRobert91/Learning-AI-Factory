@@ -77,6 +77,38 @@ def test_script_requires_slides(auth_client, monkeypatch):
     assert "slide_deck" in response.json()["detail"]
 
 
+def test_voice_script_freezes_versioned_openrouter_tts_configuration(
+    auth_client, monkeypatch
+):
+    _patch_media(monkeypatch)
+    project = _prepare_slides(auth_client, monkeypatch)
+    assert _run(auth_client, project["id"], "script")["status"] == "done"
+    profile = auth_client.post(
+        "/api/agents/voice/profiles",
+        json={
+            "name": "MAI español",
+            "tts_provider": "openrouter",
+            "tts_model": "microsoft/mai-voice-2",
+            "tts_language": "inherit",
+            "tts_voice": "es-ES-Marta:MAI-Voice-2",
+        },
+    ).json()
+
+    job = _run(auth_client, project["id"], "voice", profile_id=profile["id"])
+    assert job["status"] == "done", job["error"]
+    artifact = auth_client.get(
+        f"/api/artifacts/{job['result']['artifact_ids'][0]}"
+    ).json()
+    snapshot = artifact["metadata"]["tts"]
+    assert snapshot["profile_id"] == profile["id"]
+    assert snapshot["profile_version"] == 1
+    assert snapshot["tts_provider"] == "openrouter"
+    assert snapshot["tts_model"] == "microsoft/mai-voice-2"
+    assert snapshot["tts_language"] == "inherit"
+    assert snapshot["tts_language_effective"] == "es-ES"
+    assert snapshot["tts_voice"] == "es-ES-Marta:MAI-Voice-2"
+
+
 def test_slides_profile_sets_vertical_artifact_metadata(auth_client, monkeypatch):
     _patch_media(monkeypatch)
     project = _create_project(auth_client)
@@ -233,9 +265,26 @@ def test_video_job_with_mocked_media_tools(auth_client, monkeypatch, tmp_path):
 
     project = _prepare_slides(auth_client, monkeypatch)
     assert _run(auth_client, project["id"], "script")["status"] == "done"
-    assert _run(auth_client, project["id"], "voice")["status"] == "done"
+    voice_job = _run(auth_client, project["id"], "voice")
+    assert voice_job["status"] == "done"
+    voice_artifact = auth_client.get(
+        f"/api/artifacts/{voice_job['result']['artifact_ids'][0]}"
+    ).json()
+    assert voice_artifact["metadata"]["tts"]["tts_provider"] == "openai"
+    assert voice_artifact["metadata"]["tts"]["tts_model"] == "gpt-4o-mini-tts"
+    assert voice_artifact["metadata"]["tts"]["tts_voice"] == "nova"
+    assert voice_artifact["metadata"]["tts"]["tts_language_effective"] == "es-ES"
 
-    video_job = _run(auth_client, project["id"], "video")
+    srt_profile = auth_client.post(
+        "/api/agents/video/profiles",
+        json={"name": "Vídeo con SRT", "subtitles_mode": "srt"},
+    ).json()
+    video_job = _run(
+        auth_client,
+        project["id"],
+        "video",
+        profile_id=srt_profile["id"],
+    )
     assert video_job["status"] == "done", video_job["error"]
     assert len(video_job["result"]["artifact_ids"]) == 2
 
@@ -244,6 +293,8 @@ def test_video_job_with_mocked_media_tools(auth_client, monkeypatch, tmp_path):
     subtitles = [a for a in artifacts if a["type"] == "subtitles"]
     assert len(videos) == 2 and len(subtitles) == 2
     assert all(a["metadata"]["orientation"] == "horizontal" for a in videos)
+    assert all(a["metadata"]["subtitles_mode"] == "srt" for a in videos)
+    assert all(a["metadata"]["tts"]["tts_voice"] == "nova" for a in videos)
 
     srt = auth_client.get(f"/api/artifacts/{subtitles[0]['id']}").json()
     assert "00:00:00,000 --> 00:00:02,500" in srt["content"]
@@ -254,7 +305,11 @@ def test_video_job_with_mocked_media_tools(auth_client, monkeypatch, tmp_path):
 
     vertical_profile = auth_client.post(
         "/api/agents/video/profiles",
-        json={"name": "Shorts y TikTok", "orientation": "vertical"},
+        json={
+            "name": "Shorts y TikTok",
+            "orientation": "vertical",
+            "subtitles_mode": "srt",
+        },
     )
     assert vertical_profile.status_code == 201
     assert vertical_profile.json()["orientation"] == "vertical"

@@ -5,6 +5,7 @@ from typing import Annotated
 from factory_agents.agents.curator import render_curator_input
 from factory_agents.tools.images import DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_STYLE
 from factory_agents.tools.palette import DEFAULT_SLIDE_PALETTE, normalize_palette
+from factory_agents.tools.tts import default_tts_config, resolve_tts_config
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
@@ -128,6 +129,8 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
             "evaluator_model": evaluator_model,
             "slide_palette": dict(DEFAULT_SLIDE_PALETTE),
             "slide_logo": None,
+            "tts_config": None,
+            "subtitles_mode": "none",
         }
     config = json.loads(profile.config_json or "{}")
     active_logo_id = config.get("active_logo_id")
@@ -151,6 +154,28 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
             "visibility": config.get("logo_visibility")
             or {"cover": True, "content": True, "summary": True},
         }
+    tts_config = None
+    if profile.agent_type == "voice":
+        candidate = dict(config)
+        if not {"tts_provider", "tts_model", "tts_language", "tts_voice"}.issubset(
+            candidate
+        ):
+            candidate.update(
+                default_tts_config(
+                    model=get_settings().tts_model,
+                    voice=get_settings().tts_voice,
+                )
+            )
+        try:
+            tts_config = resolve_tts_config(candidate)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"El perfil de voz «{profile.name}» usa una configuración TTS "
+                    f"histórica no disponible: {exc}. Edita el perfil antes de ejecutar."
+                ),
+            ) from exc
     return {
         "soul_md": profile.soul_md,
         "agents_md": profile.agents_md,
@@ -170,6 +195,12 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
         "evaluator_model": evaluator_model,
         "slide_palette": normalize_palette(config.get("slide_palette")),
         "slide_logo": slide_logo,
+        "tts_config": tts_config,
+        "subtitles_mode": (
+            config.get("subtitles_mode", "none")
+            if profile.agent_type == "video"
+            else "none"
+        ),
     }
 
 

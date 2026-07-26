@@ -248,6 +248,12 @@ export interface AgentProfile {
   automatic_review_enabled: boolean;
   max_automatic_regenerations: number;
   human_review_enabled: boolean;
+  tts_provider: "openai" | "openrouter" | null;
+  tts_model: string | null;
+  tts_language: string | null;
+  tts_voice: string | null;
+  tts_available: boolean | null;
+  subtitles_mode: "none" | "srt" | "burned_and_srt" | null;
   slide_palette: SlidePalette | null;
   logo_mode: "none" | "uploaded" | "generated" | null;
   active_logo_id: string | null;
@@ -276,6 +282,12 @@ export interface ProfileVersion {
   automatic_review_enabled: boolean;
   max_automatic_regenerations: number;
   human_review_enabled: boolean;
+  tts_provider: "openai" | "openrouter" | null;
+  tts_model: string | null;
+  tts_language: string | null;
+  tts_voice: string | null;
+  tts_available: boolean | null;
+  subtitles_mode: "none" | "srt" | "burned_and_srt" | null;
   slide_palette: SlidePalette | null;
   logo_mode: "none" | "uploaded" | "generated" | null;
   active_logo_id: string | null;
@@ -295,6 +307,28 @@ export interface ImageOptions {
   max_images_per_deck: number;
   models: { id: string; label: string; price_hint: string }[];
   styles: { id: string; label: string; prompt: string }[];
+}
+
+export interface TTSModelOption {
+  provider: "openai" | "openrouter";
+  provider_label: string;
+  model: string;
+  label: string;
+  languages: string[];
+  voices_by_language: Record<string, string[]>;
+  default_voice: string;
+  price_per_million_characters_usd: number | null;
+  price_hint: string;
+}
+
+export interface TTSOptions {
+  default: {
+    tts_provider: "openai" | "openrouter";
+    tts_model: string;
+    tts_language: string;
+    tts_voice: string;
+  };
+  models: TTSModelOption[];
 }
 
 export interface JobEvent {
@@ -541,6 +575,7 @@ export const api = {
   listAgents: () => request<AgentSpec[]>("/api/agents"),
   getImageOptions: () => request<ImageOptions>("/api/agents/image-options"),
   getPaletteOptions: () => request<PaletteOptions>("/api/agents/palette-options"),
+  getTTSOptions: () => request<TTSOptions>("/api/agents/tts-options"),
   listProfiles: (agentType: string) =>
     request<AgentProfile[]>(`/api/agents/${agentType}/profiles`),
   createProfile: (
@@ -558,6 +593,11 @@ export const api = {
       automatic_review_enabled?: boolean;
       max_automatic_regenerations?: number;
       human_review_enabled?: boolean;
+      tts_provider?: "openai" | "openrouter";
+      tts_model?: string;
+      tts_language?: string;
+      tts_voice?: string;
+      subtitles_mode?: "none" | "srt" | "burned_and_srt";
       slide_palette?: SlidePalette;
       logo_mode?: "none" | "uploaded" | "generated";
       active_logo_id?: string | null;
@@ -592,6 +632,11 @@ export const api = {
         | "automatic_review_enabled"
         | "max_automatic_regenerations"
         | "human_review_enabled"
+        | "tts_provider"
+        | "tts_model"
+        | "tts_language"
+        | "tts_voice"
+        | "subtitles_mode"
         | "slide_palette"
         | "logo_mode"
         | "active_logo_id"
@@ -607,6 +652,27 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input),
     }),
+  previewProfileTTS: async (
+    id: string,
+    input: {
+      text: string;
+      tts_provider: "openai" | "openrouter";
+      tts_model: string;
+      tts_language: string;
+      tts_voice: string;
+    },
+  ) => {
+    const response = await fetch(`/api/agents/profiles/${id}/tts-preview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new ApiError(response.status, body.detail ?? response.statusText);
+    }
+    return response.blob();
+  },
   deleteProfile: (id: string) =>
     request<void>(`/api/agents/profiles/${id}`, { method: "DELETE" }),
   uploadProfileLogo: async (id: string, file: File, name = "") => {

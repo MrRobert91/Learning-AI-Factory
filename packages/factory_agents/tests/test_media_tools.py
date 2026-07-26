@@ -10,6 +10,7 @@ from factory_agents.tools.video import (
     _concat_file_entry,
     _format_srt_time,
     build_srt,
+    burn_subtitles,
     compose_video,
     render_slide_images,
 )
@@ -130,6 +131,34 @@ def test_vertical_video_uses_blurred_background_without_cropping_foreground(
     assert "scale=1080:1920:force_original_aspect_ratio=decrease" in filter_graph
     assert "boxblur" in filter_graph
     assert "overlay=(W-w)/2:(H-h)/2" in filter_graph
+
+
+def test_burned_subtitles_raise_safe_area_for_bottom_logo(monkeypatch, tmp_path):
+    commands = []
+    monkeypatch.setattr("factory_agents.tools.video.ffmpeg_available", lambda: True)
+
+    def fake_run(command, timeout=600):
+        commands.append(command)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("factory_agents.tools.video._run", fake_run)
+    output, style = burn_subtitles(
+        tmp_path / "video.mp4",
+        tmp_path / "lesson.srt",
+        tmp_path / "burned.mp4",
+        orientation="vertical",
+        logo_metadata={
+            "placement": "bottom-right",
+            "size": "large",
+            "margin_px": 40,
+        },
+    )
+    assert output == tmp_path / "burned.mp4"
+    assert style["font_size"] == 22
+    assert style["margin_v"] == 370
+    subtitle_filter = commands[0][commands[0].index("-vf") + 1]
+    assert "Outline=3" in subtitle_filter
+    assert "MarginV=370" in subtitle_filter
 
 
 def test_video_render_upgrades_legacy_vertical_canvas(monkeypatch, tmp_path):

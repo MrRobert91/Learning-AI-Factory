@@ -11,6 +11,7 @@ import {
   type PaletteOptions,
   type ProfileVersion,
   type SlidePalette,
+  type TTSOptions,
 } from "@/lib/api";
 import SlidePaletteEditor, { paletteWarnings } from "@/components/SlidePaletteEditor";
 import {
@@ -41,6 +42,19 @@ export default function ProfileEditorPage() {
   const [automaticReviewEnabled, setAutomaticReviewEnabled] = useState(false);
   const [maxAutomaticRegenerations, setMaxAutomaticRegenerations] = useState(0);
   const [humanReviewEnabled, setHumanReviewEnabled] = useState(false);
+  const [ttsOptions, setTTSOptions] = useState<TTSOptions | null>(null);
+  const [ttsProvider, setTTSProvider] = useState<"openai" | "openrouter">("openai");
+  const [ttsModel, setTTSModel] = useState("");
+  const [ttsLanguage, setTTSLanguage] = useState("inherit");
+  const [ttsVoice, setTTSVoice] = useState("");
+  const [ttsSample, setTTSSample] = useState(
+    "Hola. Esta es una muestra de la voz seleccionada para tu curso.",
+  );
+  const [ttsPreviewUrl, setTTSPreviewUrl] = useState<string | null>(null);
+  const [ttsPreviewBusy, setTTSPreviewBusy] = useState(false);
+  const [subtitlesMode, setSubtitlesMode] = useState<
+    "none" | "srt" | "burned_and_srt"
+  >("none");
   const [paletteOptions, setPaletteOptions] = useState<PaletteOptions | null>(null);
   const [slidePalette, setSlidePalette] = useState<SlidePalette | null>(null);
   const [paletteWarningsAccepted, setPaletteWarningsAccepted] = useState(false);
@@ -69,10 +83,11 @@ export default function ProfileEditorPage() {
   const [deleting, setDeleting] = useState(false);
 
   async function load() {
-    const [p, options, palettes] = await Promise.all([
+    const [p, options, palettes, voiceOptions] = await Promise.all([
       api.getProfile(id),
       api.getImageOptions(),
       api.getPaletteOptions(),
+      api.getTTSOptions(),
     ]);
     setProfile(p);
     setImageOptions(options);
@@ -88,6 +103,12 @@ export default function ProfileEditorPage() {
     setAutomaticReviewEnabled(p.automatic_review_enabled);
     setMaxAutomaticRegenerations(p.max_automatic_regenerations);
     setHumanReviewEnabled(p.human_review_enabled);
+    setTTSOptions(voiceOptions);
+    setTTSProvider(p.tts_provider ?? voiceOptions.default.tts_provider);
+    setTTSModel(p.tts_model ?? voiceOptions.default.tts_model);
+    setTTSLanguage(p.tts_language ?? voiceOptions.default.tts_language);
+    setTTSVoice(p.tts_voice ?? voiceOptions.default.tts_voice);
+    setSubtitlesMode(p.subtitles_mode ?? "none");
     setPaletteOptions(palettes);
     setSlidePalette(p.slide_palette ?? palettes.default);
     setLogoMode(p.logo_mode ?? "none");
@@ -109,6 +130,13 @@ export default function ProfileEditorPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  useEffect(
+    () => () => {
+      if (ttsPreviewUrl) URL.revokeObjectURL(ttsPreviewUrl);
+    },
+    [ttsPreviewUrl],
+  );
+
   // Only the fields that actually changed are sent, so saving never creates
   // spurious versions nor overwrites config the user didn't touch.
   function buildPatch() {
@@ -126,6 +154,11 @@ export default function ProfileEditorPage() {
       automatic_review_enabled?: boolean;
       max_automatic_regenerations?: number;
       human_review_enabled?: boolean;
+      tts_provider?: "openai" | "openrouter";
+      tts_model?: string;
+      tts_language?: string;
+      tts_voice?: string;
+      subtitles_mode?: "none" | "srt" | "burned_and_srt";
       slide_palette?: SlidePalette;
       logo_mode?: "none" | "uploaded" | "generated";
       active_logo_id?: string | null;
@@ -170,6 +203,24 @@ export default function ProfileEditorPage() {
     }
     if (humanReviewEnabled !== profile.human_review_enabled) {
       patch.human_review_enabled = humanReviewEnabled;
+    }
+    if (profile.tts_provider !== null && ttsProvider !== profile.tts_provider) {
+      patch.tts_provider = ttsProvider;
+    }
+    if (profile.tts_model !== null && ttsModel !== profile.tts_model) {
+      patch.tts_model = ttsModel;
+    }
+    if (profile.tts_language !== null && ttsLanguage !== profile.tts_language) {
+      patch.tts_language = ttsLanguage;
+    }
+    if (profile.tts_voice !== null && ttsVoice !== profile.tts_voice) {
+      patch.tts_voice = ttsVoice;
+    }
+    if (
+      profile.subtitles_mode !== null &&
+      subtitlesMode !== profile.subtitles_mode
+    ) {
+      patch.subtitles_mode = subtitlesMode;
     }
     if (
       profile.slide_palette !== null &&
@@ -220,6 +271,11 @@ export default function ProfileEditorPage() {
       patch.automatic_review_enabled !== undefined ||
       patch.max_automatic_regenerations !== undefined ||
       patch.human_review_enabled !== undefined ||
+      patch.tts_provider !== undefined ||
+      patch.tts_model !== undefined ||
+      patch.tts_language !== undefined ||
+      patch.tts_voice !== undefined ||
+      patch.subtitles_mode !== undefined ||
       patch.slide_palette !== undefined ||
       patch.logo_mode !== undefined ||
       patch.active_logo_id !== undefined ||
@@ -324,13 +380,49 @@ export default function ProfileEditorPage() {
     }
   }
 
+  async function previewVoice() {
+    if (!ttsSample.trim()) {
+      setError("Escribe un texto breve para escuchar la muestra.");
+      return;
+    }
+    setTTSPreviewBusy(true);
+    setError(null);
+    try {
+      const blob = await api.previewProfileTTS(id, {
+        text: ttsSample.trim(),
+        tts_provider: ttsProvider,
+        tts_model: ttsModel,
+        tts_language: ttsLanguage,
+        tts_voice: ttsVoice,
+      });
+      const nextUrl = URL.createObjectURL(blob);
+      setTTSPreviewUrl(nextUrl);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo generar la muestra");
+    } finally {
+      setTTSPreviewBusy(false);
+    }
+  }
+
   if (!profile) {
     return <LoadingScreen label="Cargando perfil…" />;
   }
   const supportsOrientation =
     profile.agent_type === "slides" || profile.agent_type === "video";
   const isSlides = profile.agent_type === "slides";
+  const isVoice = profile.agent_type === "voice";
   const isAutomaticVideo = profile.agent_type === "video";
+  const selectedTTSModel = ttsOptions?.models.find(
+    (option) => option.provider === ttsProvider && option.model === ttsModel,
+  );
+  const availableTTSVoices = selectedTTSModel
+    ? selectedTTSModel.voices_by_language["*"] ??
+      (ttsLanguage === "inherit"
+        ? Array.from(
+            new Set(Object.values(selectedTTSModel.voices_by_language).flat()),
+          )
+        : selectedTTSModel.voices_by_language[ttsLanguage] ?? [])
+    : [];
   const selectedImageStyle = imageOptions?.styles.find(
     (option) => option.id === imageStyle,
   );
@@ -494,6 +586,199 @@ export default function ProfileEditorPage() {
                   <span className="text-xs text-zinc-500">9:16 · 1080×1920</span>
                 </span>
               </label>
+            </div>
+          </div>
+        )}
+        {isVoice && ttsOptions && (
+          <div className="card p-5">
+            <div className="mb-4">
+              <label className="label">Síntesis de voz (TTS)</label>
+              <p className="text-xs leading-relaxed text-zinc-500">
+                Proveedor, modelo, idioma y voz quedan congelados en cada
+                <code className="mx-1 text-zinc-300">voice_script</code>. El montaje
+                usa ese snapshot aunque edites después el perfil.
+              </p>
+            </div>
+            {profile.tts_available === false && (
+              <div className="mb-4 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">
+                Esta versión usa una combinación histórica no disponible. Elige una
+                opción actual antes de iniciar un nuevo run.
+              </div>
+            )}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="label">Proveedor y modelo</label>
+                <select
+                  value={`${ttsProvider}::${ttsModel}`}
+                  onChange={(event) => {
+                    const option = ttsOptions.models.find(
+                      (item) =>
+                        `${item.provider}::${item.model}` === event.target.value,
+                    );
+                    if (!option) return;
+                    setTTSProvider(option.provider);
+                    setTTSModel(option.model);
+                    setTTSLanguage("inherit");
+                    setTTSVoice(option.default_voice);
+                  }}
+                  className="input"
+                >
+                  {!selectedTTSModel && (
+                    <option value={`${ttsProvider}::${ttsModel}`}>
+                      Configuración histórica — no disponible
+                    </option>
+                  )}
+                  {ttsOptions.models.map((option) => (
+                    <option
+                      key={`${option.provider}:${option.model}`}
+                      value={`${option.provider}::${option.model}`}
+                    >
+                      {option.provider_label} · {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="label">Idioma</label>
+                <select
+                  value={ttsLanguage}
+                  onChange={(event) => {
+                    const language = event.target.value;
+                    setTTSLanguage(language);
+                    if (!selectedTTSModel) return;
+                    const voices =
+                      selectedTTSModel.voices_by_language["*"] ??
+                      (language === "inherit"
+                        ? Array.from(
+                            new Set(
+                              Object.values(
+                                selectedTTSModel.voices_by_language,
+                              ).flat(),
+                            ),
+                          )
+                        : selectedTTSModel.voices_by_language[language] ?? []);
+                    if (!voices.includes(ttsVoice)) {
+                      setTTSVoice(
+                        voices.includes(selectedTTSModel.default_voice)
+                          ? selectedTTSModel.default_voice
+                          : (voices[0] ?? ""),
+                      );
+                    }
+                  }}
+                  className="input"
+                >
+                  {(selectedTTSModel?.languages ?? [ttsLanguage]).map((language) => (
+                    <option key={language} value={language}>
+                      {language === "inherit"
+                        ? "Heredar idioma del proyecto"
+                        : language}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="label">Voz validada</label>
+                <select
+                  value={ttsVoice}
+                  onChange={(event) => setTTSVoice(event.target.value)}
+                  className="input font-mono text-[13px]"
+                >
+                  {!availableTTSVoices.includes(ttsVoice) && ttsVoice && (
+                    <option value={ttsVoice}>{ttsVoice} · histórica</option>
+                  )}
+                  {availableTTSVoices.map((voice) => (
+                    <option key={voice} value={voice}>
+                      {voice}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="rounded-lg border border-white/[0.08] bg-white/[0.02] px-3 py-2">
+                <p className="text-xs font-medium text-zinc-300">Coste y capacidad</p>
+                <p className="mt-1 text-xs leading-relaxed text-zinc-500">
+                  {selectedTTSModel?.price_hint ?? "Configuración histórica."}
+                </p>
+              </div>
+            </div>
+            <div className="mt-4">
+              <label className="label">Muestra de voz · máximo 300 caracteres</label>
+              <textarea
+                value={ttsSample}
+                maxLength={300}
+                rows={3}
+                onChange={(event) => setTTSSample(event.target.value)}
+                className="input resize-y"
+              />
+              <div className="mt-2 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={previewVoice}
+                  disabled={ttsPreviewBusy || !ttsVoice}
+                  className="btn-secondary btn-sm"
+                >
+                  {ttsPreviewBusy ? "Generando muestra…" : "Escuchar muestra"}
+                </button>
+                <span className="text-xs text-zinc-500">
+                  {ttsSample.length}/300 · la muestra registra uso, pero no crea
+                  artefactos ni versiones.
+                </span>
+              </div>
+              {ttsPreviewUrl && (
+                <audio
+                  controls
+                  autoPlay
+                  src={ttsPreviewUrl}
+                  className="mt-3 w-full"
+                />
+              )}
+            </div>
+          </div>
+        )}
+        {isAutomaticVideo && (
+          <div className="card p-5">
+            <label className="label">Subtítulos del vídeo</label>
+            <p className="mb-3 text-xs leading-relaxed text-zinc-500">
+              Se generan a partir de las duraciones TTS reales, sin llamadas LLM
+              adicionales. El valor predeterminado es no crear subtítulos.
+            </p>
+            <div className="grid gap-2">
+              {[
+                {
+                  value: "none" as const,
+                  title: "Sin subtítulos",
+                  detail: "No crea SRT ni incrusta texto en el MP4.",
+                },
+                {
+                  value: "srt" as const,
+                  title: "SRT descargable",
+                  detail: "Crea el artefacto SRT, pero deja limpio el vídeo.",
+                },
+                {
+                  value: "burned_and_srt" as const,
+                  title: "Incrustados + SRT",
+                  detail:
+                    "Quema texto legible con safe areas y conserva el SRT descargable.",
+                },
+              ].map((option) => (
+                <label
+                  key={option.value}
+                  className="card card-hover flex cursor-pointer items-start gap-3 px-4 py-3"
+                >
+                  <input
+                    type="radio"
+                    name="subtitles-mode"
+                    value={option.value}
+                    checked={subtitlesMode === option.value}
+                    onChange={() => setSubtitlesMode(option.value)}
+                  />
+                  <span>
+                    <span className="block text-sm font-semibold text-zinc-200">
+                      {option.title}
+                    </span>
+                    <span className="text-xs text-zinc-500">{option.detail}</span>
+                  </span>
+                </label>
+              ))}
             </div>
           </div>
         )}
@@ -977,6 +1262,26 @@ export default function ProfileEditorPage() {
                       className={v.images_enabled ? "badge-info font-normal" : "badge-neutral font-normal"}
                     >
                       {v.images_enabled ? "Con imágenes" : "Sin imágenes"}
+                    </span>
+                  )}
+                  {v.tts_provider && v.tts_model && v.tts_voice && (
+                    <span
+                      className={
+                        v.tts_available === false
+                          ? "badge-warning font-normal"
+                          : "badge-info font-normal"
+                      }
+                    >
+                      {v.tts_provider} · {v.tts_model} · {v.tts_voice}
+                    </span>
+                  )}
+                  {v.subtitles_mode && (
+                    <span className="badge-neutral font-normal">
+                      {v.subtitles_mode === "none"
+                        ? "Sin subtítulos"
+                        : v.subtitles_mode === "srt"
+                          ? "SRT"
+                          : "Subtítulos incrustados + SRT"}
                     </span>
                   )}
                   <span
