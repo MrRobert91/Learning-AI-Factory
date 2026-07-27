@@ -389,6 +389,48 @@ class AgentRunCreate(BaseModel):
     profile_id: str | None = None
 
 
+class CourseVideoCreate(BaseModel):
+    include_subtitles: bool = True
+    include_chapters: bool = True
+    transition: Literal["none", "fade_500ms", "gap_500ms"] = "none"
+
+
+class CourseVideoPreflightIssue(BaseModel):
+    code: str
+    lesson: str | None = None
+    detail: str
+
+
+class CourseVideoPreflightLesson(BaseModel):
+    module_index: int
+    lesson_index: int
+    module_title: str
+    lesson_title: str
+    label: str
+    video_artifact_id: str | None = None
+    video_version: int | None = None
+    subtitles_artifact_id: str | None = None
+    duration_seconds: float | None = None
+    orientation: Literal["horizontal", "vertical"] | None = None
+
+
+class CourseVideoPreflightRead(BaseModel):
+    ready: bool
+    ffmpeg_available: bool
+    include_subtitles: bool
+    include_chapters: bool
+    transition: Literal["none", "fade_500ms", "gap_500ms"]
+    subtitles_available: bool
+    total_duration_seconds: float
+    output_duration_seconds: float
+    orientation: Literal["horizontal", "vertical"] | None = None
+    width: int | None = None
+    height: int | None = None
+    input_signature: str | None = None
+    lessons: list[CourseVideoPreflightLesson] = []
+    issues: list[CourseVideoPreflightIssue] = []
+
+
 class JobEventRead(BaseModel):
     seq: int
     type: str

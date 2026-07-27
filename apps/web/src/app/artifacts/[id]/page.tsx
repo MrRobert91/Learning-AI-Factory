@@ -44,6 +44,9 @@ const TYPE_LABELS: Record<string, string> = {
   voice_script: "Guion de voz",
   video: "Vídeo",
   subtitles: "Subtítulos",
+  course_video: "Vídeo completo",
+  course_subtitles: "Subtítulos del curso",
+  course_video_manifest: "Capítulos del curso",
   publication_package: "Paquete de publicación",
   thumbnail: "Miniatura",
 };
@@ -84,6 +87,35 @@ function logoLabel(metadata: Record<string, unknown>): string | null {
   if (typeof metadata.logo !== "object" || metadata.logo === null) return null;
   const logo = metadata.logo as Record<string, unknown>;
   return typeof logo.name === "string" && logo.name ? `Logo ${logo.name}` : "Con logo";
+}
+
+function durationLabel(value: unknown): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return null;
+  const minutes = Math.floor(value / 60);
+  const seconds = Math.round(value % 60);
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+function sizeLabel(value: unknown): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return null;
+  if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(2)} GB`;
+  if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(value / 1024))} KB`;
+}
+
+function metadataId(metadata: Record<string, unknown>, key: string): string | null {
+  return typeof metadata[key] === "string" ? metadata[key] : null;
+}
+
+function courseVideoInputIds(metadata: Record<string, unknown>): string[] {
+  if (typeof metadata.inputs !== "object" || metadata.inputs === null) return [];
+  const videos = (metadata.inputs as Record<string, unknown>).videos;
+  if (!Array.isArray(videos)) return [];
+  return videos.flatMap((item) => {
+    if (typeof item !== "object" || item === null) return [];
+    const id = (item as Record<string, unknown>).id;
+    return typeof id === "string" ? [id] : [];
+  });
 }
 
 interface SlideImageMetadata {
@@ -350,6 +382,18 @@ export default function ArtifactViewerPage() {
             {logoLabel(artifact.metadata) && (
               <span className="badge-info">{logoLabel(artifact.metadata)}</span>
             )}
+            {artifact.type === "course_video" &&
+              durationLabel(artifact.metadata.duration_seconds) && (
+                <span className="badge-info">
+                  {durationLabel(artifact.metadata.duration_seconds)}
+                </span>
+              )}
+            {artifact.type === "course_video" &&
+              sizeLabel(artifact.metadata.size_bytes) && (
+                <span className="badge-info">
+                  {sizeLabel(artifact.metadata.size_bytes)}
+                </span>
+              )}
             <span>{new Date(artifact.created_at).toLocaleString("es")}</span>
           </p>
         </div>
@@ -551,7 +595,7 @@ export default function ArtifactViewerPage() {
               className="card mb-6 w-full max-w-4xl"
             />
           )}
-          {artifact.type === "video" && (
+          {(artifact.type === "video" || artifact.type === "course_video") && (
             <video
               controls
               src={"/api/artifacts/" + artifact.id + "/download"}
@@ -561,6 +605,66 @@ export default function ArtifactViewerPage() {
                   : "aspect-video"
               }`}
             />
+          )}
+          {artifact.type === "course_video" && (
+            <section className="card mb-6 p-4 sm:p-6">
+              <h2 className="text-sm font-semibold text-zinc-100">
+                Archivos e inputs de esta versión
+              </h2>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <a
+                  href={"/api/artifacts/" + artifact.id + "/download"}
+                  className="btn-secondary btn-sm"
+                >
+                  <IconDownload size={13} />
+                  MP4
+                </a>
+                {metadataId(artifact.metadata, "course_subtitles_id") && (
+                  <a
+                    href={
+                      "/api/artifacts/" +
+                      metadataId(artifact.metadata, "course_subtitles_id") +
+                      "/download"
+                    }
+                    className="btn-secondary btn-sm"
+                  >
+                    <IconDownload size={13} />
+                    SRT
+                  </a>
+                )}
+                {metadataId(artifact.metadata, "chapter_manifest_id") && (
+                  <a
+                    href={
+                      "/api/artifacts/" +
+                      metadataId(artifact.metadata, "chapter_manifest_id") +
+                      "/download"
+                    }
+                    className="btn-secondary btn-sm"
+                  >
+                    <IconDownload size={13} />
+                    Manifest de capítulos
+                  </a>
+                )}
+              </div>
+              {courseVideoInputIds(artifact.metadata).length > 0 && (
+                <div className="mt-4">
+                  <p className="text-xs font-semibold text-zinc-300">
+                    Vídeos seleccionados utilizados
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {courseVideoInputIds(artifact.metadata).map((inputId, index) => (
+                      <Link
+                        key={inputId}
+                        href={"/artifacts/" + inputId}
+                        className="badge-neutral hover:text-zinc-100"
+                      >
+                        Lección {index + 1}
+                      </Link>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </section>
           )}
           {artifact.format === "json" && artifact.content !== null ? (
             <article className="card mb-6 p-4 sm:p-6">
@@ -671,7 +775,9 @@ export default function ArtifactViewerPage() {
             <article className="card whitespace-pre-wrap p-6 font-mono text-[13px] leading-relaxed text-zinc-700">
               {artifact.content}
             </article>
-          ) : (
+          ) : ["video", "course_video", "thumbnail"].includes(
+              artifact.type,
+            ) ? null : (
             <p className="text-sm text-zinc-500">
               Este formato no tiene vista previa; usa el botón de descarga.
             </p>

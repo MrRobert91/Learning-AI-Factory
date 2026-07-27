@@ -9,9 +9,13 @@ from factory_agents.tools.tts import synthesize_cached
 from factory_agents.tools.video import (
     _concat_file_entry,
     _format_srt_time,
+    _run,
     build_srt,
     burn_subtitles,
     compose_video,
+    concat_course_videos,
+    ffmpeg_available,
+    probe_media,
     render_slide_images,
 )
 
@@ -107,6 +111,149 @@ def test_concat_file_entry_escapes_single_quotes():
         "file '/tmp/La metáfora del océano: entendiendo "
         "'\\''sustancia'\\'' y '\\''modos/segment-000.mp4'\n"
     )
+
+
+@pytest.mark.parametrize(
+    ("transition", "expected_filters"),
+    [
+        ("fade_500ms", ("xfade=transition=fade", "acrossfade=d=0.5")),
+        ("gap_500ms", ("color=c=black", "anullsrc", "cl=mono", "concat=n=3")),
+    ],
+)
+def test_course_video_transitions_build_controlled_filter_graphs(
+    monkeypatch, tmp_path, transition, expected_filters
+):
+    commands = []
+    monkeypatch.setattr("factory_agents.tools.video.ffmpeg_available", lambda: True)
+    monkeypatch.setattr(
+        "factory_agents.tools.video.probe_media",
+        lambda _path: {
+            "width": 1920,
+            "height": 1080,
+            "frame_rate": "30/1",
+            "audio_sample_rate": 44100,
+            "audio_channels": 1,
+            "audio_channel_layout": "mono",
+        },
+    )
+
+    def fake_run(command, timeout=600):
+        commands.append(command)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("factory_agents.tools.video._run", fake_run)
+    concat_course_videos(
+        [tmp_path / "one.mp4", tmp_path / "two.mp4"],
+        tmp_path / "course.mp4",
+        tmp_path / "work",
+        transition=transition,
+        durations=[2.0, 3.0],
+    )
+    filter_graph = commands[0][commands[0].index("-filter_complex") + 1]
+    assert all(value in filter_graph for value in expected_filters)
+
+
+def test_course_video_without_transition_prefers_stream_copy_and_chapters(
+    monkeypatch, tmp_path
+):
+    commands = []
+    monkeypatch.setattr("factory_agents.tools.video.ffmpeg_available", lambda: True)
+
+    def fake_run(command, timeout=600):
+        commands.append(command)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("factory_agents.tools.video._run", fake_run)
+    concat_course_videos(
+        [tmp_path / "one.mp4", tmp_path / "two.mp4"],
+        tmp_path / "course.mp4",
+        tmp_path / "work",
+        chapters=[
+            {
+                "title": "1.1 Inicio",
+                "start_seconds": 0,
+                "end_seconds": 2,
+            },
+            {
+                "title": "1.2 Final",
+                "start_seconds": 2,
+                "end_seconds": 5,
+            },
+        ],
+    )
+    command = commands[0]
+    assert command[command.index("-c") + 1] == "copy"
+    assert "-map_chapters" in command
+    assert (tmp_path / "work" / "chapters.ffmeta").is_file()
+
+
+@pytest.mark.parametrize(
+    ("size", "transition", "expected_duration"),
+    [
+        ("320x180", "none", 1.2),
+        ("180x320", "none", 1.2),
+        ("320x180", "gap_500ms", 1.7),
+        ("320x180", "fade_500ms", 0.7),
+    ],
+)
+def test_real_course_video_concat_for_orientations_and_transitions(
+    tmp_path, size, transition, expected_duration
+):
+    if not ffmpeg_available():
+        pytest.skip("ffmpeg/ffprobe no están disponibles")
+    inputs = []
+    for index in range(2):
+        path = tmp_path / f"lesson-{index}.mp4"
+        _run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                f"color=c={'blue' if index == 0 else 'green'}:s={size}:r=25:d=0.6",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=44100:duration=0.6",
+                "-shortest",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                str(path),
+            ],
+            timeout=60,
+        )
+        inputs.append(path)
+    output = concat_course_videos(
+        inputs,
+        tmp_path / "course.mp4",
+        tmp_path / "work-real",
+        transition=transition,
+        durations=[0.6, 0.6],
+        chapters=[
+            {
+                "title": "1.1",
+                "start_seconds": 0,
+                "end_seconds": expected_duration - 0.6,
+            },
+            {
+                "title": "1.2",
+                "start_seconds": expected_duration - 0.6,
+                "end_seconds": expected_duration,
+            },
+        ],
+    )
+    media = probe_media(output)
+    width, height = (int(value) for value in size.split("x"))
+    assert media["width"] == width
+    assert media["height"] == height
+    assert media["video_codec"] == "h264"
+    assert media["audio_codec"] == "aac"
+    assert media["duration_seconds"] == pytest.approx(expected_duration, abs=0.2)
 
 
 def test_vertical_video_uses_blurred_background_without_cropping_foreground(

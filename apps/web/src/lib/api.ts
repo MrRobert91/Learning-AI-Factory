@@ -112,6 +112,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     try {
       const body = await resp.json();
       if (typeof body.detail === "string") detail = body.detail;
+      if (
+        typeof body.detail === "object" &&
+        body.detail !== null &&
+        typeof body.detail.message === "string"
+      ) {
+        detail = body.detail.message;
+      }
     } catch {
       // keep statusText
     }
@@ -405,7 +412,13 @@ export interface Job {
     | "failed";
   error: string;
   project_id: string | null;
-  result: { artifact_id?: string } | null;
+  result: {
+    artifact_id?: string;
+    artifact_ids?: string[];
+    course_subtitles_id?: string | null;
+    chapter_manifest_id?: string | null;
+    cache_hit?: boolean;
+  } | null;
   control: {
     pause_requested_at?: string;
     paused_at?: string;
@@ -472,6 +485,44 @@ export interface Artifact {
     metadata: Record<string, unknown>;
     created_at: string;
   }[];
+}
+
+export type CourseVideoTransition = "none" | "fade_500ms" | "gap_500ms";
+
+export interface CourseVideoPreflightIssue {
+  code: string;
+  lesson: string | null;
+  detail: string;
+}
+
+export interface CourseVideoPreflightLesson {
+  module_index: number;
+  lesson_index: number;
+  module_title: string;
+  lesson_title: string;
+  label: string;
+  video_artifact_id: string | null;
+  video_version: number | null;
+  subtitles_artifact_id: string | null;
+  duration_seconds: number | null;
+  orientation: "horizontal" | "vertical" | null;
+}
+
+export interface CourseVideoPreflight {
+  ready: boolean;
+  ffmpeg_available: boolean;
+  include_subtitles: boolean;
+  include_chapters: boolean;
+  transition: CourseVideoTransition;
+  subtitles_available: boolean;
+  total_duration_seconds: number;
+  output_duration_seconds: number;
+  orientation: "horizontal" | "vertical" | null;
+  width: number | null;
+  height: number | null;
+  input_signature: string | null;
+  lessons: CourseVideoPreflightLesson[];
+  issues: CourseVideoPreflightIssue[];
 }
 
 async function streamIdeation(
@@ -740,6 +791,39 @@ export const api = {
     request<Job>(`/api/projects/${projectId}/agent-runs`, {
       method: "POST",
       body: JSON.stringify({ agent, profile_id: profileId ?? null }),
+    }),
+  getCourseVideoPreflight: (
+    projectId: string,
+    input?: {
+      include_subtitles?: boolean;
+      include_chapters?: boolean;
+      transition?: CourseVideoTransition;
+    },
+  ) => {
+    const params = new URLSearchParams();
+    if (input?.include_subtitles !== undefined) {
+      params.set("include_subtitles", String(input.include_subtitles));
+    }
+    if (input?.include_chapters !== undefined) {
+      params.set("include_chapters", String(input.include_chapters));
+    }
+    if (input?.transition) params.set("transition", input.transition);
+    const query = params.size > 0 ? `?${params.toString()}` : "";
+    return request<CourseVideoPreflight>(
+      `/api/projects/${projectId}/course-video/preflight${query}`,
+    );
+  },
+  createCourseVideo: (
+    projectId: string,
+    input: {
+      include_subtitles: boolean;
+      include_chapters: boolean;
+      transition: CourseVideoTransition;
+    },
+  ) =>
+    request<Job>(`/api/projects/${projectId}/course-video`, {
+      method: "POST",
+      body: JSON.stringify(input),
     }),
   uploadArtifact: async (
     projectId: string,
