@@ -26,6 +26,7 @@ class ProjectCreate(BaseModel):
     style: str = ""
     output_format: str = ""
     duration_spec: DurationSpec | None = None
+    research_mode: Literal["provided_only", "provided_plus_web", "web_only"] = "web_only"
 
 
 class ProjectUpdate(BaseModel):
@@ -37,11 +38,25 @@ class ProjectUpdate(BaseModel):
     style: str | None = None
     output_format: str | None = None
     duration_spec: DurationSpec | None = None
+    research_mode: Literal["provided_only", "provided_plus_web", "web_only"] | None = None
     status: str | None = None
 
 
 class IdeationCreate(BaseModel):
     idea: str = Field(min_length=1, description="Idea inicial, aunque sea vaga")
+    research_mode: Literal["provided_only", "provided_plus_web", "web_only"] = "web_only"
+
+
+class IdeationDraftCreate(IdeationCreate):
+    pass
+
+
+class IdeationResearchModeUpdate(BaseModel):
+    research_mode: Literal["provided_only", "provided_plus_web", "web_only"]
+
+
+class IdeationUrlCreate(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
 
 
 class IdeationMessageCreate(BaseModel):
@@ -67,14 +82,36 @@ class IdeationSessionSummary(BaseModel):
     status: str
     initial_idea: str
     project_id: str | None
+    research_mode: Literal["provided_only", "provided_plus_web", "web_only"]
+    source_count: int = 0
     has_brief: bool = False
     created_at: datetime
     updated_at: datetime
 
 
+class IdeationSourceRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: str
+    session_id: str | None
+    project_id: str | None
+    kind: str
+    media_type: str
+    name: str
+    original_url: str | None
+    final_url: str | None
+    sha256: str
+    size_bytes: int
+    status: Literal["pending", "ready", "failed"]
+    error: str
+    metadata: dict = Field(default_factory=dict, validation_alias="source_metadata")
+    captured_at: datetime
+
+
 class IdeationSessionRead(IdeationSessionSummary):
     brief: dict | None = None
     messages: list[IdeationMessageRead] = []
+    sources: list[IdeationSourceRead] = []
 
 
 class AgentSpecRead(BaseModel):
@@ -118,6 +155,14 @@ class LogoGenerateRequest(BaseModel):
     name: str = Field(default="", max_length=120)
 
 
+class TTSPreviewRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=300)
+    tts_provider: Literal["openai", "openrouter"] | None = None
+    tts_model: str | None = None
+    tts_language: str | None = None
+    tts_voice: str | None = None
+
+
 class ProfileCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     soul_md: str = ""
@@ -131,6 +176,11 @@ class ProfileCreate(BaseModel):
     automatic_review_enabled: bool | None = None
     max_automatic_regenerations: int | None = Field(default=None, ge=0, le=5)
     human_review_enabled: bool | None = None
+    tts_provider: Literal["openai", "openrouter"] | None = None
+    tts_model: str | None = None
+    tts_language: str | None = None
+    tts_voice: str | None = None
+    subtitles_mode: Literal["none", "srt", "burned_and_srt"] | None = None
     slide_palette: dict[str, str] | None = None
     logo_mode: Literal["none", "uploaded", "generated"] | None = None
     active_logo_id: str | None = None
@@ -156,6 +206,11 @@ class ProfileUpdate(BaseModel):
     automatic_review_enabled: bool | None = None
     max_automatic_regenerations: int | None = Field(default=None, ge=0, le=5)
     human_review_enabled: bool | None = None
+    tts_provider: Literal["openai", "openrouter"] | None = None
+    tts_model: str | None = None
+    tts_language: str | None = None
+    tts_voice: str | None = None
+    subtitles_mode: Literal["none", "srt", "burned_and_srt"] | None = None
     slide_palette: dict[str, str] | None = None
     logo_mode: Literal["none", "uploaded", "generated"] | None = None
     active_logo_id: str | None = None
@@ -185,6 +240,12 @@ class ProfileRead(BaseModel):
     automatic_review_enabled: bool
     max_automatic_regenerations: int
     human_review_enabled: bool
+    tts_provider: Literal["openai", "openrouter"] | None = None
+    tts_model: str | None = None
+    tts_language: str | None = None
+    tts_voice: str | None = None
+    tts_available: bool | None = None
+    subtitles_mode: Literal["none", "srt", "burned_and_srt"] | None = None
     slide_palette: dict[str, str] | None = None
     logo_mode: Literal["none", "uploaded", "generated"] | None = None
     active_logo_id: str | None = None
@@ -215,6 +276,12 @@ class ProfileVersionRead(BaseModel):
     automatic_review_enabled: bool
     max_automatic_regenerations: int
     human_review_enabled: bool
+    tts_provider: Literal["openai", "openrouter"] | None = None
+    tts_model: str | None = None
+    tts_language: str | None = None
+    tts_voice: str | None = None
+    tts_available: bool | None = None
+    subtitles_mode: Literal["none", "srt", "burned_and_srt"] | None = None
     slide_palette: dict[str, str] | None = None
     logo_mode: Literal["none", "uploaded", "generated"] | None = None
     active_logo_id: str | None = None
@@ -338,6 +405,7 @@ class JobRead(BaseModel):
     project_id: str | None
     result: dict | None = None
     control: dict = Field(default_factory=dict)
+    usage_summary: dict = Field(default_factory=dict)
     review_policies: dict[str, AutomaticReviewPolicyRead] = {}
     created_at: datetime
     started_at: datetime | None
@@ -399,6 +467,8 @@ class ProjectRead(BaseModel):
     style: str
     output_format: str
     duration_spec: DurationSpec | None
+    research_mode: Literal["provided_only", "provided_plus_web", "web_only"]
+    sources: list[IdeationSourceRead] = []
     status: str
     created_at: datetime
     updated_at: datetime

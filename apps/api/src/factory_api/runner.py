@@ -11,6 +11,7 @@ import json
 import logging
 import shutil
 import uuid
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -21,7 +22,7 @@ from factory_agents.duration import (
     research_budget,
     validate_course_plan_structure,
 )
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from factory_api.artifact_versions import (
     add_artifact_version,
@@ -31,7 +32,7 @@ from factory_api.artifact_versions import (
 )
 from factory_api.config import get_settings
 from factory_api.db import SessionLocal
-from factory_api.models import Artifact, Job, JobEvent
+from factory_api.models import Artifact, Job, JobEvent, UsageRecord
 from factory_api.run_control import (
     RunCanceled,
     RunPaused,
@@ -41,8 +42,16 @@ from factory_api.run_control import (
     recover_jobs,
     save_scope_state,
 )
+from factory_api.usage import (
+    attach_usage_to_artifact,
+    record_usage,
+    usage_record_by_work_unit,
+)
 
 logger = logging.getLogger(__name__)
+_CURRENT_WORKFLOW_STEP: ContextVar[int | None] = ContextVar(
+    "current_workflow_step", default=None
+)
 
 
 class JobRunner:
@@ -134,7 +143,13 @@ class JobRunner:
                     "project_id": job.project_id,
                 },
             )
-        _TOKENS_USED.setdefault(job_id, 0)
+        with SessionLocal() as db:
+            persisted_tokens = db.scalar(
+                select(func.coalesce(func.sum(UsageRecord.total_tokens), 0)).where(
+                    UsageRecord.job_id == job_id
+                )
+            )
+        _TOKENS_USED[job_id] = int(persisted_tokens or 0)
 
         try:
             handler = HANDLERS[kind]
@@ -375,9 +390,20 @@ class BudgetExceeded(RuntimeError):
 _TOKENS_USED: dict[str, int] = {}
 
 
-def add_tokens(job_id: str, tokens: int) -> None:
+def add_tokens(job_id: str, tokens: int, *, persisted: bool = False) -> None:
     settings = get_settings()
-    total = _TOKENS_USED.get(job_id, 0) + max(tokens, 0)
+    if persisted:
+        with SessionLocal() as db:
+            total = int(
+                db.scalar(
+                    select(func.coalesce(func.sum(UsageRecord.total_tokens), 0)).where(
+                        UsageRecord.job_id == job_id
+                    )
+                )
+                or 0
+            )
+    else:
+        total = _TOKENS_USED.get(job_id, 0) + max(tokens, 0)
     _TOKENS_USED[job_id] = total
     estimated_usd = total / 1_000_000 * settings.budget_price_per_mtok_usd
     if settings.budget_usd_per_run > 0 and estimated_usd > settings.budget_usd_per_run:
@@ -389,50 +415,200 @@ def add_tokens(job_id: str, tokens: int) -> None:
 
 
 class TrackedClient:
-    """Wraps the OpenAI-compatible client to enforce the per-run budget."""
+    """Wrap the direct OpenAI-compatible client with persistent accounting."""
 
-    def __init__(self, inner, job_id: str):
+    def __init__(
+        self,
+        inner,
+        job_id: str,
+        *,
+        agent: str = "",
+        operation: str = "llm",
+        work_unit_key: str = "",
+        workflow_step: int | None = None,
+    ):
         self._inner = inner
         self._job_id = job_id
+        self._agent = agent
+        self._operation = operation
+        self._work_unit_key = work_unit_key
+        self._workflow_step = workflow_step
+        self._call_index = 0
         self.chat = type(
             "chat", (), {"completions": type("completions", (), {"create": self._create})()}
         )()
 
     def _create(self, **kwargs):
         response = self._inner.chat.completions.create(**kwargs)
+        self._call_index += 1
         usage = getattr(response, "usage", None)
         if usage is not None:
+            input_tokens = getattr(usage, "prompt_tokens", 0) or 0
+            output_tokens = getattr(usage, "completion_tokens", 0) or 0
+            request_id = getattr(response, "id", None)
+            effective_model = getattr(response, "model", None) or kwargs.get("model", "")
+            usage_record_id = record_usage(
+                job_id=self._job_id,
+                workflow_step=self._workflow_step,
+                agent=self._agent,
+                operation=self._operation,
+                provider="openrouter",
+                model=effective_model,
+                provider_request_id=request_id,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost_usd=getattr(usage, "cost", None),
+                work_unit_key=self._work_unit_key,
+                idempotency_key=(
+                    None
+                    if request_id
+                    else (
+                        f"{self._job_id}:{self._agent}:{self._operation}:"
+                        f"{self._work_unit_key}:{self._call_index}"
+                    )
+                ),
+            )
             add_tokens(
                 self._job_id,
-                (getattr(usage, "prompt_tokens", 0) or 0)
-                + (getattr(usage, "completion_tokens", 0) or 0),
+                input_tokens + output_tokens,
+                persisted=usage_record_id is not None,
             )
         return response
 
 
-def _client(job_id: str):
+def _client(
+    job_id: str,
+    *,
+    agent: str = "",
+    operation: str = "llm",
+    work_unit_key: str = "",
+    workflow_step: int | None = None,
+):
     from factory_agents.llm import get_llm_client
 
     settings = get_settings()
-    return TrackedClient(get_llm_client(settings.openrouter_api_key), job_id)
+    return TrackedClient(
+        get_llm_client(settings.openrouter_api_key),
+        job_id,
+        agent=agent,
+        operation=operation,
+        work_unit_key=work_unit_key,
+        workflow_step=workflow_step,
+    )
 
 
-def _budget_callbacks(job_id: str) -> list:
-    """LangChain callback tracking deep-agent token usage against the budget."""
+def _budget_callbacks(
+    job_id: str,
+    *,
+    agent: str = "",
+    operation: str = "llm",
+    work_unit_key: str = "",
+    workflow_step: int | None = None,
+) -> list:
+    """LangChain callback tracking deep-agent usage and the budget."""
     from langchain_core.callbacks import BaseCallbackHandler
 
     class BudgetCallback(BaseCallbackHandler):
         raise_error = True
+        call_index = 0
 
         def on_llm_end(self, response, **kwargs):
+            self.call_index += 1
+            seen: set[str] = set()
+            recorded = False
             for generations in response.generations:
                 for generation in generations:
                     message = getattr(generation, "message", None)
                     usage = getattr(message, "usage_metadata", None) or {}
+                    response_metadata = getattr(message, "response_metadata", None) or {}
+                    request_id = (
+                        getattr(message, "id", None)
+                        or response_metadata.get("id")
+                        or response_metadata.get("generation_id")
+                    )
+                    dedupe = str(request_id or id(message))
+                    if dedupe in seen:
+                        continue
+                    seen.add(dedupe)
+                    input_tokens = usage.get("input_tokens", 0) or 0
+                    output_tokens = usage.get("output_tokens", 0) or 0
+                    if not (input_tokens or output_tokens):
+                        continue
+                    effective_model = (
+                        response_metadata.get("model_name")
+                        or response_metadata.get("model")
+                        or ""
+                    )
+                    usage_record_id = record_usage(
+                        job_id=job_id,
+                        workflow_step=workflow_step,
+                        agent=agent,
+                        operation=operation,
+                        provider="openrouter",
+                        model=effective_model,
+                        provider_request_id=request_id,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cost_usd=usage.get("cost") or response_metadata.get("cost"),
+                        work_unit_key=work_unit_key,
+                        idempotency_key=(
+                            None
+                            if request_id
+                            else (
+                                f"{job_id}:{agent}:{operation}:{work_unit_key}:"
+                                f"{self.call_index}:{len(seen)}"
+                            )
+                        ),
+                    )
                     add_tokens(
                         job_id,
-                        (usage.get("input_tokens", 0) or 0) + (usage.get("output_tokens", 0) or 0),
+                        input_tokens + output_tokens,
+                        persisted=usage_record_id is not None,
                     )
+                    recorded = True
+            if recorded:
+                return
+            llm_output = getattr(response, "llm_output", None) or {}
+            token_usage = llm_output.get("token_usage") or llm_output.get("usage") or {}
+            input_tokens = (
+                token_usage.get("prompt_tokens")
+                or token_usage.get("input_tokens")
+                or 0
+            )
+            output_tokens = (
+                token_usage.get("completion_tokens")
+                or token_usage.get("output_tokens")
+                or 0
+            )
+            if input_tokens or output_tokens:
+                run_id = kwargs.get("run_id")
+                request_id = llm_output.get("id") or llm_output.get("generation_id")
+                usage_record_id = record_usage(
+                    job_id=job_id,
+                    workflow_step=workflow_step,
+                    agent=agent,
+                    operation=operation,
+                    provider="openrouter",
+                    model=llm_output.get("model_name") or llm_output.get("model") or "",
+                    provider_request_id=request_id,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cost_usd=token_usage.get("cost") or llm_output.get("cost"),
+                    work_unit_key=work_unit_key,
+                    idempotency_key=(
+                        None
+                        if request_id
+                        else (
+                            f"{job_id}:{agent}:{operation}:{work_unit_key}:"
+                            f"{run_id or self.call_index}"
+                        )
+                    ),
+                )
+                add_tokens(
+                    job_id,
+                    input_tokens + output_tokens,
+                    persisted=usage_record_id is not None,
+                )
 
     return [BudgetCallback()]
 
@@ -528,6 +704,7 @@ def _save_artifact(
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     abs_path.write_text(content, encoding="utf-8")
     with SessionLocal() as db:
+        artifact_metadata_value = dict(metadata or {})
         artifact = add_artifact_version(
             db,
             project_id=project_id,
@@ -536,7 +713,17 @@ def _save_artifact(
             title=title,
             path=rel_path,
             created_by_job_id=job_id,
-            metadata=metadata,
+            metadata=artifact_metadata_value,
+        )
+        attach_usage_to_artifact(
+            db,
+            artifact,
+            job_id=job_id,
+            agent=(
+                artifact_metadata_value.get("agent")
+                or artifact_metadata_value.get("duration_agent")
+            ),
+            usage_record_ids=artifact_metadata_value.get("usage_record_ids"),
         )
         db.commit()
         logger.info(
@@ -613,14 +800,50 @@ def _duration_spec(payload: dict) -> DurationSpec | None:
 
 def _duration_metadata(payload: dict, agent: str) -> dict:
     spec = _duration_spec(payload)
-    if spec is None:
-        return {}
-    orientation = payload.get("orientation", "horizontal")
-    return {
-        "duration_spec": spec.model_dump(),
-        "duration_metrics": duration_metrics(spec, orientation),
-        "duration_agent": agent,
+    metadata = {
+        "agent": agent,
+        "research_mode": payload.get("research_mode", "web_only"),
+        "source_ids": list(payload.get("source_ids") or []),
     }
+    if spec is not None:
+        orientation = payload.get("orientation", "horizontal")
+        metadata.update(
+            {
+                "duration_spec": spec.model_dump(),
+                "duration_metrics": duration_metrics(spec, orientation),
+                "duration_agent": agent,
+            }
+        )
+    return metadata
+
+
+def _project_source_documents(project_id: str, source_ids: list[str]) -> list[dict]:
+    from factory_api.models import IdeationSource
+
+    if not source_ids:
+        return []
+    with SessionLocal() as db:
+        sources = db.scalars(
+            select(IdeationSource).where(
+                IdeationSource.project_id == project_id,
+                IdeationSource.id.in_(source_ids),
+                IdeationSource.status == "ready",
+            )
+        ).all()
+        by_id = {source.id: source for source in sources}
+        return [
+            {
+                "id": source_id,
+                "name": by_id[source_id].name,
+                "kind": by_id[source_id].kind,
+                "media_type": by_id[source_id].media_type,
+                "size_bytes": by_id[source_id].size_bytes,
+                "text": by_id[source_id].extracted_text,
+                "metadata": by_id[source_id].source_metadata,
+            }
+            for source_id in source_ids
+            if source_id in by_id
+        ]
 
 
 def _emit_duration_event(job_id: str, payload: dict, agent: str) -> None:
@@ -689,6 +912,14 @@ def run_curator_job(job_id: str, payload: dict) -> dict:
         return {"artifact_id": cached["artifact_id"]}
     _emit_duration_event(job_id, payload, "curator")
     spec = _duration_spec(payload)
+    source_documents = _project_source_documents(
+        payload["project_id"], list(payload.get("source_ids") or [])
+    )
+    research_mode = payload.get("research_mode", "web_only")
+    if research_mode == "provided_only" and not source_documents:
+        raise RuntimeError(
+            "El modo «Solo fuentes proporcionadas» requiere al menos una fuente válida"
+        )
     final_text = ""
     for event in run_curator(
         _augment_input(payload["task_input"], payload, "curator"),
@@ -699,8 +930,18 @@ def run_curator_job(job_id: str, payload: dict) -> dict:
         soul_md=payload.get("soul_md", ""),
         agents_md=payload.get("agents_md", ""),
         recursion_limit=settings.agent_recursion_limit,
-        callbacks=_budget_callbacks(job_id),
+        callbacks=_budget_callbacks(
+            job_id,
+            agent="curator",
+            work_unit_key="curator",
+            workflow_step=payload.get("_workflow_step"),
+        ),
         max_searches=research_budget(spec.total_minutes)["searches_max"] if spec else None,
+        research_mode=research_mode,
+        source_documents=source_documents,
+        max_source_queries=(
+            research_budget(spec.total_minutes)["searches_max"] if spec else 12
+        ),
     ):
         if event.type == "result":
             final_text = event.summary
@@ -750,7 +991,12 @@ def run_planner_job(job_id: str, payload: dict) -> dict:
             payload,
             "planner",
         ),
-        client=_client(job_id),
+        client=_client(
+            job_id,
+            agent="planner",
+            work_unit_key="planner",
+            workflow_step=payload.get("_workflow_step"),
+        ),
         model=payload.get("model") or settings.openrouter_model,
         soul_md=payload.get("soul_md", ""),
         agents_md=payload.get("agents_md", ""),
@@ -838,7 +1084,12 @@ def run_lessons_job(job_id: str, payload: dict) -> dict:
             soul_md=payload.get("soul_md", ""),
             agents_md=payload.get("agents_md", ""),
             recursion_limit=settings.agent_recursion_limit,
-            callbacks=_budget_callbacks(job_id),
+            callbacks=_budget_callbacks(
+                job_id,
+                agent="lessons",
+                work_unit_key=f"lesson:{mi}.{li}",
+                workflow_step=payload.get("_workflow_step"),
+            ),
         ):
             if event.type == "result":
                 final_text = event.summary
@@ -912,7 +1163,12 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
             raise RuntimeError(
                 "El plan seleccionado no respeta la estructura: " + "; ".join(problems)
             )
-    client = _client(job_id)
+    client = _client(
+        job_id,
+        agent="slides",
+        work_unit_key="slides",
+        workflow_step=payload.get("_workflow_step"),
+    )
 
     with SessionLocal() as db:
         lesson_artifacts = db.scalars(
@@ -1077,6 +1333,27 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
                     job_id, event_type, f"[{lesson_title}] {summary}", data
                 ),
             )
+            for image in image_records:
+                if image.get("status") != "generated":
+                    continue
+                record_usage(
+                    job_id=job_id,
+                    workflow_step=payload.get("_workflow_step"),
+                    agent="slides",
+                    operation="image",
+                    provider="openrouter",
+                    model=str(image.get("model") or image_model),
+                    image_count=1,
+                    cost_usd=image.get("cost_usd"),
+                    work_unit_key=f"slides:{title}:image:{image.get('id', '')}",
+                    idempotency_key=(
+                        f"{job_id}:slides:{title}:image:{image.get('id', '')}"
+                    ),
+                    metadata={
+                        "seed": image.get("seed"),
+                        "style": image.get("style"),
+                    },
+                )
         logo_record = None
         if logo_source is not None and isinstance(slide_logo, dict):
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -1146,6 +1423,11 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
             for item in image_records
             if item.get("cost_usd") is not None
         )
+        logo_usage_id = None
+        if isinstance(slide_logo, dict) and slide_logo.get("source") == "generated":
+            logo_usage_id = usage_record_by_work_unit(
+                f"profile-logo:{payload.get('profile_id')}:{slide_logo.get('id')}"
+            )
         artifact_id = _save_artifact(
             job_id,
             payload["project_id"],
@@ -1163,6 +1445,7 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
                 "palette_warnings": contrast_warnings,
                 "images": image_records,
                 "logo": logo_record,
+                "usage_record_ids": [logo_usage_id] if logo_usage_id else [],
                 "image_generation": {
                     "enabled": images_enabled,
                     "model": image_model if images_enabled else None,
@@ -1249,6 +1532,7 @@ def _register_artifact_file(
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(src_path, dst)
     with SessionLocal() as db:
+        metadata_value = dict(metadata or {})
         artifact = add_artifact_version(
             db,
             project_id=project_id,
@@ -1257,7 +1541,14 @@ def _register_artifact_file(
             title=title,
             path=rel_path,
             created_by_job_id=job_id,
-            metadata=metadata,
+            metadata=metadata_value,
+        )
+        attach_usage_to_artifact(
+            db,
+            artifact,
+            job_id=job_id,
+            agent=metadata_value.get("agent") or metadata_value.get("duration_agent"),
+            usage_record_ids=metadata_value.get("usage_record_ids"),
         )
         db.commit()
         return artifact.id
@@ -1303,7 +1594,12 @@ def run_script_job(job_id: str, payload: dict) -> dict:
     if not decks:
         raise RuntimeError("Falta el artefacto 'slide_deck': genera o sube slides primero")
     lessons = _latest_by_base(payload["project_id"], "lesson_content")
-    client = _client(job_id)
+    client = _client(
+        job_id,
+        agent="script",
+        work_unit_key="script",
+        workflow_step=payload.get("_workflow_step"),
+    )
     _emit_duration_event(job_id, payload, "script")
     spec = _duration_spec(payload)
 
@@ -1366,6 +1662,7 @@ def run_script_job(job_id: str, payload: dict) -> dict:
 
 def run_voice_job(job_id: str, payload: dict) -> dict:
     from factory_agents.agents.voice import render_voice_input, run_voice
+    from factory_agents.tools.tts import default_tts_config, resolve_tts_config
 
     settings = get_settings()
     scripts = _latest_by_base(payload["project_id"], "teaching_script")
@@ -1373,8 +1670,27 @@ def run_voice_job(job_id: str, payload: dict) -> dict:
         raise RuntimeError(
             "Falta el artefacto 'teaching_script': ejecuta antes el Guionista docente"
         )
-    client = _client(job_id)
+    client = _client(
+        job_id,
+        agent="voice",
+        work_unit_key="voice",
+        workflow_step=payload.get("_workflow_step"),
+    )
     language = payload.get("project", {}).get("language", "es")
+    tts_candidate = payload.get("tts_config") or default_tts_config(
+        model=settings.tts_model,
+        voice=settings.tts_voice,
+    )
+    try:
+        tts_config = resolve_tts_config(
+            tts_candidate,
+            project_language=language,
+        )
+    except ValueError as exc:
+        raise RuntimeError(
+            f"La configuración TTS del perfil Voice no es compatible con "
+            f"el idioma del proyecto ({language}): {exc}"
+        ) from exc
     _emit_duration_event(job_id, payload, "voice")
     spec = _duration_spec(payload)
 
@@ -1418,6 +1734,12 @@ def run_voice_job(job_id: str, payload: dict) -> dict:
             metadata={
                 **_duration_metadata(payload, "voice"),
                 "llm_model": payload.get("model") or settings.openrouter_model,
+                "tts": {
+                    **tts_config,
+                    "profile_id": payload.get("profile_id"),
+                    "profile_version": payload.get("profile_version"),
+                    "llm_model": payload.get("model") or settings.openrouter_model,
+                },
             },
         )
         artifact_ids.append(artifact_id)
@@ -1440,9 +1762,16 @@ def run_voice_job(job_id: str, payload: dict) -> dict:
 
 def run_video_job(job_id: str, payload: dict) -> dict:
     from factory_agents.contracts import VoiceScript
-    from factory_agents.tools.tts import OpenAITTSProvider, synthesize_cached
+    from factory_agents.tools.tts import (
+        build_tts_provider,
+        default_tts_config,
+        estimated_tts_cost,
+        resolve_tts_config,
+        synthesize_cached_with_status,
+    )
     from factory_agents.tools.video import (
         build_srt,
+        burn_subtitles,
         compose_video,
         probe_duration,
         render_slide_images,
@@ -1454,12 +1783,10 @@ def run_video_job(job_id: str, payload: dict) -> dict:
     if not voices:
         raise RuntimeError("Falta el artefacto 'voice_script': ejecuta antes el Adaptador de voz")
 
-    provider = OpenAITTSProvider(
-        settings.openai_api_key, voice=settings.tts_voice, model=settings.tts_model
-    )
     cache_dir = settings.data_dir / "tts-cache"
     workdir_root = settings.data_dir / "runs" / job_id
     orientation = payload.get("orientation", "horizontal")
+    subtitles_mode = payload.get("subtitles_mode", "none")
     width, height = ((1080, 1920) if orientation == "vertical" else (1920, 1080))
     _emit_duration_event(job_id, payload, "video")
     spec = _duration_spec(payload)
@@ -1510,6 +1837,26 @@ def run_video_job(job_id: str, payload: dict) -> dict:
         voice_script = VoiceScript.model_validate_json(
             (settings.data_dir / voice_artifact.path).read_text(encoding="utf-8")
         )
+        voice_metadata = artifact_metadata(voice_artifact)
+        tts_candidate = voice_metadata.get("tts") or default_tts_config(
+            model=settings.tts_model,
+            voice=settings.tts_voice,
+        )
+        try:
+            tts_config = resolve_tts_config(
+                tts_candidate,
+                project_language=payload.get("project", {}).get("language", "es"),
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                f"El voice_script seleccionado para «{base}» tiene una "
+                f"configuración TTS no disponible: {exc}"
+            ) from exc
+        provider = build_tts_provider(
+            tts_config,
+            openai_api_key=settings.openai_api_key,
+            openrouter_api_key=settings.openrouter_api_key,
+        )
         append_event(
             job_id,
             "stage",
@@ -1517,28 +1864,75 @@ def run_video_job(job_id: str, payload: dict) -> dict:
         )
         pairs: list[tuple] = []
         srt_segments: list[tuple[str, float]] = []
-        for segment_index, segment in enumerate(voice_script.segments):
+        for segment_index, segment in enumerate(voice_script.segments, start=1):
             segment_unit, cached_segment = _before_unit(
                 job_id,
                 payload,
                 "tts",
                 f"{voice_artifact.id}:{segment_index}",
-                f"Preparando segmento {segment_index + 1} de {base}",
+                f"Preparando segmento {segment_index} de {base}",
             )
-            audio = (
+            cached_audio = (
                 Path(cached_segment["audio_path"])
                 if cached_segment and cached_segment.get("audio_path")
-                else synthesize_cached(provider, segment.text, cache_dir)
+                else None
             )
-            if not audio.is_file():
-                audio = synthesize_cached(provider, segment.text, cache_dir)
-            if cached_segment is None:
+            reused_control_unit = cached_audio is not None and cached_audio.is_file()
+            if reused_control_unit:
+                audio = cached_audio
+                cache_hit = True
+            else:
+                audio, cache_hit = synthesize_cached_with_status(
+                    provider, segment.text, cache_dir
+                )
+            record_usage(
+                job_id=job_id,
+                workflow_step=payload.get("_workflow_step"),
+                agent="video",
+                operation="tts",
+                provider=tts_config["tts_provider"],
+                model=tts_config["tts_model"],
+                provider_request_id=(
+                    None if cache_hit else getattr(provider, "last_generation_id", None)
+                ),
+                input_characters=len(segment.text),
+                cost_usd=(
+                    0
+                    if cache_hit
+                    else estimated_tts_cost(tts_config, len(segment.text))
+                ),
+                cost_source=(
+                    "provider_actual"
+                    if cache_hit
+                    else (
+                        "estimated_catalog"
+                        if estimated_tts_cost(tts_config, len(segment.text)) is not None
+                        else "unknown"
+                    )
+                ),
+                pricing_snapshot={
+                    "currency": "USD",
+                    "cache_hit": cache_hit,
+                    "price_per_million_characters_usd": tts_config.get(
+                        "price_per_million_characters_usd"
+                    ),
+                },
+                work_unit_key=f"video:{base}:tts:{segment_index}",
+                idempotency_key=f"{job_id}:video:{base}:tts:{segment_index}",
+                metadata={
+                    "language": tts_config["tts_language_effective"],
+                    "voice": tts_config["tts_voice"],
+                    "cache_hit": cache_hit,
+                    "segment": segment_index,
+                },
+            )
+            if not reused_control_unit:
                 _complete_unit(
                     job_id,
                     "tts",
                     segment_unit,
                     {"audio_path": str(audio)},
-                    message=f"Segmento {segment_index + 1} de {base} sintetizado",
+                    message=f"Segmento {segment_index} de {base} sintetizado",
                 )
             image = images[min(segment.slide, len(images)) - 1]
             pairs.append((image, audio))
@@ -1556,10 +1950,18 @@ def run_video_job(job_id: str, payload: dict) -> dict:
             voice_artifact.id,
             f"Preparando el montaje ffmpeg de {base}",
         )
+        srt_content = build_srt(srt_segments)
+        srt_path = workdir / "subtitles.srt"
+        if subtitles_mode != "none":
+            srt_path.parent.mkdir(parents=True, exist_ok=True)
+            srt_path.write_text(srt_content, encoding="utf-8")
         out_mp4 = (
             Path(cached_compose["video_path"])
             if cached_compose and cached_compose.get("video_path")
             else workdir / "lesson.mp4"
+        )
+        subtitle_style = (
+            cached_compose.get("subtitle_style") if cached_compose else None
         )
         if cached_compose is None or not out_mp4.is_file():
             append_event(
@@ -1567,15 +1969,59 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                 "stage",
                 f"Montando vídeo {orientation} de {base} (ffmpeg)…",
             )
+            out_mp4 = workdir / "lesson.mp4"
             compose_video(pairs, out_mp4, workdir / "segments", orientation=orientation)
+            if subtitles_mode == "burned_and_srt":
+                append_event(job_id, "stage", f"Incrustando subtítulos de {base}…")
+                out_mp4, subtitle_style = burn_subtitles(
+                    out_mp4,
+                    srt_path,
+                    workdir / "lesson-subtitled.mp4",
+                    orientation=orientation,
+                    logo_metadata=(artifact_metadata(deck).get("logo") or {}),
+                )
+            record_usage(
+                job_id=job_id,
+                workflow_step=payload.get("_workflow_step"),
+                agent="video",
+                operation="other",
+                provider="local",
+                model="ffmpeg",
+                cost_usd=0,
+                cost_source="provider_actual",
+                work_unit_key=f"video:{base}:ffmpeg",
+                idempotency_key=f"{job_id}:video:{base}:ffmpeg",
+                metadata={"local_operation": True},
+            )
             _complete_unit(
                 job_id,
                 "video-compose",
                 compose_unit,
-                {"video_path": str(out_mp4)},
+                {
+                    "video_path": str(out_mp4),
+                    "subtitle_style": subtitle_style,
+                },
                 message=f"Montaje ffmpeg de {base} completado",
             )
 
+        srt_id = None
+        if subtitles_mode != "none":
+            srt_id = _save_artifact_if_changed(
+                job_id,
+                payload["project_id"],
+                "subtitles",
+                f"Subtítulos — {base}",
+                srt_content,
+                format_="text",
+                metadata={
+                    **_duration_metadata(payload, "video"),
+                    "voice_script_id": voice_artifact.id,
+                    "duration_seconds": duration,
+                    "subtitles_mode": subtitles_mode,
+                    "tts": tts_config,
+                },
+            )
+            subtitle_ids.append(srt_id)
         video_id = _register_artifact_file(
             job_id,
             payload["project_id"],
@@ -1593,6 +2039,10 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                 ),
                 "slide_deck_id": deck.id,
                 "voice_script_id": voice_artifact.id,
+                "tts": tts_config,
+                "subtitles_mode": subtitles_mode,
+                "subtitles_id": srt_id,
+                "subtitles_style": subtitle_style,
                 "duration_seconds": duration,
                 "target_duration_seconds": target_seconds,
                 "duration_deviation_ratio": deviation_ratio,
@@ -1603,21 +2053,7 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                 ),
             },
         )
-        srt_id = _save_artifact_if_changed(
-            job_id,
-            payload["project_id"],
-            "subtitles",
-            f"Subtítulos — {base}",
-            build_srt(srt_segments),
-            format_="text",
-            metadata={
-                **_duration_metadata(payload, "video"),
-                "voice_script_id": voice_artifact.id,
-                "duration_seconds": duration,
-            },
-        )
         video_ids.append(video_id)
-        subtitle_ids.append(srt_id)
         if deviation_ratio is not None and spec and deviation_ratio > spec.tolerance_ratio:
             append_event(
                 job_id,
@@ -1640,6 +2076,7 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                 "artifact_id": video_id,
                 "subtitles_id": srt_id,
                 "orientation": orientation,
+                "subtitles_mode": subtitles_mode,
             },
         )
         _complete_unit(
@@ -1687,6 +2124,27 @@ def _augment_input(task_input: str, payload: dict, agent: str | None = None) -> 
                 orientation=payload.get("orientation", "horizontal"),
             )
         )
+    if agent:
+        research_mode = payload.get("research_mode", "web_only")
+        source_ids = list(payload.get("source_ids") or [])
+        policy = [
+            "# Procedencia de investigación congelada",
+            f"- Modo: {research_mode}",
+            f"- IDs del corpus: {', '.join(source_ids) if source_ids else 'ninguno'}",
+            "- Conserva las citas y la procedencia trazable del research brief.",
+        ]
+        if research_mode == "provided_only":
+            if agent == "curator":
+                policy.append(
+                    "- Interpreta el presupuesto de búsquedas como consultas al corpus, "
+                    "fuentes relevantes mínimas y extensión máxima; nunca como permiso web."
+                )
+            else:
+                policy.append(
+                    "- No introduzcas afirmaciones factuales externas al research brief; "
+                    "mantén visibles los huecos no cubiertos por las fuentes."
+                )
+        parts.append("\n".join(policy))
     feedback = payload.get("revision_feedback")
     if feedback:
         parts.append(
@@ -1697,7 +2155,6 @@ def _augment_input(task_input: str, payload: dict, agent: str | None = None) -> 
 
 def consolidate_memory(job_id: str) -> None:
     """Librarian pass after a successful job (best-effort, never raises)."""
-    from factory_agents.llm import get_llm_client
     from factory_agents.memory import run_librarian
 
     from factory_api.models import WikiPage
@@ -1732,7 +2189,7 @@ def consolidate_memory(job_id: str) -> None:
             ]
             summary = f"Job {job.kind} completado con {len(artifacts)} artefactos"
 
-        client = get_llm_client(settings.openrouter_api_key)
+        client = _client(job_id, agent="librarian", work_unit_key="memory")
         updates = run_librarian(
             client, settings.openrouter_model, current, summary, "\n\n".join(excerpts)
         )
@@ -1788,7 +2245,12 @@ def run_publisher_job(job_id: str, payload: dict) -> dict:
         raise RuntimeError("Falta el artefacto 'video': ejecuta antes el montaje de vídeo")
     subtitles = _latest_by_base(payload["project_id"], "subtitles")
     scripts = _latest_by_base(payload["project_id"], "teaching_script")
-    client = _client(job_id)
+    client = _client(
+        job_id,
+        agent="publisher",
+        work_unit_key="publisher",
+        workflow_step=payload.get("_workflow_step"),
+    )
     language = payload.get("project", {}).get("language", "es")
 
     artifact_ids: list[str] = []
@@ -2173,7 +2635,13 @@ def evaluate_stage(job_id: str, agent: str, result: dict | None) -> tuple[str, s
         )
         return "pass", ""
     evaluation = run_evaluator(
-        _client(job_id),
+        _client(
+            job_id,
+            agent=agent,
+            operation="evaluator",
+            work_unit_key=f"{agent}:evaluation",
+            workflow_step=_CURRENT_WORKFLOW_STEP.get(),
+        ),
         settings.openrouter_model,
         artifact_type,
         "\n\n---\n\n".join(excerpts),
@@ -2192,6 +2660,18 @@ def evaluate_stage(job_id: str, agent: str, result: dict | None) -> tuple[str, s
             "model": settings.openrouter_model,
         },
     )
+    if ids:
+        with SessionLocal() as db:
+            evaluated_artifact = db.get(Artifact, ids[0])
+            if evaluated_artifact is not None:
+                attach_usage_to_artifact(
+                    db,
+                    evaluated_artifact,
+                    job_id=job_id,
+                    agent=agent,
+                    operation="evaluator",
+                )
+                db.commit()
     return evaluation.verdict, evaluation.feedback
 
 
@@ -2262,7 +2742,7 @@ def run_analyst_job(job_id: str, payload: dict) -> dict:
             current_agents_md,
             channel_wiki,
         ),
-        client=_client(job_id),
+        client=_client(job_id, agent="analyst", work_unit_key="analyst"),
         model=payload.get("model") or settings.openrouter_model,
         soul_md=payload.get("soul_md", ""),
         agents_md=payload.get("agents_md", ""),
@@ -2311,12 +2791,19 @@ def run_workflow_job(job_id: str, payload: dict) -> dict:
     from factory_api.workflow_engine import build_workflow_graph, open_checkpointer
 
     definition = payload["definition"]
+    def evaluate_workflow_stage(agent: str, result: dict, step: int):
+        token = _CURRENT_WORKFLOW_STEP.set(step)
+        try:
+            return evaluate_stage(job_id, agent, result)
+        finally:
+            _CURRENT_WORKFLOW_STEP.reset(token)
+
     graph = build_workflow_graph(
         definition,
         job_id,
         HANDLERS,
         append_event,
-        evaluator=lambda agent, result: evaluate_stage(job_id, agent, result),
+        evaluator=evaluate_workflow_stage,
     )
     with open_checkpointer() as checkpointer:
         compiled = graph.compile(checkpointer=checkpointer)

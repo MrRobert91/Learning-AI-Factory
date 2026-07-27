@@ -1,7 +1,17 @@
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from factory_api.db import Base
@@ -40,6 +50,9 @@ class Project(Base):
     style: Mapped[str] = mapped_column(Text, default="", nullable=False)
     output_format: Mapped[str] = mapped_column(String(50), default="", nullable=False)
     duration_spec_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    research_mode: Mapped[str] = mapped_column(
+        String(30), default="web_only", nullable=False
+    )
     status: Mapped[str] = mapped_column(String(20), default="draft", nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
@@ -48,6 +61,7 @@ class Project(Base):
     )
 
     owner: Mapped[User] = relationship(back_populates="projects")
+    sources: Mapped[list["IdeationSource"]] = relationship(back_populates="project")
 
     @property
     def duration_spec(self) -> dict | None:
@@ -70,6 +84,9 @@ class IdeationSession(Base):
     status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
     initial_idea: Mapped[str] = mapped_column(Text, nullable=False)
     model: Mapped[str] = mapped_column(String(100), nullable=False)
+    research_mode: Mapped[str] = mapped_column(
+        String(30), default="web_only", nullable=False
+    )
     brief_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     project_id: Mapped[str | None] = mapped_column(
         ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
@@ -82,6 +99,47 @@ class IdeationSession(Base):
     messages: Mapped[list["IdeationMessage"]] = relationship(
         back_populates="session", cascade="all, delete-orphan", order_by="IdeationMessage.seq"
     )
+    sources: Mapped[list["IdeationSource"]] = relationship(
+        back_populates="session", order_by="IdeationSource.captured_at"
+    )
+
+
+class IdeationSource(Base):
+    __tablename__ = "ideation_sources"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ideation_sessions.id", ondelete="SET NULL"), nullable=True
+    )
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    original_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    final_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    path: Mapped[str] = mapped_column(Text, nullable=False)
+    extracted_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+    error: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    session: Mapped[IdeationSession | None] = relationship(back_populates="sources")
+    project: Mapped[Project | None] = relationship(back_populates="sources")
+
+    @property
+    def source_metadata(self) -> dict:
+        import json
+
+        try:
+            value = json.loads(self.metadata_json or "{}")
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return value if isinstance(value, dict) else {}
 
 
 class IdeationMessage(Base):
@@ -276,3 +334,46 @@ class Artifact(Base):
         ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class UsageRecord(Base):
+    """Immutable provider usage without prompts, responses, or credentials."""
+
+    __tablename__ = "usage_records"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_usage_records_idempotency_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    workflow_step: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    agent: Mapped[str] = mapped_column(String(50), default="", nullable=False, index=True)
+    operation: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String(50), default="", nullable=False)
+    model: Mapped[str] = mapped_column(String(255), default="", nullable=False, index=True)
+    provider_request_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    input_characters: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    output_units: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    image_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(20, 10), nullable=True)
+    cost_source: Mapped[str] = mapped_column(
+        String(30), default="unknown", nullable=False, index=True
+    )
+    pricing_snapshot_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    work_unit_key: Mapped[str] = mapped_column(String(320), default="", nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )

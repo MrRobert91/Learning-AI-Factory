@@ -16,6 +16,28 @@ export interface DurationSpec {
   tolerance_ratio: number;
 }
 
+export type ResearchMode =
+  | "provided_only"
+  | "provided_plus_web"
+  | "web_only";
+
+export interface IdeationSource {
+  id: string;
+  session_id: string | null;
+  project_id: string | null;
+  kind: string;
+  media_type: string;
+  name: string;
+  original_url: string | null;
+  final_url: string | null;
+  sha256: string;
+  size_bytes: number;
+  status: "pending" | "ready" | "failed";
+  error: string;
+  metadata: Record<string, unknown>;
+  captured_at: string;
+}
+
 export interface Project {
   id: string;
   title: string;
@@ -26,14 +48,46 @@ export interface Project {
   style: string;
   output_format: string;
   duration_spec: DurationSpec | null;
+  research_mode: ResearchMode;
+  sources: IdeationSource[];
   status: string;
   created_at: string;
   updated_at: string;
 }
 
+export interface UsageAggregate {
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  input_characters: number;
+  image_count: number;
+  cost_usd: string | null;
+  unknown_cost_records: number;
+}
+
+export interface UsageBreakdown extends UsageAggregate {
+  key: string;
+  has_data?: boolean;
+  kind?: string;
+  status?: string;
+  created_at?: string | null;
+}
+
+export interface ProjectCostSummary {
+  has_data: boolean;
+  historical: UsageAggregate | null;
+  active: UsageAggregate | null;
+  cost_sources: UsageBreakdown[];
+  agents: UsageBreakdown[];
+  models: string[];
+  runs: UsageBreakdown[];
+  last_updated: string | null;
+}
+
 export type ProjectInput = Omit<
   Project,
-  "id" | "status" | "created_at" | "updated_at"
+  "id" | "sources" | "status" | "created_at" | "updated_at"
 >;
 
 export class ApiError extends Error {
@@ -76,7 +130,7 @@ export interface IdeationMessage {
   id: string;
   seq: number;
   role: "user" | "assistant";
-  kind: "text" | "question" | "answer" | "search" | "brief" | "progress";
+  kind: "text" | "question" | "answer" | "search" | "source" | "brief" | "progress";
   content: string;
   payload: { options?: IdeationOption[]; query?: string } | Record<
     string,
@@ -102,6 +156,8 @@ export interface CourseIdeaBrief {
   style: string;
   output_format: string;
   duration_spec: DurationSpec | null;
+  research_mode: ResearchMode;
+  source_ids: string[];
   objectives: string[];
   scope_outline: string[];
   differential_angle: string;
@@ -113,6 +169,8 @@ export interface IdeationSessionSummary {
   status: "active" | "finalized";
   initial_idea: string;
   project_id: string | null;
+  research_mode: ResearchMode;
+  source_count: number;
   has_brief: boolean;
   created_at: string;
   updated_at: string;
@@ -121,6 +179,7 @@ export interface IdeationSessionSummary {
 export interface IdeationSession extends IdeationSessionSummary {
   brief: CourseIdeaBrief | null;
   messages: IdeationMessage[];
+  sources: IdeationSource[];
 }
 
 export interface AgentSpec {
@@ -189,6 +248,12 @@ export interface AgentProfile {
   automatic_review_enabled: boolean;
   max_automatic_regenerations: number;
   human_review_enabled: boolean;
+  tts_provider: "openai" | "openrouter" | null;
+  tts_model: string | null;
+  tts_language: string | null;
+  tts_voice: string | null;
+  tts_available: boolean | null;
+  subtitles_mode: "none" | "srt" | "burned_and_srt" | null;
   slide_palette: SlidePalette | null;
   logo_mode: "none" | "uploaded" | "generated" | null;
   active_logo_id: string | null;
@@ -217,6 +282,12 @@ export interface ProfileVersion {
   automatic_review_enabled: boolean;
   max_automatic_regenerations: number;
   human_review_enabled: boolean;
+  tts_provider: "openai" | "openrouter" | null;
+  tts_model: string | null;
+  tts_language: string | null;
+  tts_voice: string | null;
+  tts_available: boolean | null;
+  subtitles_mode: "none" | "srt" | "burned_and_srt" | null;
   slide_palette: SlidePalette | null;
   logo_mode: "none" | "uploaded" | "generated" | null;
   active_logo_id: string | null;
@@ -236,6 +307,28 @@ export interface ImageOptions {
   max_images_per_deck: number;
   models: { id: string; label: string; price_hint: string }[];
   styles: { id: string; label: string; prompt: string }[];
+}
+
+export interface TTSModelOption {
+  provider: "openai" | "openrouter";
+  provider_label: string;
+  model: string;
+  label: string;
+  languages: string[];
+  voices_by_language: Record<string, string[]>;
+  default_voice: string;
+  price_per_million_characters_usd: number | null;
+  price_hint: string;
+}
+
+export interface TTSOptions {
+  default: {
+    tts_provider: "openai" | "openrouter";
+    tts_model: string;
+    tts_language: string;
+    tts_voice: string;
+  };
+  models: TTSModelOption[];
 }
 
 export interface JobEvent {
@@ -330,6 +423,17 @@ export interface Job {
       updated_at?: string;
     };
   };
+  usage_summary: {
+    has_data: boolean;
+    records: number;
+    input_tokens?: number;
+    output_tokens?: number;
+    total_tokens?: number;
+    input_characters?: number;
+    image_count?: number;
+    cost_usd?: string | null;
+    unknown_cost_records?: number;
+  };
   review_policies: Record<
     string,
     {
@@ -372,7 +476,7 @@ export interface Artifact {
 
 async function streamIdeation(
   path: string,
-  body: Record<string, string>,
+  body: Record<string, string> = {},
   onProgress: (event: IdeationProgress) => void,
 ): Promise<IdeationSession> {
   const response = await fetch(path, {
@@ -428,6 +532,8 @@ export const api = {
   logout: () => request<void>("/api/auth/logout", { method: "POST" }),
   listProjects: () => request<Project[]>("/api/projects"),
   getProject: (id: string) => request<Project>(`/api/projects/${id}`),
+  getProjectCostSummary: (id: string) =>
+    request<ProjectCostSummary>(`/api/projects/${id}/costs/summary`),
   createProject: (input: ProjectInput) =>
     request<Project>("/api/projects", {
       method: "POST",
@@ -445,12 +551,48 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ idea }),
     }),
+  createIdeationDraft: (idea: string, researchMode: ResearchMode) =>
+    request<IdeationSession>("/api/ideation/draft", {
+      method: "POST",
+      body: JSON.stringify({ idea, research_mode: researchMode }),
+    }),
   createIdeationStream: (
     idea: string,
     onProgress: (event: IdeationProgress) => void,
   ) => streamIdeation("/api/ideation/stream", { idea }, onProgress),
+  startIdeationStream: (
+    id: string,
+    onProgress: (event: IdeationProgress) => void,
+  ) => streamIdeation(`/api/ideation/${id}/start/stream`, {}, onProgress),
   listIdeations: () => request<IdeationSessionSummary[]>("/api/ideation"),
   getIdeation: (id: string) => request<IdeationSession>(`/api/ideation/${id}`),
+  updateIdeationResearchMode: (id: string, researchMode: ResearchMode) =>
+    request<IdeationSession>(`/api/ideation/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ research_mode: researchMode }),
+    }),
+  addIdeationSourceUrl: (id: string, url: string) =>
+    request<IdeationSource>(`/api/ideation/${id}/sources/url`, {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    }),
+  addIdeationSourceFile: async (id: string, file: File) => {
+    const data = new FormData();
+    data.append("file", file);
+    const response = await fetch(`/api/ideation/${id}/sources/file`, {
+      method: "POST",
+      body: data,
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new ApiError(response.status, payload.detail ?? response.statusText);
+    }
+    return (await response.json()) as IdeationSource;
+  },
+  deleteIdeationSource: (id: string, sourceId: string) =>
+    request<void>(`/api/ideation/${id}/sources/${sourceId}`, {
+      method: "DELETE",
+    }),
   sendIdeationMessage: (id: string, content: string) =>
     request<IdeationSession>(`/api/ideation/${id}/messages`, {
       method: "POST",
@@ -468,6 +610,7 @@ export const api = {
   listAgents: () => request<AgentSpec[]>("/api/agents"),
   getImageOptions: () => request<ImageOptions>("/api/agents/image-options"),
   getPaletteOptions: () => request<PaletteOptions>("/api/agents/palette-options"),
+  getTTSOptions: () => request<TTSOptions>("/api/agents/tts-options"),
   listProfiles: (agentType: string) =>
     request<AgentProfile[]>(`/api/agents/${agentType}/profiles`),
   createProfile: (
@@ -485,6 +628,11 @@ export const api = {
       automatic_review_enabled?: boolean;
       max_automatic_regenerations?: number;
       human_review_enabled?: boolean;
+      tts_provider?: "openai" | "openrouter";
+      tts_model?: string;
+      tts_language?: string;
+      tts_voice?: string;
+      subtitles_mode?: "none" | "srt" | "burned_and_srt";
       slide_palette?: SlidePalette;
       logo_mode?: "none" | "uploaded" | "generated";
       active_logo_id?: string | null;
@@ -519,6 +667,11 @@ export const api = {
         | "automatic_review_enabled"
         | "max_automatic_regenerations"
         | "human_review_enabled"
+        | "tts_provider"
+        | "tts_model"
+        | "tts_language"
+        | "tts_voice"
+        | "subtitles_mode"
         | "slide_palette"
         | "logo_mode"
         | "active_logo_id"
@@ -534,6 +687,27 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input),
     }),
+  previewProfileTTS: async (
+    id: string,
+    input: {
+      text: string;
+      tts_provider: "openai" | "openrouter";
+      tts_model: string;
+      tts_language: string;
+      tts_voice: string;
+    },
+  ) => {
+    const response = await fetch(`/api/agents/profiles/${id}/tts-preview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new ApiError(response.status, body.detail ?? response.statusText);
+    }
+    return response.blob();
+  },
   deleteProfile: (id: string) =>
     request<void>(`/api/agents/profiles/${id}`, { method: "DELETE" }),
   uploadProfileLogo: async (id: string, file: File, name = "") => {

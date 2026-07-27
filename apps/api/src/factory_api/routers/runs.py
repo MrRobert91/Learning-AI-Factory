@@ -5,6 +5,7 @@ from typing import Annotated
 from factory_agents.agents.curator import render_curator_input
 from factory_agents.tools.images import DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_STYLE
 from factory_agents.tools.palette import DEFAULT_SLIDE_PALETTE, normalize_palette
+from factory_agents.tools.tts import default_tts_config, resolve_tts_config
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
@@ -17,6 +18,7 @@ from factory_api.routers.agents import get_default_profile
 from factory_api.run_control import SSE_STOP_STATUSES, load_control
 from factory_api.runner import runner
 from factory_api.schemas import AgentRunCreate, JobEventRead, JobRead
+from factory_api.usage import job_usage_summary
 from factory_api.workflow_engine import missing_agent_inputs
 
 router = APIRouter(prefix="/api", tags=["runs"])
@@ -76,6 +78,8 @@ def _job_read(job: Job, include_events: bool = True) -> JobRead:
             "evaluator_model": payload.get("evaluator_model"),
             "human_review_enabled": bool(payload.get("human_review_enabled", False)),
         }
+    with SessionLocal() as usage_db:
+        usage_summary = job_usage_summary(usage_db, job.id)
     return JobRead(
         id=job.id,
         kind=job.kind,
@@ -84,6 +88,7 @@ def _job_read(job: Job, include_events: bool = True) -> JobRead:
         project_id=job.project_id,
         result=json.loads(job.result_json) if job.result_json else None,
         control=load_control(job),
+        usage_summary=usage_summary,
         review_policies=review_policies,
         created_at=job.created_at,
         started_at=job.started_at,
@@ -126,6 +131,8 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
             "evaluator_model": evaluator_model,
             "slide_palette": dict(DEFAULT_SLIDE_PALETTE),
             "slide_logo": None,
+            "tts_config": None,
+            "subtitles_mode": "none",
         }
     config = json.loads(profile.config_json or "{}")
     active_logo_id = config.get("active_logo_id")
@@ -149,6 +156,28 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
             "visibility": config.get("logo_visibility")
             or {"cover": True, "content": True, "summary": True},
         }
+    tts_config = None
+    if profile.agent_type == "voice":
+        candidate = dict(config)
+        if not {"tts_provider", "tts_model", "tts_language", "tts_voice"}.issubset(
+            candidate
+        ):
+            candidate.update(
+                default_tts_config(
+                    model=get_settings().tts_model,
+                    voice=get_settings().tts_voice,
+                )
+            )
+        try:
+            tts_config = resolve_tts_config(candidate)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"El perfil de voz «{profile.name}» usa una configuración TTS "
+                    f"histórica no disponible: {exc}. Edita el perfil antes de ejecutar."
+                ),
+            ) from exc
     return {
         "soul_md": profile.soul_md,
         "agents_md": profile.agents_md,
@@ -168,6 +197,12 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
         "evaluator_model": evaluator_model,
         "slide_palette": normalize_palette(config.get("slide_palette")),
         "slide_logo": slide_logo,
+        "tts_config": tts_config,
+        "subtitles_mode": (
+            config.get("subtitles_mode", "none")
+            if profile.agent_type == "video"
+            else "none"
+        ),
     }
 
 
@@ -187,6 +222,12 @@ def _base_payload(db: Session, project: Project) -> dict:
         "language": project.language,
         "style": project.style,
         "duration_spec": project.duration_spec,
+        "research_mode": project.research_mode,
+        "source_ids": (
+            [source.id for source in project.sources if source.status == "ready"]
+            if project.research_mode != "web_only"
+            else []
+        ),
     }
     return {
         "project_id": project.id,
@@ -194,6 +235,8 @@ def _base_payload(db: Session, project: Project) -> dict:
         "project": project_dict,
         "style": project.style,
         "duration_spec": project.duration_spec,
+        "research_mode": project.research_mode,
+        "source_ids": project_dict["source_ids"],
         "task_input": render_curator_input(project_dict, brief),
     }
 

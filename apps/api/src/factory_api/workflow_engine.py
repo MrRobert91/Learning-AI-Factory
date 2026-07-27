@@ -184,7 +184,11 @@ def build_workflow_graph(
                     + ("regenerando con feedback" if feedback else "iniciando"),
                     {"agent": agent, "step": step_number, "status": "running"},
                 )
-                stage_payload = {**state["payload"], **step.get("overrides", {})}
+                stage_payload = {
+                    **state["payload"],
+                    **step.get("overrides", {}),
+                    "_workflow_step": step_number,
+                }
                 control_scope = (
                     f"workflow:{step_number}:{agent}:human-cycle:{human_cycle}"
                 )
@@ -243,7 +247,11 @@ def build_workflow_graph(
                 def node(state: WorkflowState) -> WorkflowState:
                     results = dict(state.get("results", {}))
                     summaries = dict(state.get("review_summaries", {}))
-                    stage_payload = {**state["payload"], **step.get("overrides", {})}
+                    stage_payload = {
+                        **state["payload"],
+                        **step.get("overrides", {}),
+                        "_workflow_step": step_number,
+                    }
                     human_history = state.get("human_reviews", {}).get(review_key, {})
                     human_cycle = len(human_history.get("cycles", []))
                     control_scope = (
@@ -282,7 +290,9 @@ def build_workflow_graph(
                                 },
                             )
                             try:
-                                verdict, feedback = evaluator(agent, results.get(agent))
+                                verdict, feedback = evaluator(
+                                    agent, results.get(agent), step_number
+                                )
                             except Exception as exc:
                                 evaluations += 1
                                 summary = {

@@ -143,3 +143,47 @@ def test_history_rendering_includes_past_questions():
     assert "curso de RAG" in messages[1]["content"]
     assert "¿Audiencia?" in messages[2]["content"]
     assert messages[3] == {"role": "user", "content": "Devs"}
+
+
+def test_provided_only_uses_corpus_tools_and_exposes_no_web():
+    search = _tool_call("search_sources", {"query": "grounding"})
+    question = _tool_call(
+        "ask_user_question",
+        {
+            "question": "¿Qué profundidad?",
+            "options": [
+                {"label": "Básica"},
+                {"label": "Media"},
+                {"label": "Avanzada"},
+            ],
+        },
+        call_id="tc2",
+    )
+    client = FakeClient(
+        [
+            _response(tool_calls=[search]),
+            _response(tool_calls=[question]),
+        ]
+    )
+    events = run_ideation_turn(
+        client,
+        "test-model",
+        [],
+        research_mode="provided_only",
+        source_documents=[
+            {
+                "id": "src-1",
+                "name": "notes.txt",
+                "kind": "text",
+                "size_bytes": 20,
+                "text": "[Sección 1]\nGrounding verificable con citas.",
+            }
+        ],
+    )
+    tool_names = {
+        tool["function"]["name"] for tool in client.requests[0]["tools"]
+    }
+    assert "web_search" not in tool_names
+    assert {"list_sources", "search_sources", "read_source"} <= tool_names
+    assert [event.kind for event in events] == ["source", "question"]
+    assert "[source:src-1 Sección 1]" in events[0].content

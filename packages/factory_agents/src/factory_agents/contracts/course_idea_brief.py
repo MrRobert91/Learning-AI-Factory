@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from factory_agents.contracts.duration_spec import DurationSpec
@@ -22,6 +24,8 @@ class CourseIdeaBrief(BaseModel):
     duration_spec: DurationSpec = Field(
         description="Duración y estructura exactas elegidas por el usuario"
     )
+    research_mode: Literal["provided_only", "provided_plus_web", "web_only"] = "web_only"
+    source_ids: list[str] = Field(default_factory=list, max_length=10)
     objectives: list[str] = Field(
         default_factory=list, description="Objetivos de aprendizaje concretos"
     )

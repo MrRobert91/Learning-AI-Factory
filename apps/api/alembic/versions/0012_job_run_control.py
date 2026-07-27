@@ -1,15 +1,15 @@
 """Persist cooperative job run control.
 
-Revision ID: 0010
-Revises: 0009
-Create Date: 2026-07-26
+Revision ID: 0012
+Revises: 0011
+Create Date: 2026-07-27
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0010"
-down_revision = "0009"
+revision = "0012"
+down_revision = "0011"
 branch_labels = None
 depends_on = None
 
