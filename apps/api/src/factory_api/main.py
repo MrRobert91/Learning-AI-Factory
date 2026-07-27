@@ -15,6 +15,7 @@ from factory_api.routers import (
     artifacts,
     auth,
     costs,
+    course_video,
     ideation,
     improvements,
     projects,
@@ -176,6 +177,7 @@ app.include_router(ideation.router)
 app.include_router(agents.router)
 app.include_router(runs.router)
 app.include_router(artifacts.router)
+app.include_router(course_video.router)
 app.include_router(workflows.router)
 app.include_router(wiki.router)
 app.include_router(youtube.router)

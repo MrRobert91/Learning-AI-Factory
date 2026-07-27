@@ -28,6 +28,7 @@ from factory_api.artifact_versions import (
     add_artifact_version,
     artifact_logical_key,
     artifact_metadata,
+    select_artifact_version,
     selected_artifact,
 )
 from factory_api.config import get_settings
@@ -49,9 +50,13 @@ from factory_api.usage import (
 )
 
 logger = logging.getLogger(__name__)
-_CURRENT_WORKFLOW_STEP: ContextVar[int | None] = ContextVar(
-    "current_workflow_step", default=None
-)
+_CURRENT_WORKFLOW_STEP: ContextVar[int | None] = ContextVar("current_workflow_step", default=None)
+
+
+def _cleanup_job_workdir(kind: str, job_id: str) -> None:
+    if kind == "course_video_export":
+        path = get_settings().data_dir / "runs" / job_id / "course-video"
+        shutil.rmtree(path, ignore_errors=True)
 
 
 class JobRunner:
@@ -180,9 +185,7 @@ class JobRunner:
                 result = dict(payload.get("_pending_result") or {})
                 result["human_review"] = {
                     "agent": direct_agent,
-                    "feedback_cycles": list(
-                        payload.get("_human_feedback_history", [])
-                    ),
+                    "feedback_cycles": list(payload.get("_human_feedback_history", [])),
                     "final_decision": "approved",
                 }
             elif direct_agent is not None:
@@ -296,6 +299,7 @@ class JobRunner:
                 {"status": "paused", "checkpoint": exc.checkpoint},
             )
         except RunCanceled as exc:
+            _cleanup_job_workdir(kind, job_id)
             append_event(
                 job_id,
                 "control",
@@ -303,6 +307,7 @@ class JobRunner:
                 {"status": "canceled", "checkpoint": exc.checkpoint},
             )
         except Exception as exc:
+            _cleanup_job_workdir(kind, job_id)
             logger.exception("Job %s failed", job_id)
             self._finish(job_id, error=str(exc))
 
@@ -535,9 +540,7 @@ def _budget_callbacks(
                     if not (input_tokens or output_tokens):
                         continue
                     effective_model = (
-                        response_metadata.get("model_name")
-                        or response_metadata.get("model")
-                        or ""
+                        response_metadata.get("model_name") or response_metadata.get("model") or ""
                     )
                     usage_record_id = record_usage(
                         job_id=job_id,
@@ -570,15 +573,9 @@ def _budget_callbacks(
                 return
             llm_output = getattr(response, "llm_output", None) or {}
             token_usage = llm_output.get("token_usage") or llm_output.get("usage") or {}
-            input_tokens = (
-                token_usage.get("prompt_tokens")
-                or token_usage.get("input_tokens")
-                or 0
-            )
+            input_tokens = token_usage.get("prompt_tokens") or token_usage.get("input_tokens") or 0
             output_tokens = (
-                token_usage.get("completion_tokens")
-                or token_usage.get("output_tokens")
-                or 0
+                token_usage.get("completion_tokens") or token_usage.get("output_tokens") or 0
             )
             if input_tokens or output_tokens:
                 run_id = kwargs.get("run_id")
@@ -866,18 +863,13 @@ def _emit_duration_event(job_id: str, payload: dict, agent: str) -> None:
     )
 
 
-def _emit_metric_warning(
-    job_id: str, label: str, actual: int, budget: dict[str, int]
-) -> None:
+def _emit_metric_warning(job_id: str, label: str, actual: int, budget: dict[str, int]) -> None:
     if budget["min"] <= actual <= budget["max"]:
         return
     append_event(
         job_id,
         "warning",
-        (
-            f"{label}: {actual} frente al rango objetivo "
-            f"{budget['min']}–{budget['max']}"
-        ),
+        (f"{label}: {actual} frente al rango objetivo {budget['min']}–{budget['max']}"),
         {"actual": actual, **budget},
     )
 
@@ -905,9 +897,7 @@ def run_curator_job(job_id: str, payload: dict) -> dict:
 
     settings = get_settings()
     workspace = settings.data_dir / "runs" / job_id
-    unit, cached = _before_unit(
-        job_id, payload, "curator", "brief", "Preparando el Curador"
-    )
+    unit, cached = _before_unit(job_id, payload, "curator", "brief", "Preparando el Curador")
     if cached and cached.get("artifact_id"):
         return {"artifact_id": cached["artifact_id"]}
     _emit_duration_event(job_id, payload, "curator")
@@ -939,9 +929,7 @@ def run_curator_job(job_id: str, payload: dict) -> dict:
         max_searches=research_budget(spec.total_minutes)["searches_max"] if spec else None,
         research_mode=research_mode,
         source_documents=source_documents,
-        max_source_queries=(
-            research_budget(spec.total_minutes)["searches_max"] if spec else 12
-        ),
+        max_source_queries=(research_budget(spec.total_minutes)["searches_max"] if spec else 12),
     ):
         if event.type == "result":
             final_text = event.summary
@@ -1052,11 +1040,7 @@ def run_lessons_job(job_id: str, payload: dict) -> dict:
             raise RuntimeError(
                 "El plan seleccionado no respeta la estructura: " + "; ".join(problems)
             )
-    metrics = (
-        duration_metrics(spec, payload.get("orientation", "horizontal"))
-        if spec
-        else None
-    )
+    metrics = duration_metrics(spec, payload.get("orientation", "horizontal")) if spec else None
 
     lesson_units = list(plan.iter_lessons())
     artifact_ids: list[str] = []
@@ -1075,9 +1059,7 @@ def run_lessons_job(job_id: str, payload: dict) -> dict:
         append_event(job_id, "stage", f"Escribiendo lección {label}…")
         final_text = ""
         for event in run_lesson(
-            _augment_input(
-                render_lesson_input(plan, mi, li, brief_md), payload, "lessons"
-            ),
+            _augment_input(render_lesson_input(plan, mi, li, brief_md), payload, "lessons"),
             model=payload.get("model") or settings.openrouter_model,
             api_key=settings.openrouter_api_key,
             workspace_dir=str(settings.data_dir / "runs" / job_id / f"lesson-{mi}-{li}"),
@@ -1195,7 +1177,7 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
         )
 
     orientation = payload.get("orientation", "horizontal")
-    width, height = ((1080, 1920) if orientation == "vertical" else (1920, 1080))
+    width, height = (1080, 1920) if orientation == "vertical" else (1920, 1080)
     images_enabled = bool(payload.get("images_enabled", False))
     image_model = payload.get("image_model", "bytedance-seed/seedream-4.5")
     image_style = payload.get("image_style", "editorial_vector")
@@ -1346,9 +1328,7 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
                     image_count=1,
                     cost_usd=image.get("cost_usd"),
                     work_unit_key=f"slides:{title}:image:{image.get('id', '')}",
-                    idempotency_key=(
-                        f"{job_id}:slides:{title}:image:{image.get('id', '')}"
-                    ),
+                    idempotency_key=(f"{job_id}:slides:{title}:image:{image.get('id', '')}"),
                     metadata={
                         "seed": image.get("seed"),
                         "style": image.get("style"),
@@ -1419,9 +1399,7 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
                 },
             )
         generation_cost = sum(
-            float(item["cost_usd"])
-            for item in image_records
-            if item.get("cost_usd") is not None
+            float(item["cost_usd"]) for item in image_records if item.get("cost_usd") is not None
         )
         logo_usage_id = None
         if isinstance(slide_logo, dict) and slide_logo.get("source") == "generated":
@@ -1452,9 +1430,7 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
                     "style": image_style if images_enabled else None,
                     "style_prompt": image_style_prompt if image_style == "custom" else "",
                     "max_images": 6,
-                    "generated": sum(
-                        item.get("status") == "generated" for item in image_records
-                    ),
+                    "generated": sum(item.get("status") == "generated" for item in image_records),
                     "attempted": len(image_records),
                     "generation_cost_usd": generation_cost,
                 },
@@ -1525,9 +1501,7 @@ def _register_artifact_file(
 
     settings = get_settings()
     src_path = Path(src_path)
-    rel_path = (
-        f"artifacts/{project_id}/{type_}-{job_id}-{uuid.uuid4().hex[:8]}-{src_path.name}"
-    )
+    rel_path = f"artifacts/{project_id}/{type_}-{job_id}-{uuid.uuid4().hex[:8]}-{src_path.name}"
     dst = settings.data_dir / rel_path
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(src_path, dst)
@@ -1709,9 +1683,7 @@ def run_voice_job(job_id: str, payload: dict) -> dict:
         append_event(job_id, "stage", f"Adaptando a voz {base}…")
         script_md = (settings.data_dir / script.path).read_text(encoding="utf-8")
         voice_script = run_voice(
-            _augment_input(
-                render_voice_input(script_md, base, language), payload, "voice"
-            ),
+            _augment_input(render_voice_input(script_md, base, language), payload, "voice"),
             client=client,
             model=payload.get("model") or settings.openrouter_model,
             soul_md=payload.get("soul_md", ""),
@@ -1787,7 +1759,7 @@ def run_video_job(job_id: str, payload: dict) -> dict:
     workdir_root = settings.data_dir / "runs" / job_id
     orientation = payload.get("orientation", "horizontal")
     subtitles_mode = payload.get("subtitles_mode", "none")
-    width, height = ((1080, 1920) if orientation == "vertical" else (1920, 1080))
+    width, height = (1080, 1920) if orientation == "vertical" else (1920, 1080)
     _emit_duration_event(job_id, payload, "video")
     spec = _duration_spec(payload)
 
@@ -1818,11 +1790,7 @@ def run_video_job(job_id: str, payload: dict) -> dict:
             voice_artifact.id,
             f"Preparando el render de slides de {base}",
         )
-        images = (
-            [Path(value) for value in cached_render.get("images", [])]
-            if cached_render
-            else []
-        )
+        images = [Path(value) for value in cached_render.get("images", [])] if cached_render else []
         if not images or not all(image.is_file() for image in images):
             append_event(job_id, "stage", f"Renderizando slides de {base} a imágenes…")
             images = render_slide_images(settings.data_dir / deck.path, workdir / "slides")
@@ -1882,9 +1850,7 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                 audio = cached_audio
                 cache_hit = True
             else:
-                audio, cache_hit = synthesize_cached_with_status(
-                    provider, segment.text, cache_dir
-                )
+                audio, cache_hit = synthesize_cached_with_status(provider, segment.text, cache_dir)
             record_usage(
                 job_id=job_id,
                 workflow_step=payload.get("_workflow_step"),
@@ -1896,11 +1862,7 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                     None if cache_hit else getattr(provider, "last_generation_id", None)
                 ),
                 input_characters=len(segment.text),
-                cost_usd=(
-                    0
-                    if cache_hit
-                    else estimated_tts_cost(tts_config, len(segment.text))
-                ),
+                cost_usd=(0 if cache_hit else estimated_tts_cost(tts_config, len(segment.text))),
                 cost_source=(
                     "provider_actual"
                     if cache_hit
@@ -1960,9 +1922,7 @@ def run_video_job(job_id: str, payload: dict) -> dict:
             if cached_compose and cached_compose.get("video_path")
             else workdir / "lesson.mp4"
         )
-        subtitle_style = (
-            cached_compose.get("subtitle_style") if cached_compose else None
-        )
+        subtitle_style = cached_compose.get("subtitle_style") if cached_compose else None
         if cached_compose is None or not out_mp4.is_file():
             append_event(
                 job_id,
@@ -2034,9 +1994,7 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                 "orientation": orientation,
                 "width": width,
                 "height": height,
-                "slide_orientation": artifact_metadata(deck).get(
-                    "orientation", "horizontal"
-                ),
+                "slide_orientation": artifact_metadata(deck).get("orientation", "horizontal"),
                 "slide_deck_id": deck.id,
                 "voice_script_id": voice_artifact.id,
                 "tts": tts_config,
@@ -2089,6 +2047,429 @@ def run_video_job(job_id: str, payload: dict) -> dict:
     _deactivate_unproduced(payload["project_id"], "video", video_ids)
     _deactivate_unproduced(payload["project_id"], "subtitles", subtitle_ids)
     return {"artifact_ids": video_ids}
+
+
+def _publish_course_video_artifacts(
+    *,
+    job_id: str,
+    project_id: str,
+    video_path: Path,
+    subtitles_path: Path | None,
+    manifest_path: Path | None,
+    common_metadata: dict,
+    video_metadata: dict,
+) -> dict:
+    """Copy verified outputs and register every related version in one DB transaction."""
+    settings = get_settings()
+    token = uuid.uuid4().hex[:8]
+    relative_paths = {
+        "course_video": (
+            f"artifacts/{project_id}/course_video-{job_id}-{token}.mp4"
+        ),
+        "course_subtitles": (
+            f"artifacts/{project_id}/course_subtitles-{job_id}-{token}.srt"
+            if subtitles_path is not None
+            else None
+        ),
+        "course_video_manifest": (
+            f"artifacts/{project_id}/course_video_manifest-{job_id}-{token}.json"
+            if manifest_path is not None
+            else None
+        ),
+    }
+    sources = {
+        "course_video": video_path,
+        "course_subtitles": subtitles_path,
+        "course_video_manifest": manifest_path,
+    }
+    copied: list[Path] = []
+    try:
+        for type_, source in sources.items():
+            relative = relative_paths[type_]
+            if source is None or relative is None:
+                continue
+            destination = settings.data_dir / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+            copied.append(destination)
+
+        with SessionLocal() as db:
+            subtitles = None
+            if relative_paths["course_subtitles"] is not None:
+                subtitles = add_artifact_version(
+                    db,
+                    project_id=project_id,
+                    type_="course_subtitles",
+                    format_="text",
+                    title="Subtítulos del curso",
+                    path=relative_paths["course_subtitles"],
+                    created_by_job_id=job_id,
+                    metadata=common_metadata,
+                )
+            manifest = None
+            if relative_paths["course_video_manifest"] is not None:
+                manifest = add_artifact_version(
+                    db,
+                    project_id=project_id,
+                    type_="course_video_manifest",
+                    format_="json",
+                    title="Capítulos del curso",
+                    path=relative_paths["course_video_manifest"],
+                    created_by_job_id=job_id,
+                    metadata=common_metadata,
+                )
+            video = add_artifact_version(
+                db,
+                project_id=project_id,
+                type_="course_video",
+                format_="video",
+                title="Vídeo completo",
+                path=relative_paths["course_video"],
+                created_by_job_id=job_id,
+                metadata={
+                    **common_metadata,
+                    **video_metadata,
+                    "course_subtitles_id": subtitles.id if subtitles else None,
+                    "chapter_manifest_id": manifest.id if manifest else None,
+                },
+            )
+            attach_usage_to_artifact(
+                db,
+                video,
+                job_id=job_id,
+                agent="course_video",
+            )
+            db.commit()
+            return {
+                "artifact_id": video.id,
+                "course_subtitles_id": subtitles.id if subtitles else None,
+                "chapter_manifest_id": manifest.id if manifest else None,
+                "cache_hit": False,
+            }
+    except Exception:
+        for path in copied:
+            path.unlink(missing_ok=True)
+        raise
+
+
+def run_course_video_job(job_id: str, payload: dict) -> dict:
+    """Build one verified, versioned course video from selected lesson videos."""
+    from factory_api.course_video import (
+        build_chapter_manifest,
+        build_preflight,
+        combine_subtitles,
+        concat_course_videos,
+        file_sha256,
+        find_cached_export,
+        input_snapshot,
+        parse_srt,
+        public_preflight,
+        verify_course_video,
+    )
+    from factory_api.models import Project
+
+    settings = get_settings()
+    project_id = payload["project_id"]
+    include_subtitles = bool(payload.get("include_subtitles", True))
+    include_chapters = bool(payload.get("include_chapters", True))
+    transition = payload.get("transition", "none")
+
+    with SessionLocal() as db:
+        project = db.get(Project, project_id)
+        if project is None:
+            raise RuntimeError("El proyecto ya no existe")
+        preflight = build_preflight(
+            db,
+            project,
+            include_subtitles=include_subtitles,
+            include_chapters=include_chapters,
+            transition=transition,
+        )
+        public = public_preflight(preflight)
+        if not public["ready"]:
+            details = "; ".join(
+                f"{issue.get('lesson') + ': ' if issue.get('lesson') else ''}{issue['detail']}"
+                for issue in public["issues"]
+            )
+            raise RuntimeError(f"El preflight del vídeo completo ha fallado: {details}")
+        expected_signature = payload.get("expected_input_signature")
+        if expected_signature and expected_signature != public["input_signature"]:
+            raise RuntimeError(
+                "Las versiones seleccionadas cambiaron después del preflight. "
+                "Vuelve a generar el vídeo completo para congelar la selección actual."
+            )
+        cached = find_cached_export(db, project_id, public["input_signature"])
+        if cached is not None:
+            metadata = artifact_metadata(cached)
+            select_artifact_version(db, cached)
+            for associated_key in ("course_subtitles_id", "chapter_manifest_id"):
+                associated_id = metadata.get(associated_key)
+                associated = db.get(Artifact, associated_id) if associated_id else None
+                if associated is not None:
+                    select_artifact_version(db, associated)
+            db.commit()
+            append_event(
+                job_id,
+                "artifact",
+                "Cache hit: ya existe un vídeo completo válido con los mismos inputs.",
+                {
+                    "artifact_id": cached.id,
+                    "cache_hit": True,
+                    "input_signature": public["input_signature"],
+                },
+            )
+            return {
+                "artifact_id": cached.id,
+                "course_subtitles_id": metadata.get("course_subtitles_id"),
+                "chapter_manifest_id": metadata.get("chapter_manifest_id"),
+                "cache_hit": True,
+            }
+
+    append_event(
+        job_id,
+        "stage",
+        (
+            f"Preflight superado: {len(preflight.inputs)} vídeos, "
+            f"{public['output_duration_seconds'] / 60:.1f} min estimados."
+        ),
+        public,
+    )
+    for index, item in enumerate(preflight.inputs, start=1):
+        unit, cached_input = _before_unit(
+            job_id,
+            payload,
+            "course-video-input",
+            item.video.id,
+            f"Preparando {item.label}",
+        )
+        if cached_input is None:
+            append_event(
+                job_id,
+                "stage",
+                f"Input {index}/{len(preflight.inputs)} validado: {item.label}",
+                {
+                    "lesson": item.label,
+                    "artifact_id": item.video.id,
+                    "progress": index / len(preflight.inputs),
+                },
+            )
+            _complete_unit(
+                job_id,
+                "course-video-input",
+                unit,
+                {"artifact_id": item.video.id},
+                message=f"Input {item.label} preparado",
+            )
+
+    durations = [float(item.media["duration_seconds"]) for item in preflight.inputs]
+    offsets = list(preflight.public["_offsets"])
+    output_duration = float(public["output_duration_seconds"])
+    manifest = build_chapter_manifest(preflight.inputs, offsets, output_duration)
+    snapshot = input_snapshot(preflight)
+    options = {
+        "include_subtitles": include_subtitles,
+        "include_chapters": include_chapters,
+        "transition": transition,
+    }
+    manifest.update(
+        {
+            "input_signature": public["input_signature"],
+            "options": options,
+            "inputs": snapshot,
+        }
+    )
+
+    workdir = settings.data_dir / "runs" / job_id / "course-video"
+    workdir.mkdir(parents=True, exist_ok=True)
+    subtitles_path = workdir / "course-subtitles.srt"
+    if include_subtitles:
+        subtitles_path.write_text(
+            combine_subtitles(preflight.inputs, offsets),
+            encoding="utf-8",
+        )
+    manifest_path = workdir / "course-chapters.json"
+    if include_chapters:
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    compose_unit, cached_compose = _before_unit(
+        job_id,
+        payload,
+        "course-video-concat",
+        public["input_signature"],
+        "Preparando la concatenación ffmpeg",
+    )
+    out_path = (
+        Path(cached_compose["video_path"])
+        if cached_compose and cached_compose.get("video_path")
+        else workdir / "course-video.mp4"
+    )
+    if cached_compose is None or not out_path.is_file():
+        append_event(
+            job_id,
+            "stage",
+            f"Concatenando {len(preflight.inputs)} vídeos con transición {transition}…",
+        )
+        concat_course_videos(
+            [item.video_path for item in preflight.inputs],
+            out_path,
+            workdir / "ffmpeg",
+            transition=transition,
+            durations=durations,
+            chapters=manifest["embedded_chapters"] if include_chapters else None,
+        )
+        record_usage(
+            job_id=job_id,
+            agent="course_video",
+            operation="other",
+            provider="local",
+            model="ffmpeg",
+            cost_usd=0,
+            cost_source="provider_actual",
+            work_unit_key="course-video:concat",
+            idempotency_key=f"{job_id}:course-video:concat",
+            metadata={"local_operation": True, "transition": transition},
+        )
+        _complete_unit(
+            job_id,
+            "course-video-concat",
+            compose_unit,
+            {"video_path": str(out_path)},
+            message="Concatenación ffmpeg completada",
+        )
+
+    verify_unit, cached_verify = _before_unit(
+        job_id,
+        payload,
+        "course-video-verify",
+        public["input_signature"],
+        "Preparando la verificación ffprobe",
+    )
+    if cached_verify is None:
+        append_event(job_id, "stage", "Verificando duración, pistas y dimensiones…")
+        output_media = verify_course_video(
+            out_path,
+            expected_duration=output_duration,
+            width=int(public["width"]),
+            height=int(public["height"]),
+        )
+        if include_subtitles:
+            subtitle_entries = parse_srt(subtitles_path.read_text(encoding="utf-8"))
+            if subtitle_entries[-1][1] > output_duration + 0.75:
+                raise RuntimeError(
+                    "El SRT combinado contiene timestamps fuera de la duración de salida"
+                )
+        previous_start = -1.0
+        for chapter in manifest["chapters"]:
+            start = float(chapter["start_seconds"])
+            end = float(chapter["end_seconds"])
+            if start < previous_start or end < start or end > output_duration + 0.01:
+                raise RuntimeError("El manifest de capítulos contiene rangos inválidos")
+            previous_start = start
+        record_usage(
+            job_id=job_id,
+            agent="course_video",
+            operation="other",
+            provider="local",
+            model="ffprobe",
+            cost_usd=0,
+            cost_source="provider_actual",
+            work_unit_key="course-video:verify",
+            idempotency_key=f"{job_id}:course-video:verify",
+            metadata={"local_operation": True},
+        )
+        _complete_unit(
+            job_id,
+            "course-video-verify",
+            verify_unit,
+            {"media": output_media},
+            message="Salida verificada con ffprobe",
+        )
+    else:
+        output_media = dict(cached_verify.get("media") or {})
+
+    publish_unit, cached_publish = _before_unit(
+        job_id,
+        payload,
+        "course-video-publish",
+        public["input_signature"],
+        "Preparando la publicación atómica",
+    )
+    if cached_publish and cached_publish.get("artifact_id"):
+        return cached_publish
+    with SessionLocal() as db:
+        cached = find_cached_export(db, project_id, public["input_signature"])
+        if cached is not None:
+            metadata = artifact_metadata(cached)
+            select_artifact_version(db, cached)
+            for associated_key in ("course_subtitles_id", "chapter_manifest_id"):
+                associated_id = metadata.get(associated_key)
+                associated = db.get(Artifact, associated_id) if associated_id else None
+                if associated is not None:
+                    select_artifact_version(db, associated)
+            db.commit()
+            return {
+                "artifact_id": cached.id,
+                "course_subtitles_id": metadata.get("course_subtitles_id"),
+                "chapter_manifest_id": metadata.get("chapter_manifest_id"),
+                "cache_hit": True,
+            }
+
+    common_metadata = {
+        "agent": "course_video",
+        "input_signature": public["input_signature"],
+        "options": options,
+        "inputs": snapshot,
+        "duration_seconds": output_duration,
+    }
+    result = _publish_course_video_artifacts(
+        job_id=job_id,
+        project_id=project_id,
+        video_path=out_path,
+        subtitles_path=subtitles_path if include_subtitles else None,
+        manifest_path=manifest_path if include_chapters else None,
+        common_metadata=common_metadata,
+        video_metadata={
+            "orientation": public["orientation"],
+            "width": public["width"],
+            "height": public["height"],
+            "duration_seconds": float(output_media["duration_seconds"]),
+            "video_codec": output_media.get("video_codec"),
+            "audio_codec": output_media.get("audio_codec"),
+            "size_bytes": out_path.stat().st_size,
+            "sha256": file_sha256(out_path),
+            "course_subtitles_sha256": (
+                file_sha256(subtitles_path) if include_subtitles else None
+            ),
+            "chapter_manifest_sha256": (
+                file_sha256(manifest_path) if include_chapters else None
+            ),
+        },
+    )
+    append_event(
+        job_id,
+        "artifact",
+        f"Vídeo completo listo ({output_duration / 60:.1f} min)",
+        {
+            "artifact_id": result["artifact_id"],
+            "course_subtitles_id": result["course_subtitles_id"],
+            "chapter_manifest_id": result["chapter_manifest_id"],
+            "input_signature": public["input_signature"],
+        },
+    )
+    try:
+        _complete_unit(
+            job_id,
+            "course-video-publish",
+            publish_unit,
+            result,
+            message="Vídeo completo publicado",
+        )
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+    return result
 
 
 def _wiki_context(project_id: str) -> str:
@@ -2510,9 +2891,7 @@ def _run_automatic_review(
             return result, summary
         if regenerations >= max_regenerations:
             destination = (
-                "human_approval"
-                if payload.get("human_review_enabled", False)
-                else "continue"
+                "human_approval" if payload.get("human_review_enabled", False) else "continue"
             )
             if destination == "continue":
                 append_event(
@@ -2791,6 +3170,7 @@ def run_workflow_job(job_id: str, payload: dict) -> dict:
     from factory_api.workflow_engine import build_workflow_graph, open_checkpointer
 
     definition = payload["definition"]
+
     def evaluate_workflow_stage(agent: str, result: dict, step: int):
         token = _CURRENT_WORKFLOW_STEP.set(step)
         try:
@@ -2830,9 +3210,7 @@ def run_workflow_job(job_id: str, payload: dict) -> dict:
                     if job is not None:
                         stored_payload = json.loads(job.payload_json or "{}")
                         stored_payload.pop("_resume", None)
-                        job.payload_json = json.dumps(
-                            stored_payload, ensure_ascii=False
-                        )
+                        job.payload_json = json.dumps(stored_payload, ensure_ascii=False)
                         db.commit()
                 resume_cleared = True
             if "__interrupt__" in update:
@@ -2873,6 +3251,7 @@ HANDLERS = {
     "script_run": run_script_job,
     "voice_run": run_voice_job,
     "video_run": run_video_job,
+    "course_video_export": run_course_video_job,
     "publisher_run": run_publisher_job,
     "youtube_upload": run_youtube_upload_job,
     "analyst_run": run_analyst_job,

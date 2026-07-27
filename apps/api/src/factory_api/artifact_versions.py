@@ -8,7 +8,14 @@ from sqlalchemy.orm import Session
 
 from factory_api.models import Artifact
 
-SINGLETON_TYPES = {"research_brief", "course_plan", "performance_report"}
+SINGLETON_TYPES = {
+    "research_brief",
+    "course_plan",
+    "performance_report",
+    "course_video",
+    "course_subtitles",
+    "course_video_manifest",
+}
 TITLE_PREFIXES = (
     "Slides — ",
     "Guion — ",

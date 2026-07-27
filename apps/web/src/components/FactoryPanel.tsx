@@ -6,6 +6,8 @@ import {
   api,
   type AgentProfile,
   type Artifact,
+  type CourseVideoPreflight,
+  type CourseVideoTransition,
   type Job,
   type JobEvent,
   type Workflow,
@@ -58,6 +60,7 @@ const KIND_LABELS: Record<string, string> = {
   script_run: "Guionista docente",
   voice_run: "Adaptador a voz",
   video_run: "Montaje de vídeo",
+  course_video_export: "Vídeo completo del curso",
   publisher_run: "Preparación de publicación",
   youtube_upload: "Subida a YouTube",
   analyst_run: "Análisis de rendimiento",
@@ -151,6 +154,9 @@ const TYPE_LABELS: Record<string, string> = {
   voice_script: "Guion de voz",
   video: "Vídeo",
   subtitles: "Subtítulos",
+  course_video: "Vídeo completo",
+  course_subtitles: "Subtítulos del curso",
+  course_video_manifest: "Capítulos del curso",
   publication_package: "Publicación",
   thumbnail: "Miniatura",
 };
@@ -244,8 +250,10 @@ function artifactIcon(type: string) {
   if (type === "slide_deck") return <IconPresentation size={16} />;
   if (type === "teaching_script") return <IconMessage size={16} />;
   if (type === "voice_script") return <IconMic size={16} />;
-  if (type === "video") return <IconVideo size={16} />;
-  if (type === "subtitles") return <IconCaptions size={16} />;
+  if (type === "video" || type === "course_video") return <IconVideo size={16} />;
+  if (type === "subtitles" || type === "course_subtitles") {
+    return <IconCaptions size={16} />;
+  }
   if (type === "publication_package") return <IconPackage size={16} />;
   if (type === "thumbnail") return <IconImage size={16} />;
   if (type === "research_brief") return <IconSearch size={16} />;
@@ -321,6 +329,17 @@ export default function FactoryPanel({
   const [showHistory, setShowHistory] = useState(false);
   const sourceRef = useRef<EventSource | null>(null);
   const [artifactFilter, setArtifactFilter] = useState("all");
+  const [courseVideoPreflight, setCourseVideoPreflight] =
+    useState<CourseVideoPreflight | null>(null);
+  const [courseVideoSubtitles, setCourseVideoSubtitles] = useState<
+    boolean | null
+  >(null);
+  const [courseVideoChapters, setCourseVideoChapters] = useState(true);
+  const [courseVideoTransition, setCourseVideoTransition] =
+    useState<CourseVideoTransition>("none");
+  const [loadingCourseVideoPreflight, setLoadingCourseVideoPreflight] =
+    useState(false);
+  const [startingCourseVideo, setStartingCourseVideo] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const eventsEndRef = useRef<HTMLLIElement>(null);
 
@@ -407,6 +426,51 @@ export default function FactoryPanel({
     return () => sourceRef.current?.close();
   }, [projectId, refresh, follow]);
 
+  useEffect(() => {
+    if (!artifacts.some((artifact) => artifact.type === "course_plan")) {
+      setCourseVideoPreflight(null);
+      return;
+    }
+    let canceled = false;
+    setLoadingCourseVideoPreflight(true);
+    api
+      .getCourseVideoPreflight(projectId, {
+        ...(courseVideoSubtitles === null
+          ? {}
+          : { include_subtitles: courseVideoSubtitles }),
+        include_chapters: courseVideoChapters,
+        transition: courseVideoTransition,
+      })
+      .then((preflight) => {
+        if (canceled) return;
+        setCourseVideoPreflight(preflight);
+        if (courseVideoSubtitles === null) {
+          setCourseVideoSubtitles(preflight.include_subtitles);
+        }
+      })
+      .catch((err) => {
+        if (!canceled) {
+          setError(
+            err instanceof Error
+              ? err.message
+              : "No se pudo ejecutar el preflight del vídeo completo",
+          );
+        }
+      })
+      .finally(() => {
+        if (!canceled) setLoadingCourseVideoPreflight(false);
+      });
+    return () => {
+      canceled = true;
+    };
+  }, [
+    artifacts,
+    courseVideoChapters,
+    courseVideoSubtitles,
+    courseVideoTransition,
+    projectId,
+  ]);
+
   const running =
     activeRun?.status === "queued" ||
     activeRun?.status === "running" ||
@@ -448,6 +512,29 @@ export default function FactoryPanel({
       follow(job);
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo lanzar");
+    }
+  }
+
+  async function startCourseVideo() {
+    if (courseVideoSubtitles === null) return;
+    setStartingCourseVideo(true);
+    setError(null);
+    try {
+      const job = await api.createCourseVideo(projectId, {
+        include_subtitles: courseVideoSubtitles,
+        include_chapters: courseVideoChapters,
+        transition: courseVideoTransition,
+      });
+      await refresh();
+      follow(job);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "No se pudo generar el vídeo completo",
+      );
+    } finally {
+      setStartingCourseVideo(false);
     }
   }
 
@@ -1144,6 +1231,143 @@ export default function FactoryPanel({
               })}
             </ul>
           )}
+        </div>
+      )}
+
+      {artifactTypes.has("course_plan") && (
+        <div className="card mb-5 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-100">
+                <IconVideo size={16} className="text-indigo-300" />
+                Vídeo completo del curso
+              </h3>
+              <p className="mt-1 text-xs text-zinc-500">
+                Une las versiones activas siguiendo exactamente el plan del curso,
+                sin nuevas llamadas a IA ni TTS.
+              </p>
+            </div>
+            {courseVideoPreflight && (
+              <span
+                className={
+                  courseVideoPreflight.ready ? "badge-success" : "badge-warning"
+                }
+              >
+                {courseVideoPreflight.ready
+                  ? "Preflight superado"
+                  : "Preflight pendiente"}
+              </span>
+            )}
+          </div>
+
+          <div className="mt-4 grid gap-3 md:grid-cols-3">
+            <label className="flex items-center gap-2 text-sm text-zinc-300">
+              <input
+                type="checkbox"
+                checked={courseVideoSubtitles ?? false}
+                disabled={courseVideoSubtitles === null}
+                onChange={(event) =>
+                  setCourseVideoSubtitles(event.target.checked)
+                }
+              />
+              Combinar SRT
+            </label>
+            <label className="flex items-center gap-2 text-sm text-zinc-300">
+              <input
+                type="checkbox"
+                checked={courseVideoChapters}
+                onChange={(event) =>
+                  setCourseVideoChapters(event.target.checked)
+                }
+              />
+              Incluir capítulos
+            </label>
+            <label className="text-xs text-zinc-400">
+              Transición
+              <select
+                value={courseVideoTransition}
+                onChange={(event) =>
+                  setCourseVideoTransition(
+                    event.target.value as CourseVideoTransition,
+                  )
+                }
+                className="input mt-1"
+              >
+                <option value="none">Sin transición</option>
+                <option value="fade_500ms">Fundido de 0,5 s</option>
+                <option value="gap_500ms">Separación de 0,5 s</option>
+              </select>
+            </label>
+          </div>
+
+          {courseVideoPreflight && (
+            <div className="mt-3 rounded-lg border border-zinc-700/70 bg-zinc-950/30 p-3">
+              <p className="text-xs text-zinc-400">
+                {courseVideoPreflight.lessons.length} lecciones ·{" "}
+                {(courseVideoPreflight.output_duration_seconds / 60).toFixed(1)} min ·{" "}
+                {courseVideoPreflight.orientation === "vertical"
+                  ? "vertical 9:16"
+                  : courseVideoPreflight.orientation === "horizontal"
+                    ? "horizontal 16:9"
+                    : "orientación sin resolver"}
+              </p>
+              {courseVideoPreflight.issues.length > 0 && (
+                <ul className="mt-2 space-y-1 text-xs text-amber-200">
+                  {courseVideoPreflight.issues.map((issue, index) => (
+                    <li key={`${issue.code}-${issue.lesson ?? index}`}>
+                      {issue.lesson ? `${issue.lesson}: ` : ""}
+                      {issue.detail}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {courseVideoPreflight.lessons.length > 0 && (
+                <details className="mt-2 text-xs text-zinc-400">
+                  <summary className="cursor-pointer text-zinc-300">
+                    Ver orden e inputs seleccionados
+                  </summary>
+                  <ol className="mt-2 space-y-1">
+                    {courseVideoPreflight.lessons.map((lesson) => (
+                      <li key={lesson.label}>
+                        {lesson.label} ·{" "}
+                        {lesson.video_artifact_id
+                          ? `vídeo v${lesson.video_version}`
+                          : "sin vídeo"}
+                        {lesson.subtitles_artifact_id ? " · SRT" : " · sin SRT"}
+                      </li>
+                    ))}
+                  </ol>
+                </details>
+              )}
+            </div>
+          )}
+
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={
+                running ||
+                startingCourseVideo ||
+                loadingCourseVideoPreflight ||
+                !courseVideoPreflight?.ready
+              }
+              onClick={() => void startCourseVideo()}
+            >
+              {startingCourseVideo
+                ? "Iniciando…"
+                : loadingCourseVideoPreflight
+                  ? "Comprobando…"
+                  : "Generar vídeo completo"}
+            </button>
+            {courseVideoPreflight &&
+              !courseVideoPreflight.subtitles_available && (
+                <span className="text-xs text-zinc-500">
+                  El SRT se activa solo cuando todas las lecciones tienen uno
+                  seleccionado.
+                </span>
+              )}
+          </div>
         </div>
       )}
 

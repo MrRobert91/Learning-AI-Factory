@@ -80,6 +80,12 @@ docker compose up --build                # stack completo (2 contenedores)
   global mutable. El perfil de `video` guarda `subtitles_mode` (`none` por
   defecto, `srt` o `burned_and_srt`); la incrustación usa duraciones TTS reales,
   respeta orientación/logos y nunca añade llamadas LLM.
+- **Vídeo completo del curso**: `course_video_export` consume el `course_plan` y
+  las versiones seleccionadas de `video`/`subtitles` en orden pedagógico. El
+  preflight bloquea inputs ausentes, corruptos o incompatibles antes de ffmpeg;
+  el job concatena sin LLM/TTS, ajusta SRT/capítulos a la transición, valida la
+  salida con ffprobe y solo entonces publica `course_video` y sus asociados
+  versionados. Inputs y opciones idénticos reutilizan la versión válida.
 - **Imágenes de slides**: son opcionales y se configuran/versionan en el perfil
   de `slides` (modelo OpenRouter + preset o prompt personalizado). El agente
   selecciona como máximo 6 por lección; los originales viven como assets de la
