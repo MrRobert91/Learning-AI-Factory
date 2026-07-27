@@ -380,6 +380,10 @@ class ApprovalRequest(BaseModel):
     feedback: str = ""
 
 
+class RunControlRequest(BaseModel):
+    reason: str = Field(default="", max_length=500)
+
+
 class AgentRunCreate(BaseModel):
     agent: str = Field(description="curator | planner | lessons | slides | pipeline")
     profile_id: str | None = None
@@ -400,6 +404,7 @@ class JobRead(BaseModel):
     error: str
     project_id: str | None
     result: dict | None = None
+    control: dict = Field(default_factory=dict)
     usage_summary: dict = Field(default_factory=dict)
     review_policies: dict[str, AutomaticReviewPolicyRead] = {}
     created_at: datetime

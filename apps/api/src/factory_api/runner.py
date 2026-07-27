@@ -13,6 +13,7 @@ import shutil
 import uuid
 from contextvars import ContextVar
 from datetime import UTC, datetime
+from pathlib import Path
 
 from factory_agents.contracts import DurationSpec
 from factory_agents.duration import (
@@ -21,7 +22,7 @@ from factory_agents.duration import (
     research_budget,
     validate_course_plan_structure,
 )
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from factory_api.artifact_versions import (
     add_artifact_version,
@@ -32,6 +33,15 @@ from factory_api.artifact_versions import (
 from factory_api.config import get_settings
 from factory_api.db import SessionLocal
 from factory_api.models import Artifact, Job, JobEvent, UsageRecord
+from factory_api.run_control import (
+    RunCanceled,
+    RunPaused,
+    checkpoint,
+    completed_unit,
+    load_scope_state,
+    recover_jobs,
+    save_scope_state,
+)
 from factory_api.usage import (
     attach_usage_to_artifact,
     record_usage,
@@ -50,13 +60,31 @@ class JobRunner:
         # (the app can be started several times in one process, e.g. tests).
         self._queue: asyncio.Queue[str] | None = None
         self._task: asyncio.Task | None = None
+        self._queued_ids: set[str] = set()
 
     async def start(self) -> None:
         self._queue = asyncio.Queue()
         with SessionLocal() as db:
-            pending = db.scalars(select(Job.id).where(Job.status.in_(["queued", "running"]))).all()
+            pending, recovery_events = recover_jobs(db)
         for job_id in pending:
+            self._queued_ids.add(job_id)
             self._queue.put_nowait(job_id)
+        for job_id, summary, point in recovery_events:
+            append_event(
+                job_id,
+                "control",
+                summary,
+                {
+                    "status": (
+                        "paused"
+                        if "Pausa" in summary
+                        else "canceled"
+                        if "Cancelación" in summary
+                        else "queued"
+                    ),
+                    "checkpoint": point,
+                },
+            )
         self._task = asyncio.create_task(self._worker())
         logger.info(
             "Job runner started",
@@ -68,30 +96,43 @@ class JobRunner:
             self._task.cancel()
             self._task = None
         self._queue = None
+        self._queued_ids.clear()
         logger.info("Job runner stopped")
 
     def enqueue(self, job_id: str) -> None:
         # If the runner is not started the job stays queued in the DB and is
         # picked up on the next start().
-        if self._queue is not None:
+        if self._queue is not None and job_id not in self._queued_ids:
+            self._queued_ids.add(job_id)
             self._queue.put_nowait(job_id)
             logger.info("Job enqueued", extra={"job_id": job_id})
 
     async def _worker(self) -> None:
         while True:
             job_id = await self._queue.get()
+            self._queued_ids.discard(job_id)
             try:
                 await asyncio.to_thread(self._execute, job_id)
             except Exception:
                 logger.exception("Job %s crashed outside handler", job_id)
+            finally:
+                self._queue.task_done()
 
     def _execute(self, job_id: str) -> None:
         with SessionLocal() as db:
-            job = db.get(Job, job_id)
-            if job is None or job.status in ("done", "failed"):
+            claimed = db.execute(
+                update(Job)
+                .where(Job.id == job_id, Job.status == "queued")
+                .values(status="running", finished_at=None, error="")
+            )
+            if claimed.rowcount != 1:
+                db.rollback()
                 return
-            job.status = "running"
-            job.started_at = datetime.now(UTC)
+            db.commit()
+            job = db.get(Job, job_id)
+            if job is None:
+                return
+            job.started_at = job.started_at or datetime.now(UTC)
             db.commit()
             kind, payload = job.kind, json.loads(job.payload_json)
             logger.info(
@@ -144,11 +185,37 @@ class JobRunner:
                     ),
                     "final_decision": "approved",
                 }
-            else:
+            elif direct_agent is not None:
                 effective_payload = dict(payload)
-                if direct_agent is not None and resume.get("approved") is False:
+                if resume.get("approved") is False:
                     effective_payload["revision_feedback"] = resume.get("feedback", "")
-                result = handler(job_id, effective_payload)
+                history = list(payload.get("_human_feedback_history", []))
+                cycle = len(history) + (1 if resume.get("approved") is False else 0)
+                handler_unit = f"direct:{direct_agent}:generation:{cycle}"
+                effective_payload["_control_scope"] = handler_unit
+                cached = completed_unit(job_id, handler_unit)
+                if cached is not None:
+                    with SessionLocal() as db:
+                        current = db.get(Job, job_id)
+                        result = (
+                            json.loads(current.result_json)
+                            if current is not None and current.result_json
+                            else {}
+                        )
+                else:
+                    result = handler(job_id, effective_payload)
+                    self._store_partial_result(job_id, result)
+                    checkpoint(
+                        job_id,
+                        "agent",
+                        current_unit=handler_unit,
+                        next_unit=f"direct:{direct_agent}:automatic-review",
+                        message=f"{direct_agent} completado",
+                        completed_unit=handler_unit,
+                        result={"stored_result": True},
+                    )
+            else:
+                result = handler(job_id, dict(payload))
             if direct_agent is not None and resume.get("approved") is not True:
                 result, review_summary = _run_automatic_review(
                     job_id,
@@ -160,6 +227,13 @@ class JobRunner:
                 if review_summary is not None:
                     result = {**result, "automatic_review": review_summary}
                 if payload.get("human_review_enabled", False):
+                    checkpoint(
+                        job_id,
+                        "human_approval",
+                        current_unit=f"direct:{direct_agent}:review",
+                        next_unit=f"direct:{direct_agent}:human-approval",
+                        message=f"{direct_agent} listo para revisión humana",
+                    )
                     history = list(payload.get("_human_feedback_history", []))
                     if resume.get("approved") is False:
                         history.append(
@@ -185,15 +259,61 @@ class JobRunner:
                     )
                     self._set_waiting(job_id, pending_payload, result)
                     return
+            checkpoint(
+                job_id,
+                "finalizing",
+                current_unit=kind,
+                next_unit=None,
+                message="Preparando el resultado final",
+            )
             if isinstance(result, dict) and result.get("__waiting__"):
                 self._set_waiting(job_id)
             else:
                 if kind in MEMORY_KINDS:
-                    consolidate_memory(job_id)
+                    memory_unit = f"memory:{kind}"
+                    if completed_unit(job_id, memory_unit) is None:
+                        checkpoint(
+                            job_id,
+                            "memory",
+                            current_unit=None,
+                            next_unit=memory_unit,
+                            message="Preparando la consolidación de memoria",
+                        )
+                        consolidate_memory(job_id)
+                        _complete_unit(
+                            job_id,
+                            "memory",
+                            memory_unit,
+                            {"completed": True},
+                            message="Memoria consolidada",
+                        )
                 self._finish(job_id, result=result)
+        except RunPaused as exc:
+            append_event(
+                job_id,
+                "control",
+                "Ejecución pausada en un punto seguro",
+                {"status": "paused", "checkpoint": exc.checkpoint},
+            )
+        except RunCanceled as exc:
+            append_event(
+                job_id,
+                "control",
+                "Ejecución cancelada en un punto seguro",
+                {"status": "canceled", "checkpoint": exc.checkpoint},
+            )
         except Exception as exc:
             logger.exception("Job %s failed", job_id)
             self._finish(job_id, error=str(exc))
+
+    def _store_partial_result(self, job_id: str, result: dict | None) -> None:
+        with SessionLocal() as db:
+            job = db.get(Job, job_id)
+            if job is not None:
+                job.result_json = (
+                    json.dumps(result, ensure_ascii=False) if result is not None else None
+                )
+                db.commit()
 
     def _set_waiting(
         self,
@@ -201,6 +321,13 @@ class JobRunner:
         payload: dict | None = None,
         result: dict | None = None,
     ) -> None:
+        checkpoint(
+            job_id,
+            "human_approval",
+            current_unit=None,
+            next_unit="human-approval",
+            message="Preparando la aprobación humana",
+        )
         with SessionLocal() as db:
             job = db.get(Job, job_id)
             if job is not None:
@@ -216,9 +343,19 @@ class JobRunner:
                 )
 
     def _finish(self, job_id: str, result: dict | None = None, error: str = "") -> None:
+        if not error:
+            checkpoint(
+                job_id,
+                "finalizing",
+                current_unit="result",
+                next_unit=None,
+                message="Guardando el resultado final",
+            )
         with SessionLocal() as db:
             job = db.get(Job, job_id)
             if job is None:
+                return
+            if job.status in {"paused", "canceled"}:
                 return
             job.status = "failed" if error else "done"
             job.error = error
@@ -502,6 +639,51 @@ def append_event(job_id: str, type_: str, summary: str, data: dict | None = None
     )
 
 
+def _control_unit(payload: dict, phase: str, identity: str = "main") -> str:
+    scope = str(payload.get("_control_scope") or f"job:{phase}")
+    return f"{scope}:{phase}:{identity}"
+
+
+def _before_unit(
+    job_id: str,
+    payload: dict,
+    phase: str,
+    identity: str,
+    message: str,
+) -> tuple[str, dict | None]:
+    unit = _control_unit(payload, phase, identity)
+    cached = completed_unit(job_id, unit)
+    if cached is None:
+        checkpoint(
+            job_id,
+            phase,
+            current_unit=None,
+            next_unit=unit,
+            message=message,
+        )
+    return unit, cached
+
+
+def _complete_unit(
+    job_id: str,
+    phase: str,
+    unit: str,
+    result: dict,
+    *,
+    next_unit: str | None = None,
+    message: str = "",
+) -> None:
+    checkpoint(
+        job_id,
+        phase,
+        current_unit=unit,
+        next_unit=next_unit,
+        message=message,
+        completed_unit=unit,
+        result=result,
+    )
+
+
 def _save_artifact(
     job_id: str,
     project_id: str,
@@ -723,6 +905,11 @@ def run_curator_job(job_id: str, payload: dict) -> dict:
 
     settings = get_settings()
     workspace = settings.data_dir / "runs" / job_id
+    unit, cached = _before_unit(
+        job_id, payload, "curator", "brief", "Preparando el Curador"
+    )
+    if cached and cached.get("artifact_id"):
+        return {"artifact_id": cached["artifact_id"]}
     _emit_duration_event(job_id, payload, "curator")
     spec = _duration_spec(payload)
     source_documents = _project_source_documents(
@@ -773,6 +960,13 @@ def run_curator_job(job_id: str, payload: dict) -> dict:
         metadata=_duration_metadata(payload, "curator"),
     )
     append_event(job_id, "artifact", "Research brief generado", {"artifact_id": artifact_id})
+    _complete_unit(
+        job_id,
+        "curator",
+        unit,
+        {"artifact_id": artifact_id},
+        message="Research brief completado",
+    )
     return {"artifact_id": artifact_id}
 
 
@@ -780,6 +974,11 @@ def run_planner_job(job_id: str, payload: dict) -> dict:
     from factory_agents.agents.planner import render_planner_input, run_planner
 
     settings = get_settings()
+    unit, cached = _before_unit(
+        job_id, payload, "planner", "course-plan", "Preparando el plan del curso"
+    )
+    if cached and cached.get("artifact_id"):
+        return {"artifact_id": cached["artifact_id"]}
     brief_md = _require_artifact(
         payload["project_id"], "research_brief", "ejecuta antes el Curador"
     )
@@ -823,6 +1022,13 @@ def run_planner_job(job_id: str, payload: dict) -> dict:
         f"Plan generado: {len(plan.modules)} módulos, {total} lecciones",
         {"artifact_id": artifact_id},
     )
+    _complete_unit(
+        job_id,
+        "planner",
+        unit,
+        {"artifact_id": artifact_id},
+        message="Plan del curso completado",
+    )
     return {"artifact_id": artifact_id}
 
 
@@ -852,9 +1058,20 @@ def run_lessons_job(job_id: str, payload: dict) -> dict:
         else None
     )
 
+    lesson_units = list(plan.iter_lessons())
     artifact_ids: list[str] = []
-    for mi, li, _module, lesson in plan.iter_lessons():
+    for index, (mi, li, _module, lesson) in enumerate(lesson_units):
         label = f"{mi}.{li} {lesson.title}"
+        unit, cached = _before_unit(
+            job_id,
+            payload,
+            "lessons",
+            f"{mi}-{li}",
+            f"Preparando la lección {label}",
+        )
+        if cached and cached.get("artifact_id"):
+            artifact_ids.append(cached["artifact_id"])
+            continue
         append_event(job_id, "stage", f"Escribiendo lección {label}…")
         final_text = ""
         for event in run_lesson(
@@ -897,6 +1114,23 @@ def run_lessons_job(job_id: str, payload: dict) -> dict:
         )
         artifact_ids.append(artifact_id)
         append_event(job_id, "artifact", f"Lección {label} lista", {"artifact_id": artifact_id})
+        next_unit = (
+            _control_unit(
+                payload,
+                "lessons",
+                f"{lesson_units[index + 1][0]}-{lesson_units[index + 1][1]}",
+            )
+            if index + 1 < len(lesson_units)
+            else None
+        )
+        _complete_unit(
+            job_id,
+            "lessons",
+            unit,
+            {"artifact_id": artifact_id},
+            next_unit=next_unit,
+            message=f"Lección {label} completada",
+        )
 
     _deactivate_unproduced(payload["project_id"], "lesson_content", artifact_ids)
     return {"artifact_ids": artifact_ids}
@@ -991,7 +1225,52 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
         },
     )
     artifact_ids: list[str] = []
-    for title, (_lesson_id, rel_path) in by_title.items():
+    for title, (lesson_id, rel_path) in by_title.items():
+        deck_unit, cached_deck = _before_unit(
+            job_id,
+            payload,
+            "slides",
+            lesson_id,
+            f"Preparando las slides de {title}",
+        )
+        render_identity = f"{lesson_id}:render"
+        render_unit = _control_unit(payload, "slides", render_identity)
+        if cached_deck and cached_deck.get("artifact_id"):
+            artifact_id = cached_deck["artifact_id"]
+            render_cached = completed_unit(job_id, render_unit)
+            rendered = list(render_cached.get("rendered", [])) if render_cached else []
+            if render_cached is None:
+                with SessionLocal() as db:
+                    artifact = db.get(Artifact, artifact_id)
+                    if artifact is None:
+                        raise RuntimeError(
+                            f"Las slides completadas de {title} ya no están disponibles"
+                        )
+                    deck_path = settings.data_dir / artifact.path
+                checkpoint(
+                    job_id,
+                    "slides",
+                    current_unit=deck_unit,
+                    next_unit=render_unit,
+                    message=f"Preparando el render de {title}",
+                )
+                rendered = render_deck(deck_path)
+                _complete_unit(
+                    job_id,
+                    "slides",
+                    render_unit,
+                    {"rendered": rendered},
+                    message=f"Render de {title} completado",
+                )
+            artifact_ids.append(artifact_id)
+            append_event(
+                job_id,
+                "artifact",
+                f"Slides de {title} recuperadas"
+                + (f" (render: {', '.join(rendered)})" if rendered else ""),
+                {"artifact_id": artifact_id, "resumed": True},
+            )
+            continue
         append_event(job_id, "stage", f"Diseñando slides de {title}…")
         lesson_md = (settings.data_dir / rel_path).read_text(encoding="utf-8")
         palette_instruction = (
@@ -1181,10 +1460,32 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
                 },
             },
         )
+        _complete_unit(
+            job_id,
+            "slides",
+            deck_unit,
+            {"artifact_id": artifact_id},
+            next_unit=render_unit,
+            message=f"Deck de {title} generado",
+        )
         with SessionLocal() as db:
             artifact = db.get(Artifact, artifact_id)
             deck_path = settings.data_dir / artifact.path
+        checkpoint(
+            job_id,
+            "slides",
+            current_unit=deck_unit,
+            next_unit=render_unit,
+            message=f"Preparando el render de {title}",
+        )
         rendered = render_deck(deck_path)
+        _complete_unit(
+            job_id,
+            "slides",
+            render_unit,
+            {"rendered": rendered},
+            message=f"Render de {title} completado",
+        )
         artifact_ids.append(artifact_id)
         append_event(
             job_id,
@@ -1304,6 +1605,16 @@ def run_script_job(job_id: str, payload: dict) -> dict:
 
     artifact_ids: list[str] = []
     for base, deck in decks.items():
+        unit, cached = _before_unit(
+            job_id,
+            payload,
+            "script",
+            deck.id,
+            f"Preparando el guion docente de {base}",
+        )
+        if cached and cached.get("artifact_id"):
+            artifact_ids.append(cached["artifact_id"])
+            continue
         append_event(job_id, "stage", f"Escribiendo guion docente de {base}…")
         deck_md = (settings.data_dir / deck.path).read_text(encoding="utf-8")
         lesson = lessons.get(base)
@@ -1338,6 +1649,13 @@ def run_script_job(job_id: str, payload: dict) -> dict:
         )
         artifact_ids.append(artifact_id)
         append_event(job_id, "artifact", f"Guion de {base} listo", {"artifact_id": artifact_id})
+        _complete_unit(
+            job_id,
+            "script",
+            unit,
+            {"artifact_id": artifact_id},
+            message=f"Guion docente de {base} completado",
+        )
     _deactivate_unproduced(payload["project_id"], "teaching_script", artifact_ids)
     return {"artifact_ids": artifact_ids}
 
@@ -1378,6 +1696,16 @@ def run_voice_job(job_id: str, payload: dict) -> dict:
 
     artifact_ids: list[str] = []
     for base, script in scripts.items():
+        unit, cached = _before_unit(
+            job_id,
+            payload,
+            "voice",
+            script.id,
+            f"Preparando el guion de voz de {base}",
+        )
+        if cached and cached.get("artifact_id"):
+            artifact_ids.append(cached["artifact_id"])
+            continue
         append_event(job_id, "stage", f"Adaptando a voz {base}…")
         script_md = (settings.data_dir / script.path).read_text(encoding="utf-8")
         voice_script = run_voice(
@@ -1421,6 +1749,13 @@ def run_voice_job(job_id: str, payload: dict) -> dict:
             f"Guion de voz de {base} listo ({len(voice_script.segments)} segmentos)",
             {"artifact_id": artifact_id},
         )
+        _complete_unit(
+            job_id,
+            "voice",
+            unit,
+            {"artifact_id": artifact_id},
+            message=f"Guion de voz de {base} completado",
+        )
     _deactivate_unproduced(payload["project_id"], "voice_script", artifact_ids)
     return {"artifact_ids": artifact_ids}
 
@@ -1459,13 +1794,45 @@ def run_video_job(job_id: str, payload: dict) -> dict:
     video_ids: list[str] = []
     subtitle_ids: list[str] = []
     for base, voice_artifact in voices.items():
+        lesson_unit, cached_lesson = _before_unit(
+            job_id,
+            payload,
+            "video",
+            voice_artifact.id,
+            f"Preparando el vídeo de {base}",
+        )
+        if cached_lesson and cached_lesson.get("video_id"):
+            video_ids.append(cached_lesson["video_id"])
+            if cached_lesson.get("subtitles_id"):
+                subtitle_ids.append(cached_lesson["subtitles_id"])
+            continue
         deck = decks.get(base)
         if deck is None:
             raise RuntimeError(f"No hay slide_deck para «{base}»: regenera las slides")
         workdir = workdir_root / base.replace("/", "_").replace(" ", "_")[:60]
 
-        append_event(job_id, "stage", f"Renderizando slides de {base} a imágenes…")
-        images = render_slide_images(settings.data_dir / deck.path, workdir / "slides")
+        render_unit, cached_render = _before_unit(
+            job_id,
+            payload,
+            "video-render",
+            voice_artifact.id,
+            f"Preparando el render de slides de {base}",
+        )
+        images = (
+            [Path(value) for value in cached_render.get("images", [])]
+            if cached_render
+            else []
+        )
+        if not images or not all(image.is_file() for image in images):
+            append_event(job_id, "stage", f"Renderizando slides de {base} a imágenes…")
+            images = render_slide_images(settings.data_dir / deck.path, workdir / "slides")
+            _complete_unit(
+                job_id,
+                "video-render",
+                render_unit,
+                {"images": [str(image) for image in images]},
+                message=f"Slides de {base} renderizadas",
+            )
 
         voice_script = VoiceScript.model_validate_json(
             (settings.data_dir / voice_artifact.path).read_text(encoding="utf-8")
@@ -1498,9 +1865,26 @@ def run_video_job(job_id: str, payload: dict) -> dict:
         pairs: list[tuple] = []
         srt_segments: list[tuple[str, float]] = []
         for segment_index, segment in enumerate(voice_script.segments, start=1):
-            audio, cache_hit = synthesize_cached_with_status(
-                provider, segment.text, cache_dir
+            segment_unit, cached_segment = _before_unit(
+                job_id,
+                payload,
+                "tts",
+                f"{voice_artifact.id}:{segment_index}",
+                f"Preparando segmento {segment_index} de {base}",
             )
+            cached_audio = (
+                Path(cached_segment["audio_path"])
+                if cached_segment and cached_segment.get("audio_path")
+                else None
+            )
+            reused_control_unit = cached_audio is not None and cached_audio.is_file()
+            if reused_control_unit:
+                audio = cached_audio
+                cache_hit = True
+            else:
+                audio, cache_hit = synthesize_cached_with_status(
+                    provider, segment.text, cache_dir
+                )
             record_usage(
                 job_id=job_id,
                 workflow_step=payload.get("_workflow_step"),
@@ -1542,6 +1926,14 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                     "segment": segment_index,
                 },
             )
+            if not reused_control_unit:
+                _complete_unit(
+                    job_id,
+                    "tts",
+                    segment_unit,
+                    {"audio_path": str(audio)},
+                    message=f"Segmento {segment_index} de {base} sintetizado",
+                )
             image = images[min(segment.slide, len(images)) - 1]
             pairs.append((image, audio))
             srt_segments.append((segment.text, probe_duration(audio)))
@@ -1551,41 +1943,66 @@ def run_video_job(job_id: str, payload: dict) -> dict:
             abs(duration - target_seconds) / target_seconds if target_seconds else None
         )
 
-        append_event(
+        compose_unit, cached_compose = _before_unit(
             job_id,
-            "stage",
-            f"Montando vídeo {orientation} de {base} (ffmpeg)…",
+            payload,
+            "video-compose",
+            voice_artifact.id,
+            f"Preparando el montaje ffmpeg de {base}",
         )
         srt_content = build_srt(srt_segments)
         srt_path = workdir / "subtitles.srt"
-        subtitle_style = None
         if subtitles_mode != "none":
             srt_path.parent.mkdir(parents=True, exist_ok=True)
             srt_path.write_text(srt_content, encoding="utf-8")
-        out_mp4 = workdir / "lesson.mp4"
-        compose_video(pairs, out_mp4, workdir / "segments", orientation=orientation)
-        if subtitles_mode == "burned_and_srt":
-            append_event(job_id, "stage", f"Incrustando subtítulos de {base}…")
-            out_mp4, subtitle_style = burn_subtitles(
-                out_mp4,
-                srt_path,
-                workdir / "lesson-subtitled.mp4",
-                orientation=orientation,
-                logo_metadata=(artifact_metadata(deck).get("logo") or {}),
-            )
-        record_usage(
-            job_id=job_id,
-            workflow_step=payload.get("_workflow_step"),
-            agent="video",
-            operation="other",
-            provider="local",
-            model="ffmpeg",
-            cost_usd=0,
-            cost_source="provider_actual",
-            work_unit_key=f"video:{base}:ffmpeg",
-            idempotency_key=f"{job_id}:video:{base}:ffmpeg",
-            metadata={"local_operation": True},
+        out_mp4 = (
+            Path(cached_compose["video_path"])
+            if cached_compose and cached_compose.get("video_path")
+            else workdir / "lesson.mp4"
         )
+        subtitle_style = (
+            cached_compose.get("subtitle_style") if cached_compose else None
+        )
+        if cached_compose is None or not out_mp4.is_file():
+            append_event(
+                job_id,
+                "stage",
+                f"Montando vídeo {orientation} de {base} (ffmpeg)…",
+            )
+            out_mp4 = workdir / "lesson.mp4"
+            compose_video(pairs, out_mp4, workdir / "segments", orientation=orientation)
+            if subtitles_mode == "burned_and_srt":
+                append_event(job_id, "stage", f"Incrustando subtítulos de {base}…")
+                out_mp4, subtitle_style = burn_subtitles(
+                    out_mp4,
+                    srt_path,
+                    workdir / "lesson-subtitled.mp4",
+                    orientation=orientation,
+                    logo_metadata=(artifact_metadata(deck).get("logo") or {}),
+                )
+            record_usage(
+                job_id=job_id,
+                workflow_step=payload.get("_workflow_step"),
+                agent="video",
+                operation="other",
+                provider="local",
+                model="ffmpeg",
+                cost_usd=0,
+                cost_source="provider_actual",
+                work_unit_key=f"video:{base}:ffmpeg",
+                idempotency_key=f"{job_id}:video:{base}:ffmpeg",
+                metadata={"local_operation": True},
+            )
+            _complete_unit(
+                job_id,
+                "video-compose",
+                compose_unit,
+                {
+                    "video_path": str(out_mp4),
+                    "subtitle_style": subtitle_style,
+                },
+                message=f"Montaje ffmpeg de {base} completado",
+            )
 
         srt_id = None
         if subtitles_mode != "none":
@@ -1661,6 +2078,13 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                 "orientation": orientation,
                 "subtitles_mode": subtitles_mode,
             },
+        )
+        _complete_unit(
+            job_id,
+            "video",
+            lesson_unit,
+            {"video_id": video_id, "subtitles_id": srt_id},
+            message=f"Vídeo de {base} completado",
         )
     _deactivate_unproduced(payload["project_id"], "video", video_ids)
     _deactivate_unproduced(payload["project_id"], "subtitles", subtitle_ids)
@@ -1831,7 +2255,19 @@ def run_publisher_job(job_id: str, payload: dict) -> dict:
 
     artifact_ids: list[str] = []
     thumbnail_ids: list[str] = []
-    for base, _video in videos.items():
+    for base, video in videos.items():
+        unit, cached = _before_unit(
+            job_id,
+            payload,
+            "publisher",
+            video.id,
+            f"Preparando la publicación de {base}",
+        )
+        if cached and cached.get("artifact_id"):
+            artifact_ids.append(cached["artifact_id"])
+            if cached.get("thumbnail_id"):
+                thumbnail_ids.append(cached["thumbnail_id"])
+            continue
         append_event(job_id, "stage", f"Preparando publicación de {base}…")
         srt_artifact = subtitles.get(base)
         chapters = []
@@ -1889,6 +2325,16 @@ def run_publisher_job(job_id: str, payload: dict) -> dict:
             "artifact",
             f"Paquete de publicación de {base} listo",
             {"artifact_id": package_id},
+        )
+        _complete_unit(
+            job_id,
+            "publisher",
+            unit,
+            {
+                "artifact_id": package_id,
+                "thumbnail_id": thumbnail_ids[-1] if thumb is not None else None,
+            },
+            message=f"Publicación de {base} completada",
         )
     _deactivate_unproduced(payload["project_id"], "publication_package", artifact_ids)
     _deactivate_unproduced(payload["project_id"], "thumbnail", thumbnail_ids)
@@ -1964,52 +2410,104 @@ def _run_automatic_review(
 
     max_regenerations = int(payload.get("max_automatic_regenerations", 0) or 0)
     evaluator_model = payload.get("evaluator_model") or get_settings().openrouter_model
+    scope = f"{payload.get('_control_scope', f'direct:{agent}')}:automatic-review"
+    state = load_scope_state(job_id, scope)
     result = initial_result
-    evaluations = 0
-    regenerations = 0
+    evaluations = int(state.get("evaluations", 0))
+    regenerations = int(state.get("regenerations", 0))
+    if isinstance(state.get("summary"), dict):
+        return result, state["summary"]
     while True:
-        append_event(
-            job_id,
-            "evaluation",
-            f"Evaluación automática de {agent} iniciada",
-            {
-                "agent": agent,
-                "status": "running",
-                "model": evaluator_model,
-                "evaluation": evaluations + 1,
-            },
-        )
-        try:
-            verdict, feedback = evaluate_stage(job_id, agent, result)
-        except Exception as exc:
+        verdict = state.get("pending_verdict")
+        feedback = str(state.get("pending_feedback", ""))
+        if verdict is None:
+            checkpoint(
+                job_id,
+                "automatic_review",
+                current_unit=None,
+                next_unit=f"{scope}:evaluation:{evaluations + 1}",
+                message=f"Preparando evaluación automática de {agent}",
+            )
             append_event(
                 job_id,
                 "evaluation",
-                f"La evaluación de {agent} falló; la ejecución continúa",
+                f"Evaluación automática de {agent} iniciada",
                 {
                     "agent": agent,
-                    "status": "warning",
-                    "technical_error": True,
-                    "error": str(exc),
+                    "status": "running",
                     "model": evaluator_model,
+                    "evaluation": evaluations + 1,
                 },
             )
-            return result, {
-                "agent": agent,
-                "evaluations": evaluations + 1,
+            try:
+                verdict, feedback = evaluate_stage(job_id, agent, result)
+            except Exception as exc:
+                evaluations += 1
+                summary = {
+                    "agent": agent,
+                    "evaluations": evaluations,
+                    "regenerations": regenerations,
+                    "final_result": "evaluator_error",
+                    "model": evaluator_model,
+                }
+                save_scope_state(
+                    job_id,
+                    scope,
+                    {
+                        "evaluations": evaluations,
+                        "regenerations": regenerations,
+                        "summary": summary,
+                    },
+                )
+                append_event(
+                    job_id,
+                    "evaluation",
+                    f"La evaluación de {agent} falló; la ejecución continúa",
+                    {
+                        "agent": agent,
+                        "status": "warning",
+                        "technical_error": True,
+                        "error": str(exc),
+                        "model": evaluator_model,
+                    },
+                )
+                checkpoint(
+                    job_id,
+                    "automatic_review",
+                    current_unit=f"{scope}:evaluation:{evaluations}",
+                    next_unit=None,
+                    message=f"Evaluación automática de {agent} finalizada con advertencia",
+                )
+                return result, summary
+            evaluations += 1
+            state = {
+                "evaluations": evaluations,
                 "regenerations": regenerations,
-                "final_result": "evaluator_error",
-                "model": evaluator_model,
+                "pending_verdict": verdict,
+                "pending_feedback": feedback,
             }
-        evaluations += 1
+            save_scope_state(job_id, scope, state)
+            checkpoint(
+                job_id,
+                "automatic_review",
+                current_unit=f"{scope}:evaluation:{evaluations}",
+                next_unit=(
+                    f"{scope}:regeneration:{regenerations + 1}"
+                    if verdict != "pass" and regenerations < max_regenerations
+                    else None
+                ),
+                message=f"Evaluación automática {evaluations} de {agent} completada",
+            )
         if verdict == "pass":
-            return result, {
+            summary = {
                 "agent": agent,
                 "evaluations": evaluations,
                 "regenerations": regenerations,
                 "final_result": "pass",
                 "model": evaluator_model,
             }
+            save_scope_state(job_id, scope, {**state, "summary": summary})
+            return result, summary
         if regenerations >= max_regenerations:
             destination = (
                 "human_approval"
@@ -2030,7 +2528,7 @@ def _run_automatic_review(
                         "destination": destination,
                     },
                 )
-            return result, {
+            summary = {
                 "agent": agent,
                 "evaluations": evaluations,
                 "regenerations": regenerations,
@@ -2039,21 +2537,55 @@ def _run_automatic_review(
                 "feedback": feedback,
                 "model": evaluator_model,
             }
-        regenerations += 1
+            save_scope_state(job_id, scope, {**state, "summary": summary})
+            return result, summary
+        next_regeneration = regenerations + 1
+        checkpoint(
+            job_id,
+            "automatic_review",
+            current_unit=f"{scope}:evaluation:{evaluations}",
+            next_unit=f"{scope}:regeneration:{next_regeneration}",
+            message=f"Preparando regeneración de {agent}",
+        )
         append_event(
             job_id,
             "evaluation",
-            f"Regeneración {regenerations}/{max_regenerations} de {agent} "
+            f"Regeneración {next_regeneration}/{max_regenerations} de {agent} "
             "con feedback del evaluador…",
             {
                 "agent": agent,
                 "status": "regenerating",
-                "regeneration": regenerations,
+                "regeneration": next_regeneration,
                 "max_regenerations": max_regenerations,
                 "feedback": feedback,
             },
         )
-        result = handler(job_id, {**payload, "revision_feedback": feedback})
+        result = handler(
+            job_id,
+            {
+                **payload,
+                "revision_feedback": feedback,
+                "_control_scope": f"{scope}:regeneration:{next_regeneration}",
+            },
+        )
+        regenerations = next_regeneration
+        state = {
+            "evaluations": evaluations,
+            "regenerations": regenerations,
+        }
+        save_scope_state(job_id, scope, state)
+        with SessionLocal() as db:
+            job = db.get(Job, job_id)
+            if job is not None:
+                job.result_json = json.dumps(result, ensure_ascii=False)
+                db.commit()
+        checkpoint(
+            job_id,
+            "automatic_review",
+            current_unit=f"{scope}:regeneration:{regenerations}",
+            next_unit=f"{scope}:evaluation:{evaluations + 1}",
+            message=f"Regeneración {regenerations} de {agent} completada",
+        )
 
 
 def evaluate_stage(job_id: str, agent: str, result: dict | None) -> tuple[str, str]:
@@ -2276,8 +2808,12 @@ def run_workflow_job(job_id: str, payload: dict) -> dict:
     with open_checkpointer() as checkpointer:
         compiled = graph.compile(checkpointer=checkpointer)
         config = {"configurable": {"thread_id": job_id}}
-        if payload.get("_resume") is not None:
-            graph_input = Command(resume=payload["_resume"])
+        existing_state = compiled.get_state(config)
+        resume_decision = payload.get("_resume")
+        if resume_decision is not None:
+            graph_input = Command(resume=resume_decision)
+        elif existing_state.values:
+            graph_input = None
         else:
             graph_input = {
                 "payload": payload,
@@ -2286,7 +2822,19 @@ def run_workflow_job(job_id: str, payload: dict) -> dict:
                 "human_reviews": {},
                 "human_actions": {},
             }
+        resume_cleared = resume_decision is None
         for update in compiled.stream(graph_input, config, stream_mode="updates"):
+            if not resume_cleared:
+                with SessionLocal() as db:
+                    job = db.get(Job, job_id)
+                    if job is not None:
+                        stored_payload = json.loads(job.payload_json or "{}")
+                        stored_payload.pop("_resume", None)
+                        job.payload_json = json.dumps(
+                            stored_payload, ensure_ascii=False
+                        )
+                        db.commit()
+                resume_cleared = True
             if "__interrupt__" in update:
                 intr = update["__interrupt__"][0]
                 value = intr.value if isinstance(intr.value, dict) else {}
@@ -2298,6 +2846,14 @@ def run_workflow_job(job_id: str, payload: dict) -> dict:
                     value,
                 )
                 return {"__waiting__": True}
+        if not resume_cleared:
+            with SessionLocal() as db:
+                job = db.get(Job, job_id)
+                if job is not None:
+                    stored_payload = json.loads(job.payload_json or "{}")
+                    stored_payload.pop("_resume", None)
+                    job.payload_json = json.dumps(stored_payload, ensure_ascii=False)
+                    db.commit()
         state = compiled.get_state(config)
         results = dict(state.values.get("results", {}))
         review_summaries = dict(state.values.get("review_summaries", {}))

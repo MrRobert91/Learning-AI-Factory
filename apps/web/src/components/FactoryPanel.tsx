@@ -23,6 +23,7 @@ import {
   IconListTree,
   IconMic,
   IconPackage,
+  IconPause,
   IconMessage,
   IconPlay,
   IconSearch,
@@ -40,7 +41,11 @@ import {
 const STATUS_BADGE: Record<Job["status"], { label: string; className: string }> = {
   queued: { label: "En cola", className: "badge-neutral" },
   running: { label: "Ejecutando", className: "badge-info" },
+  pausing: { label: "Pausando…", className: "badge-warning" },
+  paused: { label: "Pausado", className: "badge-warning" },
   waiting_approval: { label: "Esperando tu aprobación", className: "badge-warning" },
+  canceling: { label: "Cancelando…", className: "badge-danger" },
+  canceled: { label: "Cancelado", className: "badge-neutral" },
   done: { label: "Completado", className: "badge-success" },
   failed: { label: "Fallido", className: "badge-danger" },
 };
@@ -270,7 +275,14 @@ function paletteLabel(metadata: Record<string, unknown>): string | null {
     : null;
 }
 
-const ACTIVE_STATUSES: Job["status"][] = ["queued", "running", "waiting_approval"];
+const ACTIVE_STATUSES: Job["status"][] = [
+  "queued",
+  "running",
+  "pausing",
+  "paused",
+  "waiting_approval",
+  "canceling",
+];
 
 export default function FactoryPanel({
   projectId,
@@ -294,7 +306,9 @@ export default function FactoryPanel({
   const [workflowId, setWorkflowId] = useState<string>("");
   const [feedback, setFeedback] = useState("");
   const [deciding, setDeciding] = useState(false);
+  const [controlling, setControlling] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [confirmCancel, setConfirmCancel] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [exportingSlidesPptx, setExportingSlidesPptx] = useState(false);
   const [uploadType, setUploadType] = useState("slide_deck");
@@ -326,7 +340,11 @@ export default function FactoryPanel({
       setEvents(job.events ?? []);
       setError(null);
       sourceRef.current?.close();
-      if (job.status === "done" || job.status === "failed") {
+      if (
+        job.status === "done" ||
+        job.status === "failed" ||
+        job.status === "canceled"
+      ) {
         api.getRun(job.id).then((full) => {
           setActiveRun(full);
           setEvents(full.events);
@@ -390,7 +408,10 @@ export default function FactoryPanel({
   }, [projectId, refresh, follow]);
 
   const running =
-    activeRun?.status === "queued" || activeRun?.status === "running";
+    activeRun?.status === "queued" ||
+    activeRun?.status === "running" ||
+    activeRun?.status === "pausing" ||
+    activeRun?.status === "canceling";
 
   // Elapsed-time ticker while a run is live.
   useEffect(() => {
@@ -464,12 +485,43 @@ export default function FactoryPanel({
     setError(null);
     try {
       const job = await api.cancelRun(activeRun.id);
+      setConfirmCancel(false);
       await refresh();
       follow(job);
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo cancelar");
     } finally {
       setCancelling(false);
+    }
+  }
+
+  async function pause() {
+    if (!activeRun) return;
+    setControlling(true);
+    setError(null);
+    try {
+      const job = await api.pauseRun(activeRun.id);
+      await refresh();
+      follow(job);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo pausar");
+    } finally {
+      setControlling(false);
+    }
+  }
+
+  async function resume() {
+    if (!activeRun) return;
+    setControlling(true);
+    setError(null);
+    try {
+      const job = await api.resumeRun(activeRun.id);
+      await refresh();
+      follow(job);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo reanudar");
+    } finally {
+      setControlling(false);
     }
   }
 
@@ -625,8 +677,20 @@ export default function FactoryPanel({
     }))
     .filter((group) => group.artifacts.length > 0);
 
+  const canPause =
+    activeRun?.status === "queued" ||
+    activeRun?.status === "running" ||
+    activeRun?.status === "waiting_approval";
+  const canResume = activeRun?.status === "paused";
   const canCancel =
-    activeRun?.status === "queued" || activeRun?.status === "waiting_approval";
+    activeRun !== null &&
+    [
+      "queued",
+      "running",
+      "pausing",
+      "paused",
+      "waiting_approval",
+    ].includes(activeRun.status);
   const statusBadge = activeRun ? STATUS_BADGE[activeRun.status] : null;
 
   return (
@@ -904,9 +968,29 @@ export default function FactoryPanel({
               </span>
             )}
             <div className="ml-auto flex items-center gap-2">
+              {canPause && (
+                <button
+                  onClick={pause}
+                  disabled={controlling}
+                  className="btn-secondary btn-sm"
+                >
+                  <IconPause size={13} />
+                  {controlling ? "Solicitando…" : "Pausar"}
+                </button>
+              )}
+              {canResume && (
+                <button
+                  onClick={resume}
+                  disabled={controlling}
+                  className="btn-primary btn-sm"
+                >
+                  <IconPlay size={13} />
+                  {controlling ? "Reanudando…" : "Reanudar"}
+                </button>
+              )}
               {canCancel && (
                 <button
-                  onClick={cancel}
+                  onClick={() => setConfirmCancel(true)}
                   disabled={cancelling}
                   className="btn-danger btn-sm"
                 >
@@ -931,10 +1015,31 @@ export default function FactoryPanel({
             <div className="flex items-center gap-3 border-b border-indigo-400/15 bg-indigo-500/[0.07] px-4 py-2.5">
               <Spinner />
               <p className="min-w-0 flex-1 truncate text-sm text-indigo-200">
-                {lastEvent
+                {activeRun.status === "pausing"
+                  ? "Pausando cuando termine la operación actual…"
+                  : activeRun.status === "canceling"
+                    ? "Cancelando cuando termine la operación actual…"
+                    : lastEvent
                   ? lastEvent.summary
                   : "Arrancando el agente, preparando contexto…"}
               </p>
+            </div>
+          )}
+
+          {activeRun.status === "paused" && (
+            <div className="border-b border-amber-400/20 bg-amber-500/[0.07] px-4 py-3">
+              <p className="text-sm font-semibold text-amber-200">
+                La ejecución está pausada y no se reanudará automáticamente.
+              </p>
+              <p className="mt-1 text-xs text-amber-100/70">
+                {activeRun.control.checkpoint?.message ||
+                  "Se conservaron el checkpoint y los artefactos completados."}
+              </p>
+              {activeRun.control.checkpoint?.next_unit && (
+                <p className="mt-1 truncate font-mono text-[11px] text-amber-100/50">
+                  Siguiente: {activeRun.control.checkpoint.next_unit}
+                </p>
+              )}
             </div>
           )}
 
@@ -1273,6 +1378,16 @@ export default function FactoryPanel({
           ))}
         </div>
       )}
+      <ConfirmDialog
+        open={confirmCancel}
+        title="Cancelar ejecución"
+        description="La cancelación es terminal. La operación actual podrá terminar, pero no se iniciará la siguiente; los artefactos completos se conservarán."
+        confirmLabel="Cancelar ejecución"
+        busyLabel="Cancelando…"
+        busy={cancelling}
+        onCancel={() => setConfirmCancel(false)}
+        onConfirm={cancel}
+      />
       <ConfirmDialog
         open={artifactToDelete !== null}
         title="Eliminar versión del artefacto"

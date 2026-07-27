@@ -10,10 +10,17 @@ from factory_api.db import get_db
 from factory_api.models import Artifact, Job, Project, Workflow
 from factory_api.routers.agents import get_default_profile
 from factory_api.routers.runs import _base_payload, _job_read, _profile_fields
+from factory_api.run_control import (
+    InvalidControlTransition,
+    request_cancel,
+    request_pause,
+    resume_job,
+)
 from factory_api.runner import append_event, runner
 from factory_api.schemas import (
     ApprovalRequest,
     JobRead,
+    RunControlRequest,
     WorkflowCreate,
     WorkflowRead,
     WorkflowRunCreate,
@@ -88,6 +95,24 @@ TEMPLATES = [
         "steps": [{"agent": "voice"}, {"agent": "video"}],
     },
 ]
+
+
+def _owned_job(job_id: str, user: CurrentUser, db: Session) -> Job:
+    job = db.get(Job, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Ejecución no encontrada")
+    if job.project_id is not None:
+        project = db.get(Project, job.project_id)
+        if project is None or project.owner_id != user.id:
+            raise HTTPException(status_code=404, detail="Ejecución no encontrada")
+    return job
+
+
+def _transition_error(exc: InvalidControlTransition) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail=f"{exc}. Estado actual: {exc.status}",
+    )
 
 
 def seed_template_workflows(db: Session) -> None:
@@ -274,9 +299,7 @@ def create_workflow_run(
 
 @router.post("/runs/{job_id}/approve", response_model=JobRead)
 def approve_run(job_id: str, body: ApprovalRequest, user: CurrentUser, db: DB):
-    job = db.get(Job, job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Ejecución no encontrada")
+    job = _owned_job(job_id, user, db)
     if job.status != "waiting_approval":
         raise HTTPException(status_code=409, detail="La ejecución no espera aprobación")
     if not body.approved and not body.feedback.strip():
@@ -300,18 +323,99 @@ def approve_run(job_id: str, body: ApprovalRequest, user: CurrentUser, db: DB):
     return _job_read(job)
 
 
-@router.post("/runs/{job_id}/cancel", response_model=JobRead)
-def cancel_run(job_id: str, user: CurrentUser, db: DB):
-    job = db.get(Job, job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Ejecución no encontrada")
-    if job.status not in ("queued", "waiting_approval"):
-        raise HTTPException(
-            status_code=409,
-            detail="Solo se pueden cancelar ejecuciones en cola o esperando aprobación",
-        )
-    job.status = "failed"
-    job.error = "Cancelado por el usuario"
+@router.post("/runs/{job_id}/pause", response_model=JobRead)
+def pause_run(
+    job_id: str,
+    user: CurrentUser,
+    db: DB,
+    body: RunControlRequest | None = None,
+):
+    job = _owned_job(job_id, user, db)
+    try:
+        changed = request_pause(job, body.reason if body else "")
+    except InvalidControlTransition as exc:
+        raise _transition_error(exc) from exc
     db.commit()
     db.refresh(job)
+    if changed:
+        append_event(
+            job_id,
+            "control",
+            (
+                "Pausa solicitada; terminará la operación actual"
+                if job.status == "pausing"
+                else "Ejecución pausada"
+            ),
+            {
+                "status": job.status,
+                "reason": body.reason if body else "",
+                "checkpoint": _job_read(job, include_events=False).control.get(
+                    "checkpoint"
+                ),
+            },
+        )
+    return _job_read(job)
+
+
+@router.post("/runs/{job_id}/resume", response_model=JobRead)
+def resume_run(job_id: str, user: CurrentUser, db: DB):
+    job = _owned_job(job_id, user, db)
+    try:
+        changed, should_enqueue = resume_job(job)
+    except InvalidControlTransition as exc:
+        raise _transition_error(exc) from exc
+    db.commit()
+    db.refresh(job)
+    if changed:
+        append_event(
+            job_id,
+            "control",
+            (
+                "Reanudación preparada desde el último punto seguro"
+                if should_enqueue
+                else "Pausa finalizada; la ejecución vuelve a esperar aprobación"
+            ),
+            {
+                "status": job.status,
+                "checkpoint": _job_read(job, include_events=False).control.get(
+                    "checkpoint"
+                ),
+            },
+        )
+    if should_enqueue:
+        runner.enqueue(job.id)
+    return _job_read(job)
+
+
+@router.post("/runs/{job_id}/cancel", response_model=JobRead)
+def cancel_run(
+    job_id: str,
+    user: CurrentUser,
+    db: DB,
+    body: RunControlRequest | None = None,
+):
+    job = _owned_job(job_id, user, db)
+    try:
+        changed = request_cancel(job, body.reason if body else "")
+    except InvalidControlTransition as exc:
+        raise _transition_error(exc) from exc
+    db.commit()
+    db.refresh(job)
+    if changed:
+        append_event(
+            job_id,
+            "control",
+            (
+                "Cancelación solicitada; terminará la operación actual"
+                if job.status == "canceling"
+                else "Ejecución cancelada"
+            ),
+            {
+                "status": job.status,
+                "reason": body.reason if body else "",
+                "checkpoint": _job_read(job, include_events=False).control.get(
+                    "checkpoint"
+                ),
+            },
+        )
     return _job_read(job)

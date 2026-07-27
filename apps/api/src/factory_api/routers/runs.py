@@ -15,6 +15,7 @@ from factory_api.auth import CurrentUser
 from factory_api.db import SessionLocal, get_db
 from factory_api.models import AgentProfile, Artifact, IdeationSession, Job, JobEvent, Project
 from factory_api.routers.agents import get_default_profile
+from factory_api.run_control import SSE_STOP_STATUSES, load_control
 from factory_api.runner import runner
 from factory_api.schemas import AgentRunCreate, JobEventRead, JobRead
 from factory_api.usage import job_usage_summary
@@ -86,6 +87,7 @@ def _job_read(job: Job, include_events: bool = True) -> JobRead:
         error=job.error,
         project_id=job.project_id,
         result=json.loads(job.result_json) if job.result_json else None,
+        control=load_control(job),
         usage_summary=usage_summary,
         review_policies=review_policies,
         created_at=job.created_at,
@@ -337,7 +339,7 @@ async def stream_run_events(job_id: str, user: CurrentUser):
                 for e in job.events
                 if e.seq > after_seq
             ]
-            finished = job.status in ("done", "failed", "waiting_approval")
+            finished = job.status in SSE_STOP_STATUSES
             return job.status, events, finished
 
     async def generator():

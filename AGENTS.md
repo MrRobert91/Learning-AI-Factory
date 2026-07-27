@@ -24,6 +24,10 @@ docker compose up --build                # stack completo (2 contenedores)
 - **Todo corre en un solo proceso backend**: los jobs largos (agentes, TTS,
   vídeo) van por `factory_api/runner.py` — cola persistida en tabla `jobs`,
   worker asyncio, progreso como `JobEvent`s que la UI consume por SSE.
+- **Pausa/cancelación de jobs**: son cooperativas y persistidas en
+  `jobs.control_json`. Cada handler debe consultar `run_control.checkpoint()`
+  antes/después de sus unidades caras y registrar unidades completas para que
+  reanudar no repita agentes, lecciones, renders, TTS ni ffmpeg terminados.
 - **Agentes** en `packages/factory_agents/`: cada uno tiene un `AgentSpec`
   registrado (registry en `runtime.py`) con prompt base + perfil
   (`soul.md`/`agents.md`) editable por el usuario y versionado en BD.
