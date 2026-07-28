@@ -1,10 +1,16 @@
+import io
+import wave
+
 import httpx
 import pytest
 from factory_agents.tools.tts import (
     OpenRouterTTSProvider,
     TTSError,
+    build_tts_provider,
     resolve_tts_config,
+    synthesize_cached_with_status,
 )
+from factory_agents.tools.video import probe_duration
 
 
 def _response(status: int, *, content: bytes = b"", json_body=None, headers=None):
@@ -126,7 +132,7 @@ def test_tts_catalog_rejects_arbitrary_combinations_and_cache_key_is_complete():
     )
     assert provider.cache_key == (
         "openrouter:microsoft/mai-voice-2:"
-        "es-ES:es-ES-Marta:MAI-Voice-2:mp3"
+        "es-ES:es-ES-Marta:MAI-Voice-2:mp3:mp3:-:-:2"
     )
     with pytest.raises(ValueError, match="no está disponible"):
         resolve_tts_config(
@@ -137,3 +143,158 @@ def test_tts_catalog_rejects_arbitrary_combinations_and_cache_key_is_complete():
                 "tts_voice": "ef_dora",
             }
         )
+
+
+def test_gemini_capabilities_request_pcm_and_normalize_to_playable_wav(
+    monkeypatch, tmp_path
+):
+    calls = []
+    pcm = b"\x00\x00\x10\x00" * 2400
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return _response(
+            200,
+            content=pcm,
+            headers={
+                "content-type": "audio/pcm",
+                "x-generation-id": "gen-gemini",
+            },
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    resolved = resolve_tts_config(
+        {
+            "tts_provider": "openrouter",
+            "tts_model": "google/gemini-3.1-flash-tts-preview",
+            "tts_language": "es-ES",
+            "tts_voice": "Kore",
+            "tts_format": "mp3",
+        }
+    )
+    assert resolved["tts_format"] == "pcm"
+    assert resolved["tts_output_format"] == "wav"
+    assert resolved["tts_mime_type"] == "audio/wav"
+    assert resolved["tts_sample_rate_hz"] == 24000
+    assert resolved["tts_channels"] == 1
+
+    provider = build_tts_provider(
+        resolved,
+        openai_api_key="",
+        openrouter_api_key="secret",
+    )
+    path, cache_hit = synthesize_cached_with_status(provider, "Hola", tmp_path)
+    assert cache_hit is False
+    assert path.suffix == ".wav"
+    assert calls[0][1]["json"]["response_format"] == "pcm"
+    assert calls[0][1]["json"] == {
+        "model": "google/gemini-3.1-flash-tts-preview",
+        "input": "Hola",
+        "voice": "Kore",
+        "response_format": "pcm",
+    }
+    with wave.open(io.BytesIO(path.read_bytes()), "rb") as audio:
+        assert audio.getframerate() == 24000
+        assert audio.getnchannels() == 1
+        assert audio.getsampwidth() == 2
+        assert audio.getnframes() > 0
+    assert probe_duration(path) == pytest.approx(0.2, abs=0.01)
+    second, second_hit = synthesize_cached_with_status(provider, "Hola", tmp_path)
+    assert second == path
+    assert second_hit is True
+    assert provider.last_generation_id == "gen-gemini"
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("content", "content_type", "message"),
+    [
+        (b"not-mp3", "audio/mpeg", "corrupto"),
+        (b"ID3audio", "application/json", "application/json"),
+    ],
+)
+def test_openrouter_tts_rejects_corrupt_or_mislabeled_audio(
+    monkeypatch, content, content_type, message
+):
+    monkeypatch.setattr(
+        httpx,
+        "post",
+        lambda *args, **kwargs: _response(
+            200,
+            content=content,
+            headers={"content-type": content_type},
+        ),
+    )
+    provider = OpenRouterTTSProvider(
+        "secret",
+        model="hexgrad/kokoro-82m",
+        voice="ef_dora",
+    )
+    with pytest.raises(TTSError, match=message):
+        provider.synthesize("Hola")
+
+
+def test_openrouter_tts_does_not_retry_deterministic_400(monkeypatch):
+    calls = 0
+
+    def fake_post(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return _response(
+            400,
+            json_body={
+                "error": {
+                    "message": "response_format no admitido",
+                    "code": "invalid_request",
+                    "param": "response_format",
+                }
+            },
+            headers={"x-generation-id": "gen-error"},
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    provider = OpenRouterTTSProvider(
+        "secret",
+        model="google/gemini-3.1-flash-tts-preview",
+        voice="Kore",
+        request_format="pcm",
+        response_mime_type="audio/pcm",
+        output_format="wav",
+        output_mime_type="audio/wav",
+        sample_rate_hz=24000,
+        channels=1,
+    )
+    with pytest.raises(TTSError, match="response_format.*invalid_request") as exc_info:
+        provider.synthesize("Hola")
+    assert calls == 1
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.field == "response_format"
+    assert exc_info.value.generation_id == "gen-error"
+
+
+def test_corrupt_cached_audio_is_not_reused(monkeypatch, tmp_path):
+    calls = 0
+
+    def fake_post(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return _response(
+            200,
+            content=b"ID3valid",
+            headers={"content-type": "audio/mpeg"},
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    provider = OpenRouterTTSProvider(
+        "secret",
+        model="hexgrad/kokoro-82m",
+        voice="ef_dora",
+    )
+    path, first_hit = synthesize_cached_with_status(provider, "Hola", tmp_path)
+    assert first_hit is False
+    path.write_bytes(b"")
+    repaired, repaired_hit = synthesize_cached_with_status(provider, "Hola", tmp_path)
+    assert repaired == path
+    assert repaired_hit is False
+    assert repaired.read_bytes() == b"ID3valid"
+    assert calls == 2

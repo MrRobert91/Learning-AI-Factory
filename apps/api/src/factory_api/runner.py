@@ -1738,6 +1738,7 @@ def run_video_job(job_id: str, payload: dict) -> dict:
         build_tts_provider,
         default_tts_config,
         estimated_tts_cost,
+        is_valid_audio_file,
         resolve_tts_config,
         synthesize_cached_with_status,
     )
@@ -1845,7 +1846,10 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                 if cached_segment and cached_segment.get("audio_path")
                 else None
             )
-            reused_control_unit = cached_audio is not None and cached_audio.is_file()
+            reused_control_unit = (
+                cached_audio is not None
+                and is_valid_audio_file(provider, cached_audio)
+            )
             if reused_control_unit:
                 audio = cached_audio
                 cache_hit = True
@@ -1884,6 +1888,9 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                 metadata={
                     "language": tts_config["tts_language_effective"],
                     "voice": tts_config["tts_voice"],
+                    "request_format": tts_config["tts_format"],
+                    "output_format": tts_config["tts_output_format"],
+                    "mime_type": tts_config["tts_mime_type"],
                     "cache_hit": cache_hit,
                     "segment": segment_index,
                 },

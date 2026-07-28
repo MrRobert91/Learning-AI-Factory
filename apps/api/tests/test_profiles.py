@@ -1,4 +1,5 @@
 import io
+import wave
 
 import pytest
 from factory_agents.tools.images import GeneratedImage
@@ -17,6 +18,16 @@ def _logo_raster(format_: str) -> bytes:
     if format_ == "JPEG":
         image = image.convert("RGB")
     image.save(buffer, format=format_)
+    return buffer.getvalue()
+
+
+def _wav_audio() -> bytes:
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(24000)
+        audio.writeframes(b"\x00\x00" * 240)
     return buffer.getvalue()
 
 
@@ -385,6 +396,17 @@ def test_tts_catalog_and_voice_profile_configuration_are_closed_and_versioned(
         ("openrouter", "google/gemini-3.1-flash-tts-preview"),
         ("openrouter", "microsoft/mai-voice-2"),
     }
+    gemini = next(
+        item
+        for item in models
+        if item["model"] == "google/gemini-3.1-flash-tts-preview"
+    )
+    assert gemini["request_formats"] == ["pcm"]
+    assert gemini["preferred_format"] == "pcm"
+    assert gemini["output_format"] == "wav"
+    assert gemini["output_mime_type"] == "audio/wav"
+    assert gemini["sample_rate_hz"] == 24000
+    assert gemini["channels"] == 1
 
     response = auth_client.post(
         "/api/agents/voice/profiles",
@@ -506,6 +528,49 @@ def test_tts_preview_returns_audio_without_creating_a_profile_version(
         )
         == 1
     )
+
+
+def test_gemini_tts_preview_returns_normalized_wav_mime(auth_client, monkeypatch):
+    class FakeProvider:
+        last_generation_id = "gen-gemini-preview"
+        audio_format = "wav"
+        mime_type = "audio/wav"
+
+        def synthesize(self, text):
+            assert text == "Muestra Gemini"
+            return _wav_audio()
+
+    monkeypatch.setattr(
+        "factory_api.routers.agents.build_tts_provider",
+        lambda *args, **kwargs: FakeProvider(),
+    )
+    profile = auth_client.post(
+        "/api/agents/voice/profiles",
+        json={
+            "name": "Preview Gemini",
+            "tts_provider": "openrouter",
+            "tts_model": "google/gemini-3.1-flash-tts-preview",
+            "tts_language": "es-ES",
+            "tts_voice": "Kore",
+        },
+    ).json()
+    response = auth_client.post(
+        f"/api/agents/profiles/{profile['id']}/tts-preview",
+        json={
+            "text": "Muestra Gemini",
+            "tts_provider": "openrouter",
+            "tts_model": "google/gemini-3.1-flash-tts-preview",
+            "tts_language": "es-ES",
+            "tts_voice": "Kore",
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("audio/wav")
+    assert response.headers["x-audio-format"] == "wav"
+    assert response.headers["x-generation-id"] == "gen-gemini-preview"
+    with wave.open(io.BytesIO(response.content), "rb") as audio:
+        assert audio.getframerate() == 24000
+        assert audio.getnchannels() == 1
 
 
 def test_unknown_agent_type(auth_client):

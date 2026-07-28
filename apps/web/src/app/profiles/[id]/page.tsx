@@ -698,6 +698,16 @@ export default function ProfileEditorPage() {
                 <p className="mt-1 text-xs leading-relaxed text-zinc-500">
                   {selectedTTSModel?.price_hint ?? "Configuración histórica."}
                 </p>
+                {selectedTTSModel && (
+                  <p className="mt-1 text-xs text-zinc-500">
+                    Solicitud {selectedTTSModel.preferred_format.toUpperCase()} · salida{" "}
+                    {selectedTTSModel.output_format.toUpperCase()}
+                    {selectedTTSModel.sample_rate_hz
+                      ? ` · ${selectedTTSModel.sample_rate_hz / 1000} kHz`
+                      : ""}
+                    {selectedTTSModel.channels === 1 ? " · mono" : ""}
+                  </p>
+                )}
               </div>
             </div>
             <div className="mt-4">
