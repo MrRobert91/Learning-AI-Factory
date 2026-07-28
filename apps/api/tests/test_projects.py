@@ -47,3 +47,83 @@ def test_project_crud(auth_client):
 def test_create_project_requires_title(auth_client):
     resp = auth_client.post("/api/projects", json={"title": ""})
     assert resp.status_code == 422
+
+
+def test_selected_workflow_persists_per_project(auth_client):
+    first = auth_client.post("/api/projects", json={"title": "Proyecto uno"}).json()
+    second = auth_client.post("/api/projects", json={"title": "Proyecto dos"}).json()
+    workflows = auth_client.get("/api/workflows").json()
+    full_video = next(
+        workflow
+        for workflow in workflows
+        if workflow["name"] == "Curso completo con vídeo"
+    )
+    research = next(
+        workflow for workflow in workflows if workflow["name"] == "Investigación y plan"
+    )
+
+    assert first["selected_workflow_id"] is None
+    assert second["selected_workflow_id"] is None
+
+    response = auth_client.patch(
+        f"/api/projects/{first['id']}",
+        json={"selected_workflow_id": full_video["id"]},
+    )
+    assert response.status_code == 200
+    assert response.json()["selected_workflow_id"] == full_video["id"]
+
+    # Repeating the same selection is idempotent.
+    repeated = auth_client.patch(
+        f"/api/projects/{first['id']}",
+        json={"selected_workflow_id": full_video["id"]},
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["selected_workflow_id"] == full_video["id"]
+
+    auth_client.patch(
+        f"/api/projects/{second['id']}",
+        json={"selected_workflow_id": research["id"]},
+    )
+    projects = {
+        project["id"]: project for project in auth_client.get("/api/projects").json()
+    }
+    assert projects[first["id"]]["selected_workflow_id"] == full_video["id"]
+    assert projects[second["id"]]["selected_workflow_id"] == research["id"]
+
+
+def test_selected_workflow_validates_format_availability_and_deletion(auth_client):
+    project = auth_client.post(
+        "/api/projects", json={"title": "Preferencia de workflow"}
+    ).json()
+
+    invalid = auth_client.patch(
+        f"/api/projects/{project['id']}",
+        json={"selected_workflow_id": "not-an-id"},
+    )
+    assert invalid.status_code == 422
+
+    missing = auth_client.patch(
+        f"/api/projects/{project['id']}",
+        json={"selected_workflow_id": "f" * 32},
+    )
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "Workflow no encontrado"
+
+    custom = auth_client.post(
+        "/api/workflows",
+        json={"name": "Workflow eliminable", "steps": [{"agent": "curator"}]},
+    ).json()
+    selected = auth_client.patch(
+        f"/api/projects/{project['id']}",
+        json={"selected_workflow_id": custom["id"]},
+    )
+    assert selected.status_code == 200
+    assert selected.json()["selected_workflow_id"] == custom["id"]
+
+    assert auth_client.delete(f"/api/workflows/{custom['id']}").status_code == 204
+    assert (
+        auth_client.get(f"/api/projects/{project['id']}").json()[
+            "selected_workflow_id"
+        ]
+        is None
+    )

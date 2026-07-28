@@ -243,6 +243,14 @@ export default function ProjectDetailPage() {
       <FactoryPanel
         projectId={id}
         durationConfigured={project.duration_spec !== null}
+        selectedWorkflowId={project.selected_workflow_id}
+        onSelectedWorkflowChange={(selectedWorkflowId) =>
+          setProject((current) =>
+            current
+              ? { ...current, selected_workflow_id: selectedWorkflowId }
+              : current,
+          )
+        }
       />
       <WikiPanel projectId={id} />
       <ConfirmDialog

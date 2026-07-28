@@ -38,6 +38,12 @@ class ProjectUpdate(BaseModel):
     style: str | None = None
     output_format: str | None = None
     duration_spec: DurationSpec | None = None
+    selected_workflow_id: str | None = Field(
+        default=None,
+        min_length=32,
+        max_length=32,
+        pattern=r"^[0-9a-f]{32}$",
+    )
     research_mode: Literal["provided_only", "provided_plus_web", "web_only"] | None = None
     status: str | None = None
 
@@ -445,6 +451,8 @@ class JobRead(BaseModel):
     status: str
     error: str
     project_id: str | None
+    workflow_id: str | None = None
+    workflow_name: str | None = None
     result: dict | None = None
     control: dict = Field(default_factory=dict)
     usage_summary: dict = Field(default_factory=dict)
@@ -509,6 +517,7 @@ class ProjectRead(BaseModel):
     style: str
     output_format: str
     duration_spec: DurationSpec | None
+    selected_workflow_id: str | None
     research_mode: Literal["provided_only", "provided_plus_web", "web_only"]
     sources: list[IdeationSourceRead] = []
     status: str

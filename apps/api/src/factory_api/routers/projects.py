@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from factory_api.auth import CurrentUser
 from factory_api.config import get_settings
 from factory_api.db import get_db
-from factory_api.models import Project
+from factory_api.models import Project, Workflow
 from factory_api.schemas import ProjectCreate, ProjectRead, ProjectUpdate
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -61,7 +61,18 @@ def get_project(project_id: str, user: CurrentUser, db: DB):
 @router.patch("/{project_id}", response_model=ProjectRead)
 def update_project(project_id: str, body: ProjectUpdate, user: CurrentUser, db: DB):
     project = _get_owned_project(db, user.id, project_id)
-    for field, value in body.model_dump(exclude_unset=True).items():
+    updates = body.model_dump(exclude_unset=True)
+    selected_workflow_id = updates.get("selected_workflow_id")
+    if selected_workflow_id is not None:
+        workflow = db.get(Workflow, selected_workflow_id)
+        if workflow is None or (
+            not workflow.is_template and workflow.owner_id != user.id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Workflow no encontrado",
+            )
+    for field, value in updates.items():
         if field == "duration_spec":
             project.duration_spec_json = (
                 json.dumps(value, ensure_ascii=False) if value is not None else None

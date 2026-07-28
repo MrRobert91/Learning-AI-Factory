@@ -48,6 +48,7 @@ export interface Project {
   style: string;
   output_format: string;
   duration_spec: DurationSpec | null;
+  selected_workflow_id: string | null;
   research_mode: ResearchMode;
   sources: IdeationSource[];
   status: string;
@@ -87,8 +88,17 @@ export interface ProjectCostSummary {
 
 export type ProjectInput = Omit<
   Project,
-  "id" | "sources" | "status" | "created_at" | "updated_at"
+  | "id"
+  | "sources"
+  | "status"
+  | "selected_workflow_id"
+  | "created_at"
+  | "updated_at"
 >;
+
+export type ProjectUpdateInput = Partial<ProjectInput> & {
+  selected_workflow_id?: string | null;
+};
 
 export class ApiError extends Error {
   constructor(
@@ -421,6 +431,8 @@ export interface Job {
     | "failed";
   error: string;
   project_id: string | null;
+  workflow_id: string | null;
+  workflow_name: string | null;
   result: {
     artifact_id?: string;
     artifact_ids?: string[];
@@ -599,7 +611,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
-  updateProject: (id: string, input: Partial<ProjectInput>) =>
+  updateProject: (id: string, input: ProjectUpdateInput) =>
     request<Project>(`/api/projects/${id}`, {
       method: "PATCH",
       body: JSON.stringify(input),
