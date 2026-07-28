@@ -23,6 +23,7 @@ from factory_agents.tools.palette import (
     palette_options,
 )
 from factory_agents.tools.tts import (
+    TTSError,
     build_tts_provider,
     default_tts_config,
     estimated_tts_cost,
@@ -624,7 +625,16 @@ def preview_profile_tts(
             openrouter_api_key=get_settings().openrouter_api_key,
         )
         audio = provider.synthesize(body.text)
-    except (ValueError, RuntimeError) as exc:
+    except TTSError as exc:
+        provider_status = exc.status_code
+        if provider_status in {400, 404, 409, 422} or provider_status is None:
+            api_status = 422
+        elif provider_status in {402, 429, 504}:
+            api_status = provider_status
+        else:
+            api_status = 502
+        raise HTTPException(status_code=api_status, detail=str(exc)) from exc
+    except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     cost = estimated_tts_cost(resolved, len(body.text))
@@ -651,12 +661,23 @@ def preview_profile_tts(
             "profile_version": profile.version,
             "language": resolved["tts_language_effective"],
             "voice": resolved["tts_voice"],
+            "request_format": resolved["tts_format"],
+            "output_format": resolved["tts_output_format"],
+            "mime_type": resolved["tts_mime_type"],
         },
     )
-    headers = {"Cache-Control": "no-store"}
+    media_type = getattr(provider, "mime_type", resolved["tts_mime_type"])
+    headers = {
+        "Cache-Control": "no-store",
+        "X-Audio-Format": getattr(
+            provider,
+            "audio_format",
+            resolved["tts_output_format"],
+        ),
+    }
     if generation_id:
         headers["X-Generation-Id"] = generation_id
-    return Response(content=audio, media_type="audio/mpeg", headers=headers)
+    return Response(content=audio, media_type=media_type, headers=headers)
 
 
 @router.get("/profiles/{profile_id}/versions", response_model=list[ProfileVersionRead])

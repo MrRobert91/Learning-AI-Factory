@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import hashlib
+import io
+import logging
 import time
+import wave
 from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 OPENAI_TTS_MODEL = "gpt-4o-mini-tts"
 OPENAI_VOICES = (
@@ -85,6 +90,15 @@ TTS_MODEL_CATALOG: tuple[dict[str, Any], ...] = (
         ),
         "voices_by_language": {"*": OPENAI_VOICES},
         "default_voice": "nova",
+        "request_formats": ("mp3",),
+        "preferred_format": "mp3",
+        "response_mime_type": "audio/mpeg",
+        "output_format": "mp3",
+        "output_mime_type": "audio/mpeg",
+        "sample_rate_hz": None,
+        "channels": None,
+        "streaming": False,
+        "provider_options": (),
         "price_per_million_characters_usd": None,
         "price_hint": "Coste registrado como desconocido si la respuesta no informa precio.",
     },
@@ -117,6 +131,15 @@ TTS_MODEL_CATALOG: tuple[dict[str, Any], ...] = (
             "zh-CN": ("zf_xiaobei", "zf_xiaoxiao", "zm_yunxi", "zm_yunyang"),
         },
         "default_voice": "ef_dora",
+        "request_formats": ("mp3",),
+        "preferred_format": "mp3",
+        "response_mime_type": "audio/mpeg",
+        "output_format": "mp3",
+        "output_mime_type": "audio/mpeg",
+        "sample_rate_hz": None,
+        "channels": None,
+        "streaming": False,
+        "provider_options": (),
         "price_per_million_characters_usd": 0.62,
         "price_hint": "$0.62 por millón de caracteres (estimación de catálogo).",
     },
@@ -140,6 +163,16 @@ TTS_MODEL_CATALOG: tuple[dict[str, Any], ...] = (
         ),
         "voices_by_language": {"*": GEMINI_VOICES},
         "default_voice": "Kore",
+        "request_formats": ("pcm",),
+        "preferred_format": "pcm",
+        "response_mime_type": "audio/pcm",
+        "output_format": "wav",
+        "output_mime_type": "audio/wav",
+        "sample_rate_hz": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "streaming": False,
+        "provider_options": (),
         "price_per_million_characters_usd": None,
         "price_hint": "Preview multimodal; el coste se registra si el proveedor lo informa.",
     },
@@ -163,6 +196,15 @@ TTS_MODEL_CATALOG: tuple[dict[str, Any], ...] = (
             "fr-FR": ("fr-FR-Marc:MAI-Voice-2",),
         },
         "default_voice": "es-ES-Marta:MAI-Voice-2",
+        "request_formats": ("mp3",),
+        "preferred_format": "mp3",
+        "response_mime_type": "audio/mpeg",
+        "output_format": "mp3",
+        "output_mime_type": "audio/mpeg",
+        "sample_rate_hz": None,
+        "channels": None,
+        "streaming": False,
+        "provider_options": ("style", "styledegree"),
         "price_per_million_characters_usd": 22.0,
         "price_hint": "$22 por millón de caracteres (estimación de catálogo).",
     },
@@ -172,14 +214,32 @@ TTS_MODEL_CATALOG: tuple[dict[str, Any], ...] = (
 class TTSProvider(Protocol):
     cache_key: str
     last_generation_id: str | None
+    audio_format: str
+    file_extension: str
+    mime_type: str
 
     def synthesize(self, text: str) -> bytes:
-        """Return MP3 bytes for the given text."""
+        """Return normalized, playable audio bytes for the given text."""
         ...
 
 
 class TTSError(RuntimeError):
     """Readable provider or catalog error."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        provider_code: str | None = None,
+        field: str | None = None,
+        generation_id: str | None = None,
+    ):
+        super().__init__(message)
+        self.status_code = status_code
+        self.provider_code = provider_code
+        self.field = field
+        self.generation_id = generation_id
 
 
 def normalize_language(language: str) -> str:
@@ -240,13 +300,25 @@ def resolve_tts_config(
             f"La voz {voice!r} no está disponible para {model} / "
             f"{validation_language or language}"
         )
+    requested_format = str(config.get("tts_format") or "")
+    if requested_format not in entry["request_formats"]:
+        requested_format = entry["preferred_format"]
     return {
         "tts_provider": provider,
         "tts_model": model,
         "tts_language": language,
         "tts_language_effective": effective_language or language,
         "tts_voice": voice,
-        "tts_format": "mp3",
+        "tts_format": requested_format,
+        "tts_request_formats": list(entry["request_formats"]),
+        "tts_response_mime_type": entry["response_mime_type"],
+        "tts_output_format": entry["output_format"],
+        "tts_mime_type": entry["output_mime_type"],
+        "tts_sample_rate_hz": entry["sample_rate_hz"],
+        "tts_channels": entry["channels"],
+        "tts_sample_width_bytes": entry.get("sample_width_bytes", 2),
+        "tts_streaming": entry["streaming"],
+        "tts_provider_options": list(entry["provider_options"]),
         "price_per_million_characters_usd": entry[
             "price_per_million_characters_usd"
         ],
@@ -326,6 +398,73 @@ def estimated_tts_cost(config: dict[str, Any], characters: int) -> float | None:
     return None if price is None else max(characters, 0) * float(price) / 1_000_000
 
 
+def _content_type(value: str) -> str:
+    return value.split(";", 1)[0].strip().lower()
+
+
+def _looks_like_mp3(audio: bytes) -> bool:
+    return audio.startswith(b"ID3") or (
+        len(audio) >= 2 and audio[0] == 0xFF and audio[1] & 0xE0 == 0xE0
+    )
+
+
+def _pcm_to_wav(
+    audio: bytes,
+    *,
+    sample_rate_hz: int,
+    channels: int,
+    sample_width_bytes: int = 2,
+) -> bytes:
+    frame_size = channels * sample_width_bytes
+    if not audio or len(audio) % frame_size:
+        raise TTSError(
+            "OpenRouter TTS devolvió PCM vacío o con una longitud de frame inválida",
+            status_code=502,
+        )
+    output = io.BytesIO()
+    with wave.open(output, "wb") as target:
+        target.setnchannels(channels)
+        target.setsampwidth(sample_width_bytes)
+        target.setframerate(sample_rate_hz)
+        target.writeframes(audio)
+    return output.getvalue()
+
+
+def _validate_wav(
+    audio: bytes,
+    *,
+    sample_rate_hz: int | None = None,
+    channels: int | None = None,
+) -> bool:
+    try:
+        with wave.open(io.BytesIO(audio), "rb") as source:
+            return (
+                source.getnframes() > 0
+                and (sample_rate_hz is None or source.getframerate() == sample_rate_hz)
+                and (channels is None or source.getnchannels() == channels)
+            )
+    except (EOFError, wave.Error):
+        return False
+
+
+def _valid_audio_bytes(
+    audio: bytes,
+    audio_format: str,
+    *,
+    sample_rate_hz: int | None = None,
+    channels: int | None = None,
+) -> bool:
+    if audio_format == "mp3":
+        return _looks_like_mp3(audio)
+    if audio_format == "wav":
+        return _validate_wav(
+            audio,
+            sample_rate_hz=sample_rate_hz,
+            channels=channels,
+        )
+    return bool(audio)
+
+
 class OpenAITTSProvider:
     """OpenAI TTS via the standard OpenAI API."""
 
@@ -345,6 +484,9 @@ class OpenAITTSProvider:
         self.model = model
         self.language = language
         self.last_generation_id: str | None = None
+        self.audio_format = "mp3"
+        self.file_extension = "mp3"
+        self.mime_type = "audio/mpeg"
         self.cache_key = f"openai:{model}:{language}:{voice}:mp3"
 
     def synthesize(self, text: str) -> bytes:
@@ -368,6 +510,14 @@ class OpenRouterTTSProvider:
         model: str,
         voice: str,
         language: str = "inherit",
+        request_format: str = "mp3",
+        response_mime_type: str = "audio/mpeg",
+        output_format: str = "mp3",
+        output_mime_type: str = "audio/mpeg",
+        sample_rate_hz: int | None = None,
+        channels: int | None = None,
+        sample_width_bytes: int = 2,
+        provider_options: dict[str, Any] | None = None,
         base_url: str = "https://openrouter.ai/api/v1",
         timeout_seconds: float = 60,
         max_retries: int = 2,
@@ -378,30 +528,101 @@ class OpenRouterTTSProvider:
         self.model = model
         self.voice = voice
         self.language = language
+        self.request_format = request_format
+        self.response_mime_type = response_mime_type
+        self.audio_format = output_format
+        self.file_extension = output_format
+        self.mime_type = output_mime_type
+        self.sample_rate_hz = sample_rate_hz
+        self.channels = channels
+        self.sample_width_bytes = sample_width_bytes
+        self.provider_options = provider_options or {}
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
         self.last_generation_id: str | None = None
-        self.cache_key = f"openrouter:{model}:{language}:{voice}:mp3"
+        self.cache_key = (
+            f"openrouter:{model}:{language}:{voice}:"
+            f"{request_format}:{output_format}:{sample_rate_hz or '-'}:"
+            f"{channels or '-'}:{sample_width_bytes}"
+        )
 
     @staticmethod
-    def _error_message(response: httpx.Response) -> str:
+    def _error_details(
+        response: httpx.Response,
+    ) -> tuple[str, str | None, str | None]:
         try:
             payload = response.json()
         except ValueError:
-            return response.text[:400] or response.reason_phrase
+            return response.text[:400] or response.reason_phrase, None, None
         error = payload.get("error", payload) if isinstance(payload, dict) else payload
         if isinstance(error, dict):
-            return str(error.get("message") or error.get("code") or error)
-        return str(error)
+            message = str(error.get("message") or error.get("code") or error)
+            code = error.get("code")
+            field = error.get("param") or error.get("field")
+            metadata = error.get("metadata")
+            if isinstance(metadata, dict):
+                field = field or metadata.get("param") or metadata.get("field")
+            return (
+                message[:400],
+                str(code)[:100] if code is not None else None,
+                str(field)[:100] if field is not None else None,
+            )
+        return str(error)[:400], None, None
+
+    def _normalize_response(self, response: httpx.Response) -> bytes:
+        content_type = _content_type(response.headers.get("content-type", ""))
+        audio = response.content
+        generation_id = response.headers.get("x-generation-id")
+        if self.request_format == "pcm":
+            if content_type == "audio/wav" and _validate_wav(
+                audio,
+                sample_rate_hz=self.sample_rate_hz,
+                channels=self.channels,
+            ):
+                return audio
+            if content_type not in {"audio/pcm", "audio/l16"}:
+                raise TTSError(
+                    "OpenRouter TTS devolvió "
+                    f"{content_type or 'un tipo desconocido'} al solicitar PCM",
+                    status_code=502,
+                    generation_id=generation_id,
+                )
+            if self.sample_rate_hz is None or self.channels is None:
+                raise TTSError(
+                    "Faltan sample rate o canales para normalizar la respuesta PCM",
+                    status_code=500,
+                )
+            return _pcm_to_wav(
+                audio,
+                sample_rate_hz=self.sample_rate_hz,
+                channels=self.channels,
+                sample_width_bytes=self.sample_width_bytes,
+            )
+        if content_type not in {"audio/mpeg", "audio/mp3"}:
+            raise TTSError(
+                "OpenRouter TTS devolvió "
+                f"{content_type or 'un tipo desconocido'} al solicitar MP3",
+                status_code=502,
+                generation_id=generation_id,
+            )
+        if not _looks_like_mp3(audio):
+            raise TTSError(
+                "OpenRouter TTS devolvió audio MP3 vacío o corrupto",
+                status_code=502,
+                generation_id=generation_id,
+            )
+        return audio
 
     def synthesize(self, text: str) -> bytes:
         payload = {
             "model": self.model,
             "input": text,
             "voice": self.voice,
-            "response_format": "mp3",
+            "response_format": self.request_format,
         }
+        if self.provider_options:
+            payload["provider"] = {"options": self.provider_options}
         last_error: Exception | None = None
         for attempt in range(self.max_retries + 1):
             try:
@@ -419,21 +640,64 @@ class OpenRouterTTSProvider:
                 if attempt < self.max_retries:
                     time.sleep(0.25 * (2**attempt))
                     continue
-                raise TTSError(f"OpenRouter TTS no respondió: {exc}") from exc
+                raise TTSError(
+                    f"OpenRouter TTS no respondió: {exc}",
+                    status_code=504,
+                ) from exc
             if response.status_code >= 400:
-                message = self._error_message(response)
+                message, code, field = self._error_details(response)
+                generation_id = response.headers.get("x-generation-id")
+                if self.api_key:
+                    message = message.replace(self.api_key, "[redacted]")
+                logger.warning(
+                    "OpenRouter TTS request failed status=%s model=%s voice=%s "
+                    "format=%s code=%s field=%s generation_id=%s",
+                    response.status_code,
+                    self.model,
+                    self.voice,
+                    self.request_format,
+                    code,
+                    field,
+                    generation_id,
+                )
                 if response.status_code in {408, 429} or response.status_code >= 500:
-                    last_error = TTSError(message)
+                    last_error = TTSError(
+                        message,
+                        status_code=response.status_code,
+                        provider_code=code,
+                        field=field,
+                        generation_id=generation_id,
+                    )
                     if attempt < self.max_retries:
                         time.sleep(0.25 * (2**attempt))
                         continue
-                raise TTSError(f"OpenRouter TTS devolvió {response.status_code}: {message}")
-            content_type = response.headers.get("content-type", "").lower()
-            if "audio/" not in content_type or not response.content:
-                raise TTSError("OpenRouter TTS devolvió una respuesta sin audio MP3")
+                detail = message
+                if code:
+                    detail += f" (código {code})"
+                if field:
+                    detail += f" · campo {field}"
+                raise TTSError(
+                    f"OpenRouter TTS devolvió {response.status_code}: {detail}",
+                    status_code=response.status_code,
+                    provider_code=code,
+                    field=field,
+                    generation_id=generation_id,
+                )
             self.last_generation_id = response.headers.get("x-generation-id")
-            return response.content
-        raise TTSError(f"OpenRouter TTS falló: {last_error}")
+            normalized = self._normalize_response(response)
+            if not _valid_audio_bytes(
+                normalized,
+                self.audio_format,
+                sample_rate_hz=self.sample_rate_hz,
+                channels=self.channels,
+            ):
+                raise TTSError(
+                    "OpenRouter TTS devolvió audio vacío o corrupto",
+                    status_code=502,
+                    generation_id=self.last_generation_id,
+                )
+            return normalized
+        raise TTSError(f"OpenRouter TTS falló: {last_error}", status_code=502)
 
 
 def build_tts_provider(
@@ -462,6 +726,13 @@ def build_tts_provider(
         model=resolved["tts_model"],
         voice=resolved["tts_voice"],
         language=resolved["tts_language_effective"],
+        request_format=resolved["tts_format"],
+        response_mime_type=resolved["tts_response_mime_type"],
+        output_format=resolved["tts_output_format"],
+        output_mime_type=resolved["tts_mime_type"],
+        sample_rate_hz=resolved["tts_sample_rate_hz"],
+        channels=resolved["tts_channels"],
+        sample_width_bytes=resolved["tts_sample_width_bytes"],
     )
 
 
@@ -471,6 +742,27 @@ def synthesize_cached(provider: TTSProvider, text: str, cache_dir: str | Path) -
     return path
 
 
+def is_valid_audio_file(provider: TTSProvider, path: str | Path) -> bool:
+    """Validate a cached provider output before treating it as reusable."""
+
+    path = Path(path)
+    if not path.is_file():
+        return False
+    try:
+        audio = path.read_bytes()
+    except OSError:
+        return False
+    audio_format = getattr(provider, "audio_format", None)
+    if not audio_format:
+        return bool(audio)
+    return _valid_audio_bytes(
+        audio,
+        audio_format,
+        sample_rate_hz=getattr(provider, "sample_rate_hz", None),
+        channels=getattr(provider, "channels", None),
+    )
+
+
 def synthesize_cached_with_status(
     provider: TTSProvider, text: str, cache_dir: str | Path
 ) -> tuple[Path, bool]:
@@ -478,8 +770,22 @@ def synthesize_cached_with_status(
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha256(f"{provider.cache_key}\x00{text}".encode()).hexdigest()[:32]
-    path = cache_dir / f"{digest}.mp3"
+    audio_format = getattr(provider, "audio_format", None)
+    extension = getattr(provider, "file_extension", None) or audio_format or "mp3"
+    path = cache_dir / f"{digest}.{extension}"
     cache_hit = path.is_file()
+    if cache_hit:
+        cache_hit = is_valid_audio_file(provider, path)
+        if not cache_hit:
+            path.unlink(missing_ok=True)
     if not cache_hit:
-        path.write_bytes(provider.synthesize(text))
+        audio = provider.synthesize(text)
+        if audio_format and not _valid_audio_bytes(
+            audio,
+            audio_format,
+            sample_rate_hz=getattr(provider, "sample_rate_hz", None),
+            channels=getattr(provider, "channels", None),
+        ):
+            raise TTSError("El proveedor TTS devolvió audio vacío o corrupto")
+        path.write_bytes(audio)
     return path, cache_hit

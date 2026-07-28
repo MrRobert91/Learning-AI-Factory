@@ -324,6 +324,15 @@ export interface TTSModelOption {
   languages: string[];
   voices_by_language: Record<string, string[]>;
   default_voice: string;
+  request_formats: ("mp3" | "pcm")[];
+  preferred_format: "mp3" | "pcm";
+  response_mime_type: string;
+  output_format: "mp3" | "wav";
+  output_mime_type: string;
+  sample_rate_hz: number | null;
+  channels: number | null;
+  streaming: boolean;
+  provider_options: string[];
   price_per_million_characters_usd: number | null;
   price_hint: string;
 }
