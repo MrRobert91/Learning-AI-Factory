@@ -302,9 +302,13 @@ const ACTIVE_STATUSES: Job["status"][] = [
 export default function FactoryPanel({
   projectId,
   durationConfigured = true,
+  selectedWorkflowId = null,
+  onSelectedWorkflowChange,
 }: {
   projectId: string;
   durationConfigured?: boolean;
+  selectedWorkflowId?: string | null;
+  onSelectedWorkflowChange?: (workflowId: string) => void;
 }) {
   const [profilesByAgent, setProfilesByAgent] = useState<
     Record<string, AgentProfile[]>
@@ -319,6 +323,11 @@ export default function FactoryPanel({
   const [error, setError] = useState<string | null>(null);
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [workflowId, setWorkflowId] = useState<string>("");
+  const [workflowPreferenceState, setWorkflowPreferenceState] = useState<
+    "idle" | "saving" | "saved" | "error"
+  >("idle");
+  const [failedWorkflowId, setFailedWorkflowId] = useState<string | null>(null);
+  const [workflowFallbackWarning, setWorkflowFallbackWarning] = useState(false);
   const [feedback, setFeedback] = useState("");
   const [deciding, setDeciding] = useState(false);
   const [controlling, setControlling] = useState(false);
@@ -415,13 +424,6 @@ export default function FactoryPanel({
         );
       })
       .catch(() => {});
-    api
-      .listWorkflows()
-      .then((list) => {
-        setWorkflows(list);
-        if (list.length > 0) setWorkflowId(list[0].id);
-      })
-      .catch(() => {});
     // Resume the most recent unfinished run automatically, so a page reload
     // never hides a running job or a pending approval.
     refresh()
@@ -432,6 +434,34 @@ export default function FactoryPanel({
       .catch(() => {});
     return () => sourceRef.current?.close();
   }, [projectId, refresh, follow]);
+
+  useEffect(() => {
+    let canceled = false;
+    api
+      .listWorkflows()
+      .then((list) => {
+        if (canceled) return;
+        setWorkflows(list);
+        const stored = selectedWorkflowId
+          ? list.find((workflow) => workflow.id === selectedWorkflowId)
+          : undefined;
+        setWorkflowId(stored?.id ?? list[0]?.id ?? "");
+        setWorkflowFallbackWarning(Boolean(selectedWorkflowId && !stored));
+      })
+      .catch(() => {
+        if (!canceled) {
+          setError("No se pudieron cargar los workflows disponibles");
+        }
+      });
+    return () => {
+      canceled = true;
+    };
+  }, [projectId, selectedWorkflowId]);
+
+  useEffect(() => {
+    setWorkflowPreferenceState("idle");
+    setFailedWorkflowId(null);
+  }, [projectId]);
 
   useEffect(() => {
     if (!artifacts.some((artifact) => artifact.type === "course_plan")) {
@@ -554,6 +584,25 @@ export default function FactoryPanel({
       follow(job);
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo lanzar");
+    }
+  }
+
+  async function saveWorkflowSelection(nextWorkflowId: string) {
+    const previousWorkflowId = workflowId;
+    setWorkflowId(nextWorkflowId);
+    setWorkflowPreferenceState("saving");
+    setFailedWorkflowId(null);
+    setWorkflowFallbackWarning(false);
+    try {
+      const updated = await api.updateProject(projectId, {
+        selected_workflow_id: nextWorkflowId,
+      });
+      setWorkflowPreferenceState("saved");
+      onSelectedWorkflowChange?.(updated.selected_workflow_id ?? nextWorkflowId);
+    } catch {
+      setWorkflowId(previousWorkflowId);
+      setWorkflowPreferenceState("error");
+      setFailedWorkflowId(nextWorkflowId);
     }
   }
 
@@ -807,20 +856,34 @@ export default function FactoryPanel({
             </span>
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            value={workflowId}
-            onChange={(e) => setWorkflowId(e.target.value)}
-            disabled={running}
-            className="input max-w-56 py-2 text-sm"
-            aria-label="Workflow a ejecutar"
-          >
-            {workflows.map((w) => (
-              <option key={w.id} value={w.id}>
-                {w.name}
-              </option>
-            ))}
-          </select>
+        <div className="flex flex-wrap items-start gap-2">
+          <div className="flex flex-col items-end gap-1">
+            <select
+              value={workflowId}
+              onChange={(event) =>
+                void saveWorkflowSelection(event.target.value)
+              }
+              disabled={running || workflowPreferenceState === "saving"}
+              className="input max-w-56 py-2 text-sm"
+              aria-label="Workflow a ejecutar"
+            >
+              {workflows.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.name}
+                </option>
+              ))}
+            </select>
+            {workflowPreferenceState === "saving" && (
+              <span className="text-xs text-zinc-500" role="status">
+                Guardando selección…
+              </span>
+            )}
+            {workflowPreferenceState === "saved" && (
+              <span className="text-xs text-emerald-400" role="status">
+                Selección guardada
+              </span>
+            )}
+          </div>
           <button
             onClick={startWorkflow}
             disabled={
@@ -854,6 +917,34 @@ export default function FactoryPanel({
           </button>
         </div>
       </div>
+      {workflowFallbackWarning && (
+        <div className="mb-4 rounded-xl border border-amber-400/30 bg-amber-500/[0.07] px-4 py-3">
+          <p className="text-sm font-semibold text-amber-200">
+            El workflow guardado ya no está disponible
+          </p>
+          <p className="mt-1 text-xs text-amber-100/70">
+            Se muestra una opción temporal. Elige un workflow para confirmar una
+            nueva selección.
+          </p>
+        </div>
+      )}
+      {workflowPreferenceState === "error" && failedWorkflowId && (
+        <div
+          className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-red-400/25 bg-red-500/[0.06] px-4 py-3"
+          role="alert"
+        >
+          <p className="min-w-0 flex-1 text-sm text-red-300">
+            No se pudo guardar el workflow. La selección anterior sigue activa.
+          </p>
+          <button
+            type="button"
+            className="btn-secondary btn-sm"
+            onClick={() => void saveWorkflowSelection(failedWorkflowId)}
+          >
+            Reintentar
+          </button>
+        </div>
+      )}
 
       {/* ------ Pipeline stages ------ */}
       <div className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -1044,6 +1135,11 @@ export default function FactoryPanel({
             <span className="text-sm font-semibold text-zinc-100">
               {KIND_LABELS[activeRun.kind] ?? activeRun.kind}
             </span>
+            {activeRun.workflow_name && (
+              <span className="text-xs text-zinc-400">
+                {activeRun.workflow_name} · snapshot del run
+              </span>
+            )}
             <span className={statusBadge.className}>{statusBadge.label}</span>
             {activeRun.started_at && (
               <span className="text-xs tabular-nums text-zinc-500">
@@ -1218,7 +1314,9 @@ export default function FactoryPanel({
                       }`}
                     >
                       <span className="min-w-0 flex-1 truncate font-medium text-zinc-200">
-                        {KIND_LABELS[r.kind] ?? r.kind}
+                        {r.workflow_name
+                          ? `${KIND_LABELS[r.kind] ?? r.kind} · ${r.workflow_name}`
+                          : KIND_LABELS[r.kind] ?? r.kind}
                       </span>
                       <span className="shrink-0 text-xs text-zinc-500">
                         {new Date(r.created_at).toLocaleString("es")}

@@ -62,6 +62,10 @@ docker compose up --build                # stack completo (2 contenedores)
   `curator`. La compatibilidad entre pasos depende de los artefactos disponibles
   y se define en `apps/web/src/lib/workflowRules.ts`; debe mantenerse alineada
   con `AGENT_INPUTS`/`AGENT_OUTPUTS` de `factory_api/workflow_engine.py`.
+- **Workflow seleccionado**: `projects.selected_workflow_id` conserva la
+  preferencia mutable de cada proyecto. La UI solo usa un fallback temporal si
+  falta o dejó de estar disponible; cada run congela por separado su ID, nombre
+  y definición, y nunca se reescribe al cambiar la preferencia del proyecto.
 - **LLM**: OpenRouter (OpenAI-compatible), modelo por defecto en
   `Settings.openrouter_model`. Los agentes conversacionales (ideación) usan
   el cliente openai directo; los task agents usan deepagents.

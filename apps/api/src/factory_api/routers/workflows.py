@@ -287,6 +287,7 @@ def create_workflow_run(
 
     payload = _base_payload(db, project)
     payload["definition"] = definition
+    payload["workflow_id"] = workflow.id
     payload["workflow_name"] = workflow.name
 
     job = Job(kind="workflow_run", project_id=project.id, payload_json=json.dumps(payload))

@@ -50,6 +50,9 @@ class Project(Base):
     style: Mapped[str] = mapped_column(Text, default="", nullable=False)
     output_format: Mapped[str] = mapped_column(String(50), default="", nullable=False)
     duration_spec_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    selected_workflow_id: Mapped[str | None] = mapped_column(
+        ForeignKey("workflows.id", ondelete="SET NULL"), nullable=True
+    )
     research_mode: Mapped[str] = mapped_column(
         String(30), default="web_only", nullable=False
     )

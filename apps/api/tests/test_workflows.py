@@ -223,10 +223,25 @@ def test_workflow_without_approvals_runs_to_completion(auth_client, monkeypatch)
     _patch_all(monkeypatch)
     project = _create_project(auth_client)
     workflow_id = _template_id(auth_client, "Investigación y plan")
-    job_id = auth_client.post(
+    auth_client.patch(
+        f"/api/projects/{project['id']}",
+        json={"selected_workflow_id": workflow_id},
+    )
+    created = auth_client.post(
         f"/api/projects/{project['id']}/workflow-runs",
         json={"workflow_id": workflow_id},
-    ).json()["id"]
-    job = _wait_for_job(auth_client, job_id)
+    ).json()
+    assert created["workflow_id"] == workflow_id
+    assert created["workflow_name"] == "Investigación y plan"
+
+    next_workflow_id = _template_id(auth_client, "Curso completo con vídeo")
+    auth_client.patch(
+        f"/api/projects/{project['id']}",
+        json={"selected_workflow_id": next_workflow_id},
+    )
+
+    job = _wait_for_job(auth_client, created["id"])
     assert job["status"] == "done"
+    assert job["workflow_id"] == workflow_id
+    assert job["workflow_name"] == "Investigación y plan"
     assert set(job["result"].keys()) == {"curator", "planner"}
