@@ -114,6 +114,13 @@ docker compose up --build                # stack completo (2 contenedores)
   versionado. El run copia el logo activo a cada versión del `slide_deck` y lo
   inyecta con `tools/logos.py`; nunca lo regenera durante la producción.
 
+- **Seguridad de dependencias**: CI bloquea vulnerabilidades `high`/`critical`
+  con `npm run audit:prod`, `npm run audit:all` y `pip-audit==2.10.1` sobre el
+  export congelado de uv. Mantén Next.js en la serie 15 y React en la 19 hasta
+  una migración explícita; los overrides de PostCSS/Sharp son parches
+  documentados y deben retirarse cuando Next los incorpore. Dependabot propone
+  actualizaciones semanales a `dev`, sin auto-merge.
+
 ## Convenciones
 
 - UI en español; código, comentarios y commits en inglés.
