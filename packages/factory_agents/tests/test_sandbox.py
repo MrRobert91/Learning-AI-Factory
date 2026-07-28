@@ -1,5 +1,4 @@
 import os
-import shutil
 
 import pytest
 from factory_agents.tools.sandbox import (
@@ -95,7 +94,7 @@ def test_public_facade_uses_configured_policy(monkeypatch):
 
 
 @pytest.mark.skipif(
-    os.name == "nt" or shutil.which("bwrap") is None,
+    os.getenv("RUN_SANDBOX_INTEGRATION") != "1",
     reason="Bubblewrap integration is validated in the backend container",
 )
 def test_isolated_mode_runs_and_blocks_network_and_host_paths():

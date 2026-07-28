@@ -18,7 +18,7 @@ jobs:
       - name: Install media tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends bubblewrap ffmpeg
+          sudo apt-get install --yes --no-install-recommends ffmpeg
       - name: Audit production dependencies
         run: |
           uv export --quiet --frozen --no-dev --no-hashes --no-emit-workspace --output-file "$RUNNER_TEMP/requirements-audit.txt"
