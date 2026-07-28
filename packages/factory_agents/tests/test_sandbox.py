@@ -1,4 +1,5 @@
 import os
+import subprocess
 
 import pytest
 from factory_agents.tools.sandbox import (
@@ -12,6 +13,11 @@ from factory_agents.tools.sandbox import (
 
 def test_sandbox_is_disabled_by_default(monkeypatch):
     monkeypatch.delenv("PYTHON_SANDBOX_MODE", raising=False)
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *args, **kwargs: pytest.fail("disabled mode started a process"),
+    )
 
     result = execute_python_snippet("raise AssertionError('must not run')")
 
@@ -27,6 +33,23 @@ def test_invalid_mode_fails_closed(monkeypatch):
 
     assert result.status == SandboxStatus.UNAVAILABLE
     assert "no se usó ejecución directa" in result.render_for_agent()
+
+
+def test_isolated_mode_without_launcher_fails_closed(monkeypatch):
+    monkeypatch.setattr(
+        "factory_agents.tools.sandbox._isolated_command",
+        lambda work_dir: None,
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *args, **kwargs: pytest.fail("unavailable isolation started a process"),
+    )
+
+    result = execute_python_snippet("print('must not run')", mode=SandboxMode.ISOLATED)
+
+    assert result.status == SandboxStatus.UNAVAILABLE
+    assert result.exit_code is None
 
 
 def test_explicit_local_unsafe_mode_runs_code():
@@ -95,7 +118,7 @@ def test_public_facade_uses_configured_policy(monkeypatch):
 
 @pytest.mark.skipif(
     os.getenv("RUN_SANDBOX_INTEGRATION") != "1",
-    reason="Bubblewrap integration is validated in the backend container",
+    reason="Native Linux isolation is validated in the backend container",
 )
 def test_isolated_mode_runs_and_blocks_network_and_host_paths():
     success = execute_python_snippet("print(2 + 2)", mode=SandboxMode.ISOLATED)

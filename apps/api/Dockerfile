@@ -1,14 +1,25 @@
 # Build context is the repo root (the API depends on packages/factory_agents).
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS sandbox-builder
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc libc6-dev libseccomp-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY apps/api/sandbox_launcher.c /tmp/sandbox_launcher.c
+RUN gcc -O2 -Wall -Wextra -Werror \
+    /tmp/sandbox_launcher.c -lseccomp -o /usr/local/bin/python-sandbox-launcher
+
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
-# ffmpeg (video), Chromium + Node (marp-cli slide rendering), fonts and
-# Bubblewrap all live here to keep the promise of a single backend container.
+# ffmpeg (video), Chromium + Node (marp-cli slide rendering), fonts and the
+# seccomp runtime all live here to keep the promise of one backend container.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        bubblewrap ffmpeg fonts-dejavu-core chromium nodejs npm \
+        ffmpeg fonts-dejavu-core chromium libseccomp2 nodejs npm \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g @marp-team/marp-cli \
     && npm cache clean --force
+COPY --from=sandbox-builder \
+    /usr/local/bin/python-sandbox-launcher /usr/local/bin/python-sandbox-launcher
 
 ENV CHROME_PATH=/usr/bin/chromium
 

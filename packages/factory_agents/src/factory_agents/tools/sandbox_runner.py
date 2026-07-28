@@ -1,4 +1,4 @@
-"""Trusted launcher used only inside the Bubblewrap mount namespace."""
+"""Trusted Python entry point used after native isolation is installed."""
 
 from __future__ import annotations
 
@@ -9,17 +9,8 @@ from pathlib import Path
 
 POLICY_EXIT_CODE = 77
 POLICY_MARKER = "__SANDBOX_POLICY_VIOLATION__:"
-ALLOWED_ROOTS = (
-    "/work",
-    "/sandbox",
-    "/tmp",
-    "/usr",
-    "/lib",
-    "/lib64",
-    "/bin",
-    "/proc",
-    "/dev",
-) + tuple(
+WORK_DIR = os.environ.get("SANDBOX_WORK_DIR", "")
+ALLOWED_ROOTS = ((WORK_DIR,) if WORK_DIR else ()) + tuple(
     root
     for root in os.getenv("SANDBOX_RUNTIME_ROOTS", "").split(os.pathsep)
     if root
@@ -71,7 +62,8 @@ def _audit(event: str, args: tuple[object, ...]) -> None:
 
 
 def main() -> int:
-    if len(sys.argv) != 2 or sys.argv[1] != "/work/snippet.py":
+    expected_snippet = str(Path(WORK_DIR, "snippet.py")) if WORK_DIR else ""
+    if len(sys.argv) != 2 or sys.argv[1] != expected_snippet:
         return POLICY_EXIT_CODE
     sys.addaudithook(_audit)
     try:

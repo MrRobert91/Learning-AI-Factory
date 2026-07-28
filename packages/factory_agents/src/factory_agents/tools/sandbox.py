@@ -1,9 +1,9 @@
 """Fail-closed execution of didactic Python snippets.
 
-Production uses Bubblewrap to create a minimal Linux mount namespace with no
-network. Outside that environment execution is disabled by default. The
-``local-unsafe`` mode exists only for explicit development use and is never a
-fallback for failed isolation.
+Production uses a native launcher that applies Landlock filesystem rules and a
+seccomp syscall firewall before starting Python. Outside that environment
+execution is disabled by default. The ``local-unsafe`` mode exists only for
+explicit development use and is never a fallback for failed isolation.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ MAX_CAPTURE_BYTES = 8192
 MEMORY_LIMIT_BYTES = 256 * 1024 * 1024
 FILE_LIMIT_BYTES = 1024 * 1024
 WORKSPACE_LIMIT_BYTES = 16 * 1024 * 1024
+WORKSPACE_ENTRY_LIMIT = 128
 CPU_SECONDS = 10
 PROCESS_LIMIT = 64
 FILE_DESCRIPTOR_LIMIT = 32
@@ -119,7 +120,7 @@ class _CaptureBuffer:
 
 
 def _limits() -> None:
-    """Apply limits before Bubblewrap or the explicit local process starts."""
+    """Apply limits before the isolated or explicit local process starts."""
     resource.setrlimit(resource.RLIMIT_CPU, (CPU_SECONDS, CPU_SECONDS))
     resource.setrlimit(resource.RLIMIT_AS, (MEMORY_LIMIT_BYTES, MEMORY_LIMIT_BYTES))
     resource.setrlimit(resource.RLIMIT_NPROC, (PROCESS_LIMIT, PROCESS_LIMIT))
@@ -173,79 +174,19 @@ def _base_python() -> Path:
 def _isolated_command(work_dir: Path) -> list[str] | None:
     if os.name == "nt":
         return None
-    bwrap = shutil.which("bwrap")
+    launcher = shutil.which("python-sandbox-launcher")
     runner = Path(__file__).with_name("sandbox_runner.py").resolve()
     python = _base_python()
-    if not bwrap or not runner.is_file() or not python.is_file():
+    if not launcher or not runner.is_file() or not python.is_file():
         return None
-
-    command = [
-        bwrap,
-        "--die-with-parent",
-        "--new-session",
-        "--unshare-all",
-        "--disable-userns",
-        "--clearenv",
-        "--cap-drop",
-        "ALL",
-        "--proc",
-        "/proc",
-        "--dev",
-        "/dev",
-        "--size",
-        str(WORKSPACE_LIMIT_BYTES),
-        "--perms",
-        "0700",
-        "--tmpfs",
-        "/tmp",
-        "--size",
-        str(WORKSPACE_LIMIT_BYTES),
-        "--perms",
-        "0700",
-        "--tmpfs",
-        "/work",
+    return [
+        launcher,
+        str(python),
+        "-I",
+        "-B",
+        str(runner),
+        str(work_dir / "snippet.py"),
     ]
-    runtime_mounts = _runtime_mounts()
-    for path in runtime_mounts:
-        command.extend(("--ro-bind", path, path))
-    command.extend(
-        (
-            "--dir",
-            "/sandbox",
-            "--ro-bind",
-            str(runner),
-            "/sandbox/runner.py",
-            "--ro-bind",
-            str(work_dir / "snippet.py"),
-            "/work/snippet.py",
-            "--chdir",
-            "/work",
-            "--setenv",
-            "HOME",
-            "/work",
-            "--setenv",
-            "LANG",
-            "C.UTF-8",
-            "--setenv",
-            "PATH",
-            "/usr/local/bin:/usr/bin:/bin",
-            "--setenv",
-            "PYTHONDONTWRITEBYTECODE",
-            "1",
-            "--setenv",
-            "PYTHONIOENCODING",
-            "utf-8",
-            "--setenv",
-            "SANDBOX_RUNTIME_ROOTS",
-            os.pathsep.join(runtime_mounts),
-            str(python),
-            "-I",
-            "-B",
-            "/sandbox/runner.py",
-            "/work/snippet.py",
-        )
-    )
-    return command
 
 
 def _drain(stream, target: _CaptureBuffer) -> None:
@@ -272,6 +213,29 @@ def _terminate(proc: subprocess.Popen) -> None:
         proc.kill()
 
 
+def _workspace_exceeded(work_dir: Path) -> bool:
+    total_size = 0
+    entry_count = 0
+    pending = [work_dir]
+    try:
+        while pending:
+            current = pending.pop()
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    entry_count += 1
+                    if entry_count > WORKSPACE_ENTRY_LIMIT:
+                        return True
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(Path(entry.path))
+                    elif entry.is_file(follow_symlinks=False):
+                        total_size += entry.stat(follow_symlinks=False).st_size
+                        if total_size > WORKSPACE_LIMIT_BYTES:
+                            return True
+    except OSError:
+        return True
+    return False
+
+
 def _run_bounded(
     command: list[str],
     *,
@@ -279,7 +243,8 @@ def _run_bounded(
     cwd: Path | None,
     timeout_seconds: float,
     cancel_requested: Callable[[], bool] | None,
-) -> tuple[int | None, _CaptureBuffer, _CaptureBuffer, bool, bool]:
+    work_dir: Path,
+) -> tuple[int | None, _CaptureBuffer, _CaptureBuffer, bool, bool, bool]:
     stdout = _CaptureBuffer(bytearray())
     stderr = _CaptureBuffer(bytearray())
     kwargs: dict = {
@@ -300,6 +265,7 @@ def _run_bounded(
     stderr_thread.start()
     timed_out = False
     canceled = False
+    workspace_limit_exceeded = False
     deadline = time.monotonic() + timeout_seconds
     while proc.poll() is None:
         if cancel_requested is not None:
@@ -316,10 +282,23 @@ def _run_bounded(
             timed_out = True
             _terminate(proc)
             break
+        if _workspace_exceeded(work_dir):
+            workspace_limit_exceeded = True
+            _terminate(proc)
+            break
         time.sleep(0.1)
+    if not workspace_limit_exceeded and _workspace_exceeded(work_dir):
+        workspace_limit_exceeded = True
     stdout_thread.join(timeout=2)
     stderr_thread.join(timeout=2)
-    return proc.returncode, stdout, stderr, timed_out, canceled
+    return (
+        proc.returncode,
+        stdout,
+        stderr,
+        timed_out,
+        canceled,
+        workspace_limit_exceeded,
+    )
 
 
 def _decode(value: _CaptureBuffer) -> str:
@@ -379,12 +358,31 @@ def execute_python_snippet(
             )
 
         try:
-            exit_code, stdout_buffer, stderr_buffer, timed_out, canceled = _run_bounded(
+            environment = _minimal_environment(str(work_dir))
+            if selected_mode == SandboxMode.ISOLATED:
+                environment.update(
+                    {
+                        "SANDBOX_RUNNER_PATH": str(
+                            Path(__file__).with_name("sandbox_runner.py").resolve()
+                        ),
+                        "SANDBOX_RUNTIME_ROOTS": os.pathsep.join(_runtime_mounts()),
+                        "SANDBOX_WORK_DIR": str(work_dir),
+                    }
+                )
+            (
+                exit_code,
+                stdout_buffer,
+                stderr_buffer,
+                timed_out,
+                canceled,
+                workspace_limit_exceeded,
+            ) = _run_bounded(
                 command,
-                environment=_minimal_environment(str(work_dir)),
+                environment=environment,
                 cwd=cwd,
                 timeout_seconds=timeout_seconds,
                 cancel_requested=cancel_requested,
+                work_dir=work_dir,
             )
         except (OSError, subprocess.SubprocessError):
             logger.exception(
@@ -399,7 +397,11 @@ def execute_python_snippet(
         raw_stderr = _decode(stderr_buffer)
         stdout = _sanitize(_decode(stdout_buffer), work_dir)
         stderr = _sanitize(raw_stderr, work_dir)
-        policy_violation = POLICY_MARKER in raw_stderr or exit_code == POLICY_EXIT_CODE
+        policy_violation = (
+            POLICY_MARKER in raw_stderr
+            or exit_code == POLICY_EXIT_CODE
+            or workspace_limit_exceeded
+        )
         if canceled:
             status = SandboxStatus.CANCELED
         elif timed_out:
@@ -409,7 +411,7 @@ def execute_python_snippet(
         elif (
             selected_mode == SandboxMode.ISOLATED
             and exit_code != 0
-            and raw_stderr.lstrip().startswith("bwrap:")
+            and raw_stderr.lstrip().startswith("sandbox-launcher:")
         ):
             status = SandboxStatus.UNAVAILABLE
             stdout = ""
