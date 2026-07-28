@@ -18,7 +18,7 @@ jobs:
       - name: Install media tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends ffmpeg
+          sudo apt-get install --yes --no-install-recommends bubblewrap ffmpeg
       - name: Audit production dependencies
         run: |
           uv export --quiet --frozen --no-dev --no-hashes --no-emit-workspace --output-file "$RUNNER_TEMP/requirements-audit.txt"
@@ -27,6 +27,16 @@ jobs:
         run: uv run ruff check .
       - name: Tests
         run: uv run pytest apps/api/tests packages/factory_agents/tests -q
+      - name: Build and verify backend sandbox container
+        run: |
+          docker build --file apps/api/Dockerfile --tag learning-ai-factory-backend:test .
+          uid="$(docker run --rm --entrypoint id learning-ai-factory-backend:test -u)"
+          test "$uid" -ne 0
+          docker run --rm \
+            --env PYTHON_SANDBOX_MODE=isolated \
+            --entrypoint python \
+            learning-ai-factory-backend:test \
+            scripts/verify_python_sandbox.py
 
   web:
     runs-on: ubuntu-latest
