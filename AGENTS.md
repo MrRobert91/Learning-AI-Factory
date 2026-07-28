@@ -113,6 +113,10 @@ docker compose up --build                # stack completo (2 contenedores)
 - **Logos de slides**: la biblioteca y presentación viven en el perfil
   versionado. El run copia el logo activo a cada versión del `slide_deck` y lo
   inyecta con `tools/logos.py`; nunca lo regenera durante la producción.
+- **Logs del backend**: la consola es la única salida. Usa el formatter legible
+  canónico y categorías `HTTP`/`JOB`/`STEP`/`EVAL`/multimedia; no restaures
+  `backend.jsonl`, no dupliques `uvicorn.access` y nunca registres payloads,
+  prompts, respuestas, texto TTS, documentos, binarios ni secretos.
 
 ## Convenciones
 
