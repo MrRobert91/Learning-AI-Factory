@@ -1,6 +1,7 @@
 import io
 import json
 import zipfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 from factory_agents.tools.images import GeneratedImage
@@ -33,6 +34,64 @@ def _fake_complete_marp_render(source):
     outputs["pdf"].write_bytes(b"PDF")
     outputs["pptx"].write_bytes(b"PPTX")
     return {format_: str(output) for format_, output in outputs.items()}
+
+
+def test_project_artifacts_are_a_newest_first_selected_chronology(auth_client):
+    project = _create_project(auth_client)
+    research_v1 = _upload(
+        auth_client,
+        project["id"],
+        "research_brief",
+        "Research brief",
+        "# Research v1",
+    )
+    plan = _upload(
+        auth_client,
+        project["id"],
+        "course_plan",
+        "Plan del curso",
+        '{"title": "Plan"}',
+    )
+    lesson = _upload(
+        auth_client,
+        project["id"],
+        "lesson_content",
+        "1.1 Introduccion",
+        "# Leccion",
+    )
+    research_v2 = _upload(
+        auth_client,
+        project["id"],
+        "research_brief",
+        "Research brief",
+        "# Research v2",
+    )
+
+    with SessionLocal() as db:
+        db.get(Artifact, research_v1["id"]).created_at = datetime(
+            2026, 1, 1, tzinfo=UTC
+        )
+        db.get(Artifact, research_v2["id"]).created_at = datetime(
+            2026, 1, 4, tzinfo=UTC
+        )
+        tied_at = datetime(2026, 1, 3, tzinfo=UTC)
+        db.get(Artifact, plan["id"]).created_at = tied_at
+        db.get(Artifact, lesson["id"]).created_at = tied_at
+        db.commit()
+
+    selected = auth_client.get(f"/api/projects/{project['id']}/artifacts").json()
+    tied_ids = sorted([plan["id"], lesson["id"]], reverse=True)
+    assert [item["id"] for item in selected] == [research_v2["id"], *tied_ids]
+    research = next(item for item in selected if item["type"] == "research_brief")
+    assert [version["version"] for version in research["versions"]] == [2, 1]
+    assert all(item["is_selected"] for item in selected)
+
+    response = auth_client.post(f"/api/artifacts/{research_v1['id']}/select")
+    assert response.status_code == 200
+    selected = auth_client.get(f"/api/projects/{project['id']}/artifacts").json()
+
+    assert [item["id"] for item in selected] == [*tied_ids, research_v1["id"]]
+    assert sum(item["logical_key"] == research_v1["logical_key"] for item in selected) == 1
 
 
 def test_slide_palette_edit_creates_new_version_without_mutating_source(
