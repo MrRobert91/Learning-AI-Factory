@@ -2,15 +2,19 @@
   "name": "web",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "npm@10.9.4",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "audit:prod": "npm audit --omit=dev --audit-level=high",
+    "audit:all": "npm audit --audit-level=high",
+    "test:proxy": "node scripts/smoke-proxy.mjs"
   },
   "dependencies": {
     "@xyflow/react": "^12.11.2",
-    "next": "^15.3.4",
+    "next": "15.5.22",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
@@ -19,8 +23,12 @@
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "postcss": "^8.5.0",
+    "postcss": "8.5.24",
     "tailwindcss": "^4.1.10",
     "typescript": "^5.8.0"
+  },
+  "overrides": {
+    "postcss": "8.5.24",
+    "sharp": "0.35.3"
   }
 }
