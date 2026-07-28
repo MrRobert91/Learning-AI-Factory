@@ -81,9 +81,17 @@ def run_voice(
     ]
     last_error: Exception | None = None
     for _ in range(MAX_ATTEMPTS):
-        response = client.chat.completions.create(
-            model=model, messages=messages, temperature=0.4
-        )
+        try:
+            response = client.chat.completions.create(
+                model=model, messages=messages, temperature=0.4
+            )
+        except json.JSONDecodeError as exc:
+            # OpenAI-compatible providers can occasionally return a successful
+            # HTTP response with a truncated or otherwise malformed JSON body.
+            # The SDK raises before exposing a completion, so retry the same
+            # request without adding model-correction messages.
+            last_error = exc
+            continue
         text = response.choices[0].message.content or ""
         try:
             return VoiceScript.model_validate(extract_json(text))
@@ -96,4 +104,9 @@ def run_voice(
                     "content": f"El JSON no es válido ({exc}). Devuelve solo el JSON corregido.",
                 }
             )
+    if isinstance(last_error, json.JSONDecodeError):
+        raise RuntimeError(
+            "El adaptador de voz no pudo leer una respuesta válida del proveedor "
+            f"tras {MAX_ATTEMPTS} intentos."
+        ) from last_error
     raise RuntimeError(f"El adaptador de voz no produjo un guion válido: {last_error}")

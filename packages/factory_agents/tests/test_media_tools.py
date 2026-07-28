@@ -28,7 +28,10 @@ class FakeClient:
 
     def _create(self, **kwargs):
         self.requests.append(kwargs)
-        message = SimpleNamespace(content=self._responses.pop(0), tool_calls=None)
+        result = self._responses.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        message = SimpleNamespace(content=result, tool_calls=None)
         return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
 
@@ -56,6 +59,27 @@ def test_voice_adapter_retries_then_fails():
     client = FakeClient(["no json", "tampoco", "nada"])
     with pytest.raises(RuntimeError, match="voz"):
         run_voice("guion", client=client, model="m")
+
+
+def test_voice_adapter_retries_malformed_provider_response():
+    error = json.JSONDecodeError("Expecting value", "", 0)
+    client = FakeClient([error, VALID_VOICE])
+
+    result = run_voice("guion", client=client, model="m")
+
+    assert isinstance(result, VoiceScript)
+    assert len(client.requests) == 2
+    assert client.requests[0]["messages"] == client.requests[1]["messages"]
+
+
+def test_voice_adapter_reports_repeated_malformed_provider_responses():
+    errors = [json.JSONDecodeError("Expecting value", "", 0) for _ in range(3)]
+    client = FakeClient(errors)
+
+    with pytest.raises(RuntimeError, match="respuesta válida del proveedor"):
+        run_voice("guion", client=client, model="m")
+
+    assert len(client.requests) == 3
 
 
 class CountingProvider:
