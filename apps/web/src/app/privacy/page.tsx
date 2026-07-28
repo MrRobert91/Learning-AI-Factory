@@ -48,9 +48,14 @@ export default function PrivacyPage() {
               </span>
             </span>
           </Link>
-          <Link href="/" className="btn-secondary btn-sm">
-            Ir a la aplicación
-          </Link>
+          <div className="flex flex-wrap items-center gap-2">
+            <Link href="/terms" className="btn-secondary btn-sm">
+              Condiciones del servicio
+            </Link>
+            <Link href="/" className="btn-secondary btn-sm">
+              Ir a la aplicación
+            </Link>
+          </div>
         </header>
 
         <section className="card relative mb-8 overflow-hidden bg-[var(--paper-sheet)] p-6 sm:p-10">
@@ -446,12 +451,20 @@ export default function PrivacyPage() {
 
         <footer className="mt-8 flex flex-col items-center justify-between gap-3 border-t-2 border-[#241d18] py-6 text-xs font-semibold text-zinc-500 sm:flex-row">
           <p>© 2026 RustyRoboz Labs · AI Learning Factory</p>
-          <Link
-            href="/"
-            className="text-[var(--rust-deep)] underline decoration-2 underline-offset-2 hover:text-[var(--rust)]"
-          >
-            Volver a la aplicación
-          </Link>
+          <div className="flex flex-wrap items-center justify-center gap-4">
+            <Link
+              href="/terms"
+              className="text-[var(--rust-deep)] underline decoration-2 underline-offset-2 hover:text-[var(--rust)]"
+            >
+              Condiciones del servicio
+            </Link>
+            <Link
+              href="/"
+              className="text-[var(--rust-deep)] underline decoration-2 underline-offset-2 hover:text-[var(--rust)]"
+            >
+              Volver a la aplicación
+            </Link>
+          </div>
         </footer>
       </div>
     </main>

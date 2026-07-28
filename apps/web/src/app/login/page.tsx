@@ -113,7 +113,14 @@ export default function LoginPage() {
             </button>
           </form>
           <p className="mt-7 text-center text-xs text-zinc-500">
-            Al usar la aplicación, tus datos se tratan según nuestra{" "}
+            Al usar la aplicación, aceptas las{" "}
+            <Link
+              href="/terms"
+              className="font-semibold text-[var(--rust-deep)] underline decoration-2 underline-offset-2 hover:text-[var(--rust)]"
+            >
+              condiciones del servicio
+            </Link>{" "}
+            y confirmas que has leído la{" "}
             <Link
               href="/privacy"
               className="font-semibold text-[var(--rust-deep)] underline decoration-2 underline-offset-2 hover:text-[var(--rust)]"

@@ -53,7 +53,11 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
 
-  if (pathname === "/login" || pathname === "/privacy") {
+  if (
+    pathname === "/login" ||
+    pathname === "/privacy" ||
+    pathname === "/terms"
+  ) {
     return <>{children}</>;
   }
 
@@ -97,6 +101,13 @@ export default function AppShell({ children }: { children: ReactNode }) {
           </span>
         </Link>
         <nav className="flex flex-1 flex-col gap-1.5">{nav}</nav>
+        <Link
+          href="/terms"
+          className="mb-1 flex items-center gap-3 rounded-md border-2 border-transparent px-3 py-2 text-sm font-semibold text-zinc-500 transition-all hover:border-[#241d18] hover:bg-[#f2e9d8] hover:text-zinc-200"
+        >
+          <IconFileText size={17} />
+          <span className="hidden lg:inline">Condiciones</span>
+        </Link>
         <Link
           href="/privacy"
           className="mb-1 flex items-center gap-3 rounded-md border-2 border-transparent px-3 py-2 text-sm font-semibold text-zinc-500 transition-all hover:border-[#241d18] hover:bg-[#f2e9d8] hover:text-zinc-200"

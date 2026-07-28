@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 const SESSION_COOKIE = "factory_session";
-const PUBLIC_PATHS = new Set(["/login", "/privacy"]);
+const PUBLIC_PATHS = new Set(["/login", "/privacy", "/terms"]);
 
 // Cheap presence check only — the API verifies the cookie signature on every
 // request. This just keeps unauthenticated visitors out of app pages.
