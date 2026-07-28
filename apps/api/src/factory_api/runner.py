@@ -1743,6 +1743,7 @@ def run_video_job(job_id: str, payload: dict) -> dict:
         synthesize_cached_with_status,
     )
     from factory_agents.tools.video import (
+        FFmpegPolicy,
         build_srt,
         burn_subtitles,
         compose_video,
@@ -1751,6 +1752,13 @@ def run_video_job(job_id: str, payload: dict) -> dict:
     )
 
     settings = get_settings()
+    ffmpeg_policy = FFmpegPolicy(
+        threads=settings.ffmpeg_threads,
+        filter_threads=settings.ffmpeg_filter_threads,
+        filter_complex_threads=settings.ffmpeg_filter_complex_threads,
+        preset=settings.ffmpeg_preset,
+        crf=settings.ffmpeg_crf,
+    )
     voices = _latest_by_base(payload["project_id"], "voice_script")
     decks = _latest_by_base(payload["project_id"], "slide_deck")
     if not voices:
@@ -1937,7 +1945,44 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                 f"Montando vídeo {orientation} de {base} (ffmpeg)…",
             )
             out_mp4 = workdir / "lesson.mp4"
-            compose_video(pairs, out_mp4, workdir / "segments", orientation=orientation)
+
+            def check_ffmpeg_control(
+                compose_unit: str = compose_unit,
+                base: str = base,
+            ) -> None:
+                checkpoint(
+                    job_id,
+                    "video-compose",
+                    current_unit=compose_unit,
+                    next_unit=compose_unit,
+                    message=f"FFmpeg activo para {base}",
+                )
+
+            def complete_ffmpeg_segment(
+                index: int,
+                evidence: dict,
+                compose_unit: str = compose_unit,
+                base: str = base,
+            ) -> None:
+                segment_unit = f"{compose_unit}:segment:{index + 1:03d}"
+                _complete_unit(
+                    job_id,
+                    "video-compose",
+                    segment_unit,
+                    evidence,
+                    next_unit=compose_unit,
+                    message=f"Segmento MP4 {index + 1} de {base} validado",
+                )
+
+            compose_video(
+                pairs,
+                out_mp4,
+                workdir / "segments",
+                orientation=orientation,
+                policy=ffmpeg_policy,
+                control_check=check_ffmpeg_control,
+                on_segment_complete=complete_ffmpeg_segment,
+            )
             if subtitles_mode == "burned_and_srt":
                 append_event(job_id, "stage", f"Incrustando subtítulos de {base}…")
                 out_mp4, subtitle_style = burn_subtitles(
@@ -1946,6 +1991,8 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                     workdir / "lesson-subtitled.mp4",
                     orientation=orientation,
                     logo_metadata=(artifact_metadata(deck).get("logo") or {}),
+                    policy=ffmpeg_policy,
+                    control_check=check_ffmpeg_control,
                 )
             record_usage(
                 job_id=job_id,
@@ -1958,7 +2005,10 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                 cost_source="provider_actual",
                 work_unit_key=f"video:{base}:ffmpeg",
                 idempotency_key=f"{job_id}:video:{base}:ffmpeg",
-                metadata={"local_operation": True},
+                metadata={
+                    "local_operation": True,
+                    "ffmpeg_policy": ffmpeg_policy.as_dict(),
+                },
             )
             _complete_unit(
                 job_id,
@@ -2001,6 +2051,7 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                 "orientation": orientation,
                 "width": width,
                 "height": height,
+                "ffmpeg_policy": ffmpeg_policy.as_dict(),
                 "slide_orientation": artifact_metadata(deck).get("orientation", "horizontal"),
                 "slide_deck_id": deck.id,
                 "voice_script_id": voice_artifact.id,
@@ -2161,6 +2212,8 @@ def _publish_course_video_artifacts(
 
 def run_course_video_job(job_id: str, payload: dict) -> dict:
     """Build one verified, versioned course video from selected lesson videos."""
+    from factory_agents.tools.video import FFmpegPolicy
+
     from factory_api.course_video import (
         build_chapter_manifest,
         build_preflight,
@@ -2176,6 +2229,13 @@ def run_course_video_job(job_id: str, payload: dict) -> dict:
     from factory_api.models import Project
 
     settings = get_settings()
+    ffmpeg_policy = FFmpegPolicy(
+        threads=settings.ffmpeg_threads,
+        filter_threads=settings.ffmpeg_filter_threads,
+        filter_complex_threads=settings.ffmpeg_filter_complex_threads,
+        preset=settings.ffmpeg_preset,
+        crf=settings.ffmpeg_crf,
+    )
     project_id = payload["project_id"]
     include_subtitles = bool(payload.get("include_subtitles", True))
     include_chapters = bool(payload.get("include_chapters", True))
@@ -2319,6 +2379,16 @@ def run_course_video_job(job_id: str, payload: dict) -> dict:
             "stage",
             f"Concatenando {len(preflight.inputs)} vídeos con transición {transition}…",
         )
+
+        def check_ffmpeg_control() -> None:
+            checkpoint(
+                job_id,
+                "course-video-concat",
+                current_unit=compose_unit,
+                next_unit=compose_unit,
+                message="FFmpeg activo para el vídeo completo",
+            )
+
         concat_course_videos(
             [item.video_path for item in preflight.inputs],
             out_path,
@@ -2326,6 +2396,8 @@ def run_course_video_job(job_id: str, payload: dict) -> dict:
             transition=transition,
             durations=durations,
             chapters=manifest["embedded_chapters"] if include_chapters else None,
+            policy=ffmpeg_policy,
+            control_check=check_ffmpeg_control,
         )
         record_usage(
             job_id=job_id,
@@ -2337,7 +2409,11 @@ def run_course_video_job(job_id: str, payload: dict) -> dict:
             cost_source="provider_actual",
             work_unit_key="course-video:concat",
             idempotency_key=f"{job_id}:course-video:concat",
-            metadata={"local_operation": True, "transition": transition},
+            metadata={
+                "local_operation": True,
+                "transition": transition,
+                "ffmpeg_policy": ffmpeg_policy.as_dict(),
+            },
         )
         _complete_unit(
             job_id,
@@ -2442,6 +2518,7 @@ def run_course_video_job(job_id: str, payload: dict) -> dict:
             "orientation": public["orientation"],
             "width": public["width"],
             "height": public["height"],
+            "ffmpeg_policy": ffmpeg_policy.as_dict(),
             "duration_seconds": float(output_media["duration_seconds"]),
             "video_codec": output_media.get("video_codec"),
             "audio_codec": output_media.get("audio_codec"),

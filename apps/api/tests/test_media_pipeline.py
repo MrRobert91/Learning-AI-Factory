@@ -247,7 +247,7 @@ def test_video_job_with_mocked_media_tools(auth_client, monkeypatch, tmp_path):
             paths.append(p)
         return paths
 
-    def fake_compose(pairs, out_path, workdir, orientation="horizontal"):
+    def fake_compose(pairs, out_path, workdir, orientation="horizontal", **_kwargs):
         composed_orientations.append(orientation)
         out = Path(out_path)
         out.parent.mkdir(parents=True, exist_ok=True)

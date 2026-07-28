@@ -39,7 +39,10 @@ Tests y lint: `make test` · `make lint`
   sandbox) y Diseñador de slides (Marp → HTML/PDF/PPTX).
 - **Pipeline multimodal**: Guionista docente (amplía las slides como un
   profesor), Adaptador de voz, narración TTS (OpenAI, con caché por segmento)
-  y montaje de vídeo con ffmpeg (MP4 + subtítulos SRT + capítulos).
+  y montaje de vídeo con ffmpeg (MP4 + subtítulos SRT + capítulos). FFmpeg
+  limita por defecto encoder y filtros a un thread; `FFMPEG_THREADS`,
+  `FFMPEG_FILTER_THREADS`, `FFMPEG_FILTER_COMPLEX_THREADS`, `FFMPEG_PRESET` y
+  `FFMPEG_CRF` permiten ajustar la política sin cambiar los FPS.
 - **Publicación en YouTube**: el Publicador prepara título, descripción con
   capítulos, tags y miniatura (plantilla HTML → PNG); la subida usa OAuth y
   **siempre** requiere tu confirmación explícita (ver `docs/YOUTUBE.md`).
