@@ -355,7 +355,7 @@ def list_project_artifacts(project_id: str, user: CurrentUser, db: DB):
     artifacts = db.scalars(
         select(Artifact)
         .where(Artifact.project_id == project_id, Artifact.is_selected.is_(True))
-        .order_by(Artifact.created_at)
+        .order_by(Artifact.created_at.desc(), Artifact.id.desc())
     ).all()
     return [_artifact_read(db, a, include_content=False) for a in artifacts]
 

@@ -269,6 +269,13 @@ function orientationLabel(metadata: Record<string, unknown>): string | null {
       : null;
 }
 
+function durationLabel(value: unknown): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return null;
+  const minutes = Math.floor(value / 60);
+  const seconds = Math.round(value % 60);
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
 function paletteLabel(metadata: Record<string, unknown>): string | null {
   const labels: Record<string, string> = {
     factory: "Factory",
@@ -757,12 +764,6 @@ export default function FactoryPanel({
     artifactFilter === "all"
       ? artifacts
       : artifacts.filter((artifact) => artifact.type === artifactFilter);
-  const artifactGroups = artifactFilterOptions
-    .map((type) => ({
-      type,
-      artifacts: filteredArtifacts.filter((artifact) => artifact.type === type),
-    }))
-    .filter((group) => group.artifacts.length > 0);
 
   const canPause =
     activeRun?.status === "queued" ||
@@ -1521,86 +1522,103 @@ export default function FactoryPanel({
           No hay artefactos del tipo seleccionado.
         </div>
       ) : (
-        <div className="space-y-6">
-          {artifactGroups.map((group) => (
-            <section key={group.type}>
-              <div className="mb-2 flex items-center gap-2">
-                <span className="text-indigo-300">{artifactIcon(group.type)}</span>
-                <h4 className="text-sm font-semibold text-zinc-200">
-                  {TYPE_LABELS[group.type] ?? group.type}
-                </h4>
-                <span className="badge-neutral">{group.artifacts.length}</span>
-              </div>
-              <ul className="grid gap-2 sm:grid-cols-2">
-                {group.artifacts.map((artifact) => (
-                  <li key={artifact.id}>
-                    <div className="card card-hover flex items-center gap-2 px-3 py-3 text-sm">
-                      <Link
-                        href={"/artifacts/" + artifact.id}
-                        className="flex min-w-0 flex-1 items-center gap-3"
-                      >
-                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-zinc-300 bg-[#f4ead7] text-indigo-500">
-                          {artifactIcon(artifact.type)}
+        <ul className="grid gap-2 sm:grid-cols-2">
+          {filteredArtifacts.map((artifact) => {
+            const producerRun = artifact.created_by_job_id
+              ? runs.find((run) => run.id === artifact.created_by_job_id)
+              : undefined;
+            const producerLabel = producerRun
+              ? KIND_LABELS[producerRun.kind] ?? producerRun.kind
+              : artifact.created_by_job_id
+                ? "Job"
+                : null;
+            const duration = durationLabel(artifact.metadata.duration_seconds);
+            return (
+              <li key={artifact.id}>
+                <div className="card card-hover flex items-center gap-2 px-3 py-3 text-sm">
+                  <Link
+                    href={"/artifacts/" + artifact.id}
+                    className="flex min-w-0 flex-1 items-center gap-3"
+                  >
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-zinc-300 bg-[#f4ead7] text-indigo-500">
+                      {artifactIcon(artifact.type)}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="mb-1 flex flex-wrap items-center gap-1.5">
+                        <span className="badge-neutral">
+                          {TYPE_LABELS[artifact.type] ?? artifact.type}
                         </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate font-medium text-zinc-200">
-                            {artifact.title || artifact.type}
-                          </span>
-                          <span className="block text-xs text-zinc-500">
-                            {new Date(artifact.created_at).toLocaleString("es")}
-                            {orientationLabel(artifact.metadata)
-                              ? ` · ${orientationLabel(artifact.metadata)}`
-                              : ""}
-                            {paletteLabel(artifact.metadata)
-                              ? ` · ${paletteLabel(artifact.metadata)}`
-                              : ""}
-                          </span>
+                        <span className="badge-success">Activa · v{artifact.version}</span>
+                      </span>
+                      <span className="block truncate font-medium text-zinc-200">
+                        {artifact.title || artifact.type}
+                      </span>
+                      <span className="block text-xs text-zinc-500">
+                        <time
+                          dateTime={artifact.created_at}
+                          title={new Date(artifact.created_at).toISOString()}
+                        >
+                          {new Date(artifact.created_at).toLocaleString("es")}
+                        </time>
+                        {orientationLabel(artifact.metadata)
+                          ? ` · ${orientationLabel(artifact.metadata)}`
+                          : ""}
+                        {duration ? ` · ${duration}` : ""}
+                        {paletteLabel(artifact.metadata)
+                          ? ` · ${paletteLabel(artifact.metadata)}`
+                          : ""}
+                      </span>
+                      {producerLabel && artifact.created_by_job_id && (
+                        <span
+                          className="block truncate text-[11px] text-zinc-600"
+                          title={artifact.created_by_job_id}
+                        >
+                          {producerLabel} · job {artifact.created_by_job_id.slice(0, 8)}
                         </span>
-                      </Link>
-                      <select
-                        value={artifact.id}
-                        onChange={(event) => chooseArtifact(event.target.value)}
-                        className="input max-w-32 shrink-0 px-2 py-1.5 text-xs"
-                        aria-label={
-                          "Versión activa de " +
-                          (artifact.title || artifact.type)
-                        }
-                        title="La versión elegida será la que consuman los siguientes agentes"
-                      >
-                        {artifact.versions.map((version) => (
-                          <option key={version.id} value={version.id}>
-                            v{version.version}
-                            {orientationLabel(version.metadata)
-                              ? ` · ${orientationLabel(version.metadata)}`
-                              : ""}
-                            {paletteLabel(version.metadata)
-                              ? ` · ${paletteLabel(version.metadata)}`
-                              : ""}
-                            {version.is_selected ? " · activa" : ""}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        onClick={() => setArtifactToDelete(artifact)}
-                        className="btn-ghost btn-sm shrink-0 text-red-300 hover:text-red-200"
-                        aria-label={
-                          "Eliminar versión " +
-                          artifact.version +
-                          " de " +
-                          (artifact.title || artifact.type)
-                        }
-                        title={"Eliminar la versión activa v" + artifact.version}
-                      >
-                        <IconTrash size={14} />
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ))}
-        </div>
+                      )}
+                    </span>
+                  </Link>
+                  <select
+                    value={artifact.id}
+                    onChange={(event) => chooseArtifact(event.target.value)}
+                    className="input max-w-32 shrink-0 px-2 py-1.5 text-xs"
+                    aria-label={
+                      "Versión activa de " + (artifact.title || artifact.type)
+                    }
+                    title="La versión elegida será la que consuman los siguientes agentes"
+                  >
+                    {artifact.versions.map((version) => (
+                      <option key={version.id} value={version.id}>
+                        v{version.version}
+                        {orientationLabel(version.metadata)
+                          ? ` · ${orientationLabel(version.metadata)}`
+                          : ""}
+                        {paletteLabel(version.metadata)
+                          ? ` · ${paletteLabel(version.metadata)}`
+                          : ""}
+                        {version.is_selected ? " · activa" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => setArtifactToDelete(artifact)}
+                    className="btn-ghost btn-sm shrink-0 text-red-300 hover:text-red-200"
+                    aria-label={
+                      "Eliminar versión " +
+                      artifact.version +
+                      " de " +
+                      (artifact.title || artifact.type)
+                    }
+                    title={"Eliminar la versión activa v" + artifact.version}
+                  >
+                    <IconTrash size={14} />
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
       )}
       <ConfirmDialog
         open={confirmCancel}
