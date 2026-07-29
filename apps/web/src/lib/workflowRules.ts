@@ -1,5 +1,5 @@
 import type { WorkflowStep } from "@/lib/api";
-import agentContracts from "../../../../packages/factory_agents/src/factory_agents/contracts/agent_io.json";
+import agentContracts from "@/lib/agent_io.generated.json";
 
 export const WORKFLOW_AGENTS = Object.keys(agentContracts) as Array<
   keyof typeof agentContracts

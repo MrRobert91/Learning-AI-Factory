@@ -62,7 +62,9 @@ docker compose up --build                # stack completo (2 contenedores)
   `curator`. La compatibilidad entre pasos depende de los artefactos disponibles
   y se define una sola vez en
   `packages/factory_agents/src/factory_agents/contracts/agent_io.json`;
-  `workflowRules.ts` y `factory_api.workflow_engine` consumen esa misma matriz.
+  `factory_api.workflow_engine` la consume directamente y el contexto Docker
+  aislado de web usa `apps/web/src/lib/agent_io.generated.json`, un espejo cuya
+  igualdad exacta exige la suite backend. `workflowRules.ts` consume ese espejo.
   Las acciones contextuales de las tarjetas congelan los IDs seleccionados al
   crear el job, rechazan una selección obsoleta y restauran la selección de
   outputs anterior si una regeneración falla o se cancela.

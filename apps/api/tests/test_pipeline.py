@@ -1,7 +1,12 @@
 import json
+from pathlib import Path
 
 from factory_agents.contracts import CoursePlan
-from factory_agents.contracts.agent_io import AGENT_INPUTS, AGENT_OUTPUTS
+from factory_agents.contracts.agent_io import (
+    AGENT_CONTRACTS,
+    AGENT_INPUTS,
+    AGENT_OUTPUTS,
+)
 from factory_agents.runtime import RunEvent
 from factory_api.artifact_versions import add_artifact_version
 from factory_api.db import SessionLocal
@@ -164,6 +169,10 @@ def test_unknown_agent_rejected(auth_client):
 def test_agent_contract_matrix_is_canonical():
     assert AGENT_INPUTS["slides"] == ("course_plan", "lesson_content")
     assert AGENT_OUTPUTS["video"] == ("video", "subtitles")
+    web_contracts = json.loads(
+        Path("apps/web/src/lib/agent_io.generated.json").read_text(encoding="utf-8")
+    )
+    assert web_contracts == AGENT_CONTRACTS
 
 
 def test_contextual_run_revalidates_and_freezes_selected_inputs(
