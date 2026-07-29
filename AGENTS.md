@@ -97,6 +97,12 @@ docker compose up --build                # stack completo (2 contenedores)
   el job concatena sin LLM/TTS, ajusta SRT/capítulos a la transición, valida la
   salida con ffprobe y solo entonces publica `course_video` y sus asociados
   versionados. Inputs y opciones idénticos reutilizan la versión válida.
+- **FFmpeg**: toda recodificación `libx264` usa la política efectiva
+  `FFMPEG_THREADS`/`FFMPEG_FILTER_THREADS`/`FFMPEG_FILTER_COMPLEX_THREADS`,
+  `FFMPEG_PRESET` y `FFMPEG_CRF`. La composición de lecciones precompone una
+  imagen estática cuando necesita fondo, publica cada segmento MP4 de forma
+  atómica con firma/manifiesto y `ffprobe`, y el runner debe pasar control
+  cooperativo para terminar el grupo FFmpeg activo al pausar o cancelar.
 - **Imágenes de slides**: son opcionales y se configuran/versionan en el perfil
   de `slides` (modelo OpenRouter + preset o prompt personalizado). El agente
   selecciona como máximo 6 por lección y solo puede pedir composición lateral

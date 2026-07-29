@@ -1,7 +1,9 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from factory_agents.tools.sandbox import SandboxMode
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -38,6 +40,23 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     tts_voice: str = "nova"
     tts_model: str = "gpt-4o-mini-tts"
+
+    # Bounded FFmpeg policy for every libx264 encoding path.
+    ffmpeg_threads: int = Field(default=1, ge=1)
+    ffmpeg_filter_threads: int = Field(default=1, ge=1)
+    ffmpeg_filter_complex_threads: int = Field(default=1, ge=1)
+    ffmpeg_preset: Literal[
+        "ultrafast",
+        "superfast",
+        "veryfast",
+        "faster",
+        "fast",
+        "medium",
+        "slow",
+        "slower",
+        "veryslow",
+    ] = "veryfast"
+    ffmpeg_crf: int = Field(default=23, ge=0, le=51)
 
     # Max LangGraph super-steps per task-agent run (agent node + tool node
     # count as 2 steps per ReAct loop, so this caps the model↔tool round trips
