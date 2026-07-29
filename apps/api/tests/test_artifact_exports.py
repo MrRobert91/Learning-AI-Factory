@@ -434,7 +434,10 @@ def test_regenerating_one_slide_image_creates_self_contained_deck_version(
     assert regenerated["id"] != artifact["id"]
     assert regenerated["version"] == 2
     assert regenerated["metadata"]["images"][0]["prompt"] == "A new visual metaphor"
+    assert regenerated["metadata"]["images"][0]["requested_layout"] == "right"
+    assert regenerated["metadata"]["images"][0]["effective_layout"] == "right"
     assert "slide-assets-regen-" in regenerated["content"]
+    assert "factory-side-image-layout:start" in regenerated["content"]
 
     new_image = auth_client.get(
         f"/api/artifacts/{regenerated['id']}/images/slide-1"

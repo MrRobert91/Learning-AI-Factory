@@ -52,10 +52,11 @@ Generación de imágenes activada:
 - Evita portada, slides centradas en código y resumen, salvo que la imagen aporte valor claro.
 - Para cada imagen inserta un comentario JSON válido en la posición de la slide.
   Ejemplo: <!-- factory-image {"prompt":"visual prompt","layout":"right","alt":"concept"} -->
-- `layout` solo puede ser `left`, `right` o `background`. Prefiere `left`/`right`; usa
-  `background` únicamente cuando el texto siga siendo perfectamente legible.
+- `layout` solo puede ser `left` o `right`; nunca uses una imagen generada como fondo.
+- Reduce la densidad del texto para dejar una columna amplia y legible junto al panel visual.
 - El prompt debe ilustrar el concepto concreto de esa slide, describir sujeto, acción,
   composición y metáfora visual, estar escrito en inglés y no incluir instrucciones de estilo.
+- La imagen no debe contener texto, letras, etiquetas, captions ni elementos de interfaz.
 - No escribas rutas, Markdown de imagen ni URLs: el sistema sustituirá el comentario por el asset.
 """
 

@@ -123,6 +123,8 @@ interface SlideImageMetadata {
   slide: number;
   prompt: string;
   layout: "left" | "right" | "background";
+  requested_layout?: string;
+  effective_layout?: "left" | "right";
   model: string;
   style: string;
   status: "generated" | "failed";
@@ -728,7 +730,13 @@ export default function ArtifactViewerPage() {
                             <span className="font-semibold text-zinc-200">
                               Slide {image.slide}
                             </span>
-                            <span className="badge-neutral">{image.layout}</span>
+                            <span className="badge-neutral">
+                              {(image.effective_layout ?? image.layout) === "left"
+                                ? "Imagen a la izquierda"
+                                : (image.effective_layout ?? image.layout) === "right"
+                                  ? "Imagen a la derecha"
+                                  : "Imagen de fondo histórica"}
+                            </span>
                           </div>
                           <textarea
                             value={imagePrompts[image.id] ?? image.prompt}

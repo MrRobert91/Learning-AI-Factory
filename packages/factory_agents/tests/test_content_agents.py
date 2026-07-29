@@ -104,6 +104,18 @@ def test_slides_enforces_horizontal_canvas_and_removes_vertical_style():
     assert "1080px 1920px" not in result
 
 
+def test_slides_image_prompt_only_allows_side_panels():
+    client = FakeClient(["# Slide con imagen\n"])
+
+    run_slides("lección", client=client, model="m", images_enabled=True)
+
+    system_prompt = client.requests[0]["messages"][0]["content"]
+    assert "`layout` solo puede ser `left` o `right`" in system_prompt
+    assert "`background`" not in system_prompt
+    assert "no debe contener texto" in system_prompt
+    assert "columna amplia y legible" in system_prompt
+
+
 def test_clean_marp_output_plain():
     assert clean_marp_output("# Hola") == "# Hola\n"
 
