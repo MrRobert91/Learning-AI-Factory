@@ -7,6 +7,7 @@ import { api } from "@/lib/api";
 import {
   BrandMark,
   IconBot,
+  IconFileText,
   IconFolder,
   IconLightbulb,
   IconLogout,
@@ -52,7 +53,13 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
 
-  if (pathname === "/login") return <>{children}</>;
+  if (
+    pathname === "/login" ||
+    pathname === "/privacy" ||
+    pathname === "/terms"
+  ) {
+    return <>{children}</>;
+  }
 
   async function logout() {
     await api.logout().catch(() => {});
@@ -94,6 +101,20 @@ export default function AppShell({ children }: { children: ReactNode }) {
           </span>
         </Link>
         <nav className="flex flex-1 flex-col gap-1.5">{nav}</nav>
+        <Link
+          href="/terms"
+          className="mb-1 flex items-center gap-3 rounded-md border-2 border-transparent px-3 py-2 text-sm font-semibold text-zinc-500 transition-all hover:border-[#241d18] hover:bg-[#f2e9d8] hover:text-zinc-200"
+        >
+          <IconFileText size={17} />
+          <span className="hidden lg:inline">Condiciones</span>
+        </Link>
+        <Link
+          href="/privacy"
+          className="mb-1 flex items-center gap-3 rounded-md border-2 border-transparent px-3 py-2 text-sm font-semibold text-zinc-500 transition-all hover:border-[#241d18] hover:bg-[#f2e9d8] hover:text-zinc-200"
+        >
+          <IconFileText size={17} />
+          <span className="hidden lg:inline">Privacidad</span>
+        </Link>
         <button
           onClick={logout}
           className="flex items-center gap-3 rounded-md border-2 border-transparent px-3 py-2 text-sm font-semibold text-zinc-500 transition-all hover:border-[#241d18] hover:bg-[#f2e9d8] hover:text-zinc-200"
@@ -108,9 +129,17 @@ export default function AppShell({ children }: { children: ReactNode }) {
         <header className="sticky top-0 z-20 flex items-center gap-2 overflow-x-auto border-b-2 border-[#241d18] bg-[var(--paper-sheet)] px-4 py-3 sm:hidden">
           <BrandMark size={28} />
           <nav className="flex items-center gap-1">{nav}</nav>
+          <Link
+            href="/privacy"
+            className="ml-auto flex items-center rounded-lg p-2 text-zinc-500 hover:text-zinc-300"
+            aria-label="Política de privacidad"
+            title="Política de privacidad"
+          >
+            <IconFileText size={17} />
+          </Link>
           <button
             onClick={logout}
-            className="ml-auto flex items-center rounded-lg p-2 text-zinc-500 hover:text-zinc-300"
+            className="flex items-center rounded-lg p-2 text-zinc-500 hover:text-zinc-300"
             aria-label="Cerrar sesión"
           >
             <IconLogout size={17} />

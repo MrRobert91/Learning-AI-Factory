@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
 import { BrandMark, ErrorBanner, IconFlask, Spinner } from "@/components/ui";
@@ -111,6 +112,23 @@ export default function LoginPage() {
               {loading ? "Entrando…" : "Entrar al estudio"}
             </button>
           </form>
+          <p className="mt-7 text-center text-xs text-zinc-500">
+            Al usar la aplicación, aceptas las{" "}
+            <Link
+              href="/terms"
+              className="font-semibold text-[var(--rust-deep)] underline decoration-2 underline-offset-2 hover:text-[var(--rust)]"
+            >
+              condiciones del servicio
+            </Link>{" "}
+            y confirmas que has leído la{" "}
+            <Link
+              href="/privacy"
+              className="font-semibold text-[var(--rust-deep)] underline decoration-2 underline-offset-2 hover:text-[var(--rust)]"
+            >
+              política de privacidad
+            </Link>
+            .
+          </p>
         </div>
       </div>
     </main>
