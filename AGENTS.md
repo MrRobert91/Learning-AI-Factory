@@ -126,6 +126,12 @@ docker compose up --build                # stack completo (2 contenedores)
   una migración explícita; los overrides de PostCSS/Sharp son parches
   documentados y deben retirarse cuando Next los incorpore. Dependabot propone
   actualizaciones semanales a `dev`, sin auto-merge.
+- **Sandbox de Python**: el código generado se ejecuta con
+  `PYTHON_SANDBOX_MODE=isolated` bajo Landlock + seccomp, sin acceso a `/app` o
+  `/data` y sin syscalls de red/procesos/namespaces; el backend Docker corre
+  como usuario no root. Fuera de Docker el valor seguro es `disabled`;
+  `local-unsafe` debe elegirse explícitamente y nunca es fallback de un
+  aislamiento fallido.
 
 ## Convenciones
 

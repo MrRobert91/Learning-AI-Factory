@@ -39,6 +39,7 @@ from factory_api.run_control import (
     RunPaused,
     checkpoint,
     completed_unit,
+    is_cancel_requested,
     load_scope_state,
     recover_jobs,
     save_scope_state,
@@ -1072,6 +1073,7 @@ def run_lessons_job(job_id: str, payload: dict) -> dict:
                 work_unit_key=f"lesson:{mi}.{li}",
                 workflow_step=payload.get("_workflow_step"),
             ),
+            sandbox_cancel_requested=lambda: is_cancel_requested(job_id),
         ):
             if event.type == "result":
                 final_text = event.summary

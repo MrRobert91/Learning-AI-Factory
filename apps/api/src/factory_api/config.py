@@ -2,6 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from factory_agents.tools.sandbox import SandboxMode
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -19,6 +20,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     data_dir: Path = Path("./data")
+    # Disabled is the safe local default. Docker explicitly selects isolated.
+    python_sandbox_mode: SandboxMode = SandboxMode.DISABLED
 
     session_cookie_name: str = "factory_session"
     session_max_age_seconds: int = 60 * 60 * 24 * 30

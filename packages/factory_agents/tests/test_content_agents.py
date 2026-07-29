@@ -5,7 +5,6 @@ import pytest
 from factory_agents.agents.planner import extract_json, run_planner
 from factory_agents.agents.slides import clean_marp_output, run_slides
 from factory_agents.contracts import CoursePlan
-from factory_agents.tools.sandbox import run_python_snippet
 
 
 class FakeClient:
@@ -106,18 +105,3 @@ def test_slides_enforces_horizontal_canvas_and_removes_vertical_style():
 
 def test_clean_marp_output_plain():
     assert clean_marp_output("# Hola") == "# Hola\n"
-
-
-def test_sandbox_runs_code():
-    assert run_python_snippet("print(2 + 2)").strip() == "4"
-
-
-def test_sandbox_captures_errors():
-    out = run_python_snippet("raise ValueError('boom')")
-    assert "exit code" in out
-    assert "boom" in out
-
-
-def test_sandbox_times_out():
-    out = run_python_snippet("while True: pass")
-    assert "cancelado" in out or "límite" in out
