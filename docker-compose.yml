@@ -4,11 +4,15 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
+      args:
+        APP_UID: ${APP_UID:-10001}
+        APP_GID: ${APP_GID:-10001}
     environment:
       APP_PASSWORD: ${APP_PASSWORD:-changeme}
       SECRET_KEY: ${SECRET_KEY:-dev-secret-change-me}
       DATABASE_URL: sqlite:////data/db/factory.sqlite
       DATA_DIR: /data
+      PYTHON_SANDBOX_MODE: isolated
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-deepseek/deepseek-v4-flash}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}

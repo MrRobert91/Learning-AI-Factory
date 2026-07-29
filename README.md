@@ -11,6 +11,18 @@ cp .env.example .env   # ajusta APP_PASSWORD y SECRET_KEY
 docker compose up --build
 ```
 
+El backend se ejecuta como usuario sin privilegios (`APP_UID`/`APP_GID`, ambos
+`10001` por defecto). En Linux, el directorio enlazado `./data` debe ser
+escribible por esa identidad; se pueden ajustar ambos valores en `.env` para
+coincidir con el propietario del directorio sin recurrir a permisos globales.
+
+El código Python generado por agentes usa `PYTHON_SANDBOX_MODE=isolated` dentro
+de Docker: Landlock limita el filesystem y seccomp bloquea red, procesos,
+namespaces y syscalls peligrosas, además de los límites de recursos. Fuera de
+Docker la ejecución está deshabilitada por defecto. `local-unsafe` solo debe
+usarse de forma explícita en desarrollo y nunca se selecciona automáticamente
+si falla el aislamiento.
+
 - Frontend: http://localhost:3000
 - API (docs OpenAPI): http://localhost:8000/docs
 
