@@ -394,6 +394,7 @@ def seed_default_profiles(db: Session) -> None:
                 soul_md=spec.default_soul_md,
                 agents_md=spec.default_agents_md,
                 config_json=json.dumps(_profile_config(spec.name, None, None)),
+                active_version=1,
                 is_default=True,
             )
             db.add(profile)
@@ -430,6 +431,7 @@ def _profile_read(p: AgentProfile) -> ProfileRead:
         **_slide_palette_field(config, p.agent_type),
         **_slide_logo_fields(config, p.agent_type),
         version=p.version,
+        active_version=p.active_version,
         is_default=p.is_default,
         created_at=p.created_at,
         updated_at=p.updated_at,
@@ -550,6 +552,7 @@ def create_profile(agent_type: str, body: ProfileCreate, user: CurrentUser, db: 
         soul_md=body.soul_md,
         agents_md=body.agents_md,
         config_json=json.dumps(config, ensure_ascii=False),
+        active_version=1,
     )
     db.add(profile)
     db.flush()
@@ -658,7 +661,7 @@ def preview_profile_tts(
         metadata={
             "preview": True,
             "profile_id": profile.id,
-            "profile_version": profile.version,
+            "profile_version": profile.active_version,
             "language": resolved["tts_language_effective"],
             "voice": resolved["tts_voice"],
             "request_format": resolved["tts_format"],
@@ -691,6 +694,7 @@ def list_profile_versions(profile_id: str, user: CurrentUser, db: DB):
         result.append(
             ProfileVersionRead(
                 version=item.version,
+                is_active=item.version == profile.active_version,
                 soul_md=item.soul_md,
                 agents_md=item.agents_md,
                 model=config.get("model"),
@@ -708,6 +712,72 @@ def list_profile_versions(profile_id: str, user: CurrentUser, db: DB):
             )
         )
     return result
+
+
+def _validate_profile_version_assets(profile: AgentProfile, config: dict) -> None:
+    if profile.agent_type != "slides" or config.get("logo_mode", "none") == "none":
+        return
+    _validate_slide_logo_config(profile.agent_type, config)
+    active_logo_id = config.get("active_logo_id")
+    candidate = next(
+        (
+            item
+            for item in config.get("logo_candidates", [])
+            if item.get("id") == active_logo_id
+        ),
+        None,
+    )
+    asset_paths = (
+        [candidate.get("path"), candidate.get("thumbnail_path")]
+        if candidate is not None
+        else []
+    )
+    if not asset_paths or any(
+        stored_logo_path(str(relative_path or "")) is None
+        for relative_path in asset_paths
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "La versi\u00f3n no se puede activar porque el archivo de su logo "
+                "ya no est\u00e1 disponible"
+            ),
+        )
+
+
+@router.post(
+    "/profiles/{profile_id}/versions/{version}/activate",
+    response_model=ProfileRead,
+)
+def activate_profile_version(
+    profile_id: str,
+    version: int,
+    user: CurrentUser,
+    db: DB,
+):
+    profile = db.get(AgentProfile, profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Perfil no encontrado")
+    snapshot = db.scalars(
+        select(AgentProfileVersion).where(
+            AgentProfileVersion.profile_id == profile.id,
+            AgentProfileVersion.version == version,
+        )
+    ).first()
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Versi\u00f3n no encontrada")
+    config = json.loads(snapshot.config_json or "{}")
+    _validate_profile_version_assets(profile, config)
+    if profile.active_version == snapshot.version:
+        return _profile_read(profile)
+
+    profile.soul_md = snapshot.soul_md
+    profile.agents_md = snapshot.agents_md
+    profile.config_json = snapshot.config_json
+    profile.active_version = snapshot.version
+    db.commit()
+    db.refresh(profile)
+    return _profile_read(profile)
 
 
 @router.patch("/profiles/{profile_id}", response_model=ProfileRead)
@@ -803,6 +873,7 @@ def update_profile(profile_id: str, body: ProfileUpdate, user: CurrentUser, db: 
             other.is_default = other.id == profile.id
     if content_changed:
         profile.version += 1
+        profile.active_version = profile.version
         db.add(
             AgentProfileVersion(
                 profile_id=profile.id,
@@ -834,6 +905,7 @@ def _save_logo_candidate(
     config.setdefault("logo_candidates", []).append(candidate)
     profile.config_json = json.dumps(config, ensure_ascii=False)
     profile.version += 1
+    profile.active_version = profile.version
     db.add(
         AgentProfileVersion(
             profile_id=profile.id,
@@ -1022,6 +1094,7 @@ def delete_profile_logo(profile_id: str, logo_id: str, user: CurrentUser, db: DB
     ]
     profile.config_json = json.dumps(config, ensure_ascii=False)
     profile.version += 1
+    profile.active_version = profile.version
     db.add(
         AgentProfileVersion(
             profile_id=profile.id,

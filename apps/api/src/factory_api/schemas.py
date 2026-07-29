@@ -264,6 +264,7 @@ class ProfileRead(BaseModel):
     logo_visibility: LogoVisibility | None = None
     logo_candidates: list[LogoCandidateRead] | None = None
     version: int
+    active_version: int
     is_default: bool
     created_at: datetime
     updated_at: datetime
@@ -271,6 +272,7 @@ class ProfileRead(BaseModel):
 
 class ProfileVersionRead(BaseModel):
     version: int
+    is_active: bool
     soul_md: str
     agents_md: str
     model: str | None = None

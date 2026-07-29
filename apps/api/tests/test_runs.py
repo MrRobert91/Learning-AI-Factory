@@ -107,6 +107,40 @@ def test_curator_run_with_specific_profile(auth_client, monkeypatch):
     assert "Curso LLMs" in captured["task_input"]
 
 
+def test_run_freezes_the_active_historical_profile_version(auth_client, monkeypatch):
+    captured = {}
+
+    def spy_curator(task_input, **kwargs):
+        captured.update(kwargs)
+        yield RunEvent(type="result", summary="# Brief")
+
+    monkeypatch.setattr("factory_agents.agents.curator.run_curator", spy_curator)
+    profile = auth_client.post(
+        "/api/agents/curator/profiles",
+        json={"name": "Custom", "soul_md": "SOUL-v1", "agents_md": "AGENTS-v1"},
+    ).json()
+    auth_client.patch(
+        f"/api/agents/profiles/{profile['id']}",
+        json={"soul_md": "SOUL-v2", "agents_md": "AGENTS-v2"},
+    )
+    activation = auth_client.post(
+        f"/api/agents/profiles/{profile['id']}/versions/1/activate"
+    )
+    assert activation.status_code == 200
+
+    project = _create_project(auth_client)
+    job_id = auth_client.post(
+        f"/api/projects/{project['id']}/agent-runs",
+        json={"agent": "curator", "profile_id": profile["id"]},
+    ).json()["id"]
+    job = _wait_for_job(auth_client, job_id)
+
+    assert job["status"] == "done"
+    assert captured["soul_md"] == "SOUL-v1"
+    assert captured["agents_md"] == "AGENTS-v1"
+    assert job["review_policies"]["curator"]["profile_version"] == 1
+
+
 def test_run_events_sse(auth_client, monkeypatch):
     monkeypatch.setattr("factory_agents.agents.curator.run_curator", _fake_curator)
     project = _create_project(auth_client)

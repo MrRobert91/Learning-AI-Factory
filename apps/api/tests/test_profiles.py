@@ -3,6 +3,7 @@ import wave
 
 import pytest
 from factory_agents.tools.images import GeneratedImage
+from factory_api.logo_assets import stored_logo_path
 from PIL import Image
 
 
@@ -298,6 +299,7 @@ def test_profile_crud_and_versioning(auth_client):
     assert resp.status_code == 201
     profile = resp.json()
     assert profile["version"] == 1
+    assert profile["active_version"] == 1
 
     # Content change bumps version and snapshots it
     resp = auth_client.patch(
@@ -306,6 +308,7 @@ def test_profile_crud_and_versioning(auth_client):
     )
     assert resp.status_code == 200
     assert resp.json()["version"] == 2
+    assert resp.json()["active_version"] == 2
 
     # Name-only change does not bump version
     resp = auth_client.patch(
@@ -315,6 +318,7 @@ def test_profile_crud_and_versioning(auth_client):
 
     versions = auth_client.get(f"/api/agents/profiles/{profile['id']}/versions").json()
     assert [v["version"] for v in versions] == [2, 1]
+    assert [v["is_active"] for v in versions] == [True, False]
     assert versions[0]["note"] == "más humor"
 
     # Make it default, then deleting is refused
@@ -332,6 +336,108 @@ def test_profile_crud_and_versioning(auth_client):
     ][0]
     auth_client.patch(f"/api/agents/profiles/{factory['id']}", json={"is_default": True})
     assert auth_client.delete(f"/api/agents/profiles/{profile['id']}").status_code == 204
+
+
+def test_historical_profile_version_can_be_activated_and_edited(auth_client):
+    created = auth_client.post(
+        "/api/agents/curator/profiles",
+        json={
+            "name": "Curador con historial",
+            "soul_md": "SOUL-v1",
+            "agents_md": "AGENTS-v1",
+        },
+    ).json()
+    updated = auth_client.patch(
+        f"/api/agents/profiles/{created['id']}",
+        json={
+            "soul_md": "SOUL-v2",
+            "agents_md": "AGENTS-v2",
+            "note": "Segunda versión",
+        },
+    ).json()
+    assert updated["version"] == 2
+    assert updated["active_version"] == 2
+
+    activated = auth_client.post(
+        f"/api/agents/profiles/{created['id']}/versions/1/activate"
+    )
+    assert activated.status_code == 200
+    active = activated.json()
+    assert active["version"] == 2
+    assert active["active_version"] == 1
+    assert active["soul_md"] == "SOUL-v1"
+    assert active["agents_md"] == "AGENTS-v1"
+
+    repeated = auth_client.post(
+        f"/api/agents/profiles/{created['id']}/versions/1/activate"
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["active_version"] == 1
+    versions = auth_client.get(
+        f"/api/agents/profiles/{created['id']}/versions"
+    ).json()
+    assert [item["version"] for item in versions] == [2, 1]
+    assert [item["is_active"] for item in versions] == [False, True]
+
+    edited = auth_client.patch(
+        f"/api/agents/profiles/{created['id']}",
+        json={"soul_md": "SOUL-v3 desde v1", "note": "Editar la activa histórica"},
+    ).json()
+    assert edited["version"] == 3
+    assert edited["active_version"] == 3
+    assert edited["soul_md"] == "SOUL-v3 desde v1"
+    assert edited["agents_md"] == "AGENTS-v1"
+    versions = auth_client.get(
+        f"/api/agents/profiles/{created['id']}/versions"
+    ).json()
+    assert versions[0]["version"] == 3
+    assert versions[0]["agents_md"] == "AGENTS-v1"
+    assert versions[1]["agents_md"] == "AGENTS-v2"
+    assert sum(item["is_active"] for item in versions) == 1
+
+    missing = auth_client.post(
+        f"/api/agents/profiles/{created['id']}/versions/99/activate"
+    )
+    assert missing.status_code == 404
+
+
+def test_historical_profile_version_with_missing_logo_cannot_be_activated(auth_client):
+    profile = auth_client.post(
+        "/api/agents/slides/profiles",
+        json={"name": "Slides con logo histórico"},
+    ).json()
+    uploaded = auth_client.post(
+        f"/api/agents/profiles/{profile['id']}/logos/upload",
+        files={"file": ("marca.png", _logo_png(), "image/png")},
+    ).json()
+    logo_id = uploaded["logo_candidates"][0]["id"]
+    with_logo = auth_client.patch(
+        f"/api/agents/profiles/{profile['id']}",
+        json={"logo_mode": "uploaded", "active_logo_id": logo_id},
+    ).json()
+    assert with_logo["active_version"] == 3
+    without_logo = auth_client.patch(
+        f"/api/agents/profiles/{profile['id']}",
+        json={"logo_mode": "none", "active_logo_id": None},
+    ).json()
+    assert without_logo["active_version"] == 4
+
+    versions = auth_client.get(
+        f"/api/agents/profiles/{profile['id']}/versions"
+    ).json()
+    logo_version = next(item for item in versions if item["version"] == 3)
+    original = stored_logo_path(logo_version["logo_candidates"][0]["path"])
+    assert original is not None
+    original.unlink()
+
+    activation = auth_client.post(
+        f"/api/agents/profiles/{profile['id']}/versions/3/activate"
+    )
+    assert activation.status_code == 409
+    assert "logo" in activation.json()["detail"].lower()
+    current = auth_client.get(f"/api/agents/profiles/{profile['id']}").json()
+    assert current["active_version"] == 4
+    assert current["logo_mode"] == "none"
 
 
 def test_automatic_review_policy_is_validated_and_versioned(auth_client):

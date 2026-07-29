@@ -281,6 +281,7 @@ export interface AgentProfile {
   logo_visibility: LogoVisibility | null;
   logo_candidates: LogoCandidate[] | null;
   version: number;
+  active_version: number;
   is_default: boolean;
   created_at: string;
   updated_at: string;
@@ -288,6 +289,7 @@ export interface AgentProfile {
 
 export interface ProfileVersion {
   version: number;
+  is_active: boolean;
   soul_md: string;
   agents_md: string;
   model: string | null;
@@ -722,6 +724,10 @@ export const api = {
   getProfile: (id: string) => request<AgentProfile>(`/api/agents/profiles/${id}`),
   getProfileVersions: (id: string) =>
     request<ProfileVersion[]>(`/api/agents/profiles/${id}/versions`),
+  activateProfileVersion: (id: string, version: number) =>
+    request<AgentProfile>(`/api/agents/profiles/${id}/versions/${version}/activate`, {
+      method: "POST",
+    }),
   updateProfile: (
     id: string,
     input: Partial<
