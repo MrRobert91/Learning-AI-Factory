@@ -22,6 +22,16 @@ def _logo_raster(format_: str) -> bytes:
     return buffer.getvalue()
 
 
+def _logo_with_background(format_: str = "PNG") -> bytes:
+    buffer = io.BytesIO()
+    image = Image.new("RGB", (96, 72), "white")
+    for x in range(20, 76):
+        for y in range(18, 54):
+            image.putpixel((x, y), (178, 58, 38))
+    image.save(buffer, format=format_)
+    return buffer.getvalue()
+
+
 def _wav_audio() -> bytes:
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as audio:
@@ -57,6 +67,7 @@ def test_default_profiles_seeded(auth_client):
     assert slides[0]["logo_mode"] == "none"
     assert slides[0]["active_logo_id"] is None
     assert slides[0]["logo_placement"] == "top-right"
+    assert slides[0]["logo_background_mode"] == "opaque"
     assert slides[0]["logo_candidates"] == []
     assert videos[0]["orientation"] == "horizontal"
     assert slides[0]["automatic_review_enabled"] is False
@@ -190,6 +201,140 @@ def test_uploaded_logo_is_sanitized_versioned_and_protected(auth_client):
     ).json()
     assert versions[0]["active_logo_id"] == logo["id"]
     assert versions[0]["logo_visibility"]["content"] is False
+
+
+@pytest.mark.parametrize(
+    ("filename", "format_", "media_type"),
+    [
+        ("marca.png", "PNG", "image/png"),
+        ("marca.webp", "WEBP", "image/webp"),
+        ("marca.jpg", "JPEG", "image/jpeg"),
+    ],
+)
+def test_transparent_logo_preview_is_cached_then_versioned_without_changing_original(
+    auth_client, filename, format_, media_type
+):
+    profile = auth_client.post(
+        "/api/agents/slides/profiles", json={"name": f"Transparencia {format_}"}
+    ).json()
+    original_bytes = _logo_with_background(format_)
+    uploaded = auth_client.post(
+        f"/api/agents/profiles/{profile['id']}/logos/upload",
+        files={"file": (filename, original_bytes, media_type)},
+    ).json()
+    logo = uploaded["logo_candidates"][0]
+    version_before_preview = uploaded["version"]
+
+    preview = auth_client.post(
+        f"/api/agents/profiles/{profile['id']}/logos/{logo['id']}/transparent-preview"
+    )
+    assert preview.status_code == 200, preview.text
+    variant = preview.json()
+    assert variant["media_type"] == "image/png"
+    assert variant["source_sha256"] == logo["sha256"]
+    assert len(variant["sha256"]) == 64
+    assert (
+        auth_client.get(f"/api/agents/profiles/{profile['id']}").json()["version"]
+        == version_before_preview
+    )
+
+    transparent = auth_client.get(
+        f"/api/agents/profiles/{profile['id']}/logos/{logo['id']}"
+        "?variant=transparent"
+    )
+    assert transparent.status_code == 200
+    with Image.open(io.BytesIO(transparent.content)) as image:
+        assert image.mode == "RGBA"
+        assert image.getchannel("A").getextrema() == (0, 255)
+    original = auth_client.get(
+        f"/api/agents/profiles/{profile['id']}/logos/{logo['id']}"
+    )
+    assert original.content == original_bytes
+
+    selected = auth_client.patch(
+        f"/api/agents/profiles/{profile['id']}",
+        json={
+            "logo_mode": "uploaded",
+            "active_logo_id": logo["id"],
+            "logo_background_mode": "transparent",
+        },
+    )
+    assert selected.status_code == 200, selected.text
+    saved = selected.json()
+    assert saved["version"] == version_before_preview + 1
+    assert saved["logo_background_mode"] == "transparent"
+    saved_variant = saved["logo_candidates"][0]["transparent_variant"]
+    assert saved_variant["sha256"] == variant["sha256"]
+    assert saved_variant["source_sha256"] == logo["sha256"]
+
+    versions = auth_client.get(
+        f"/api/agents/profiles/{profile['id']}/versions"
+    ).json()
+    assert versions[0]["logo_background_mode"] == "transparent"
+    assert versions[-1]["logo_background_mode"] == "opaque"
+
+
+def test_transparent_logo_failure_does_not_change_active_profile(auth_client):
+    profile = auth_client.post(
+        "/api/agents/slides/profiles", json={"name": "Fondo no eliminable"}
+    ).json()
+    uploaded = auth_client.post(
+        f"/api/agents/profiles/{profile['id']}/logos/upload",
+        files={"file": ("solid.png", _logo_png(), "image/png")},
+    ).json()
+    logo = uploaded["logo_candidates"][0]
+    failed = auth_client.patch(
+        f"/api/agents/profiles/{profile['id']}",
+        json={
+            "logo_mode": "uploaded",
+            "active_logo_id": logo["id"],
+            "logo_background_mode": "transparent",
+        },
+    )
+    assert failed.status_code == 422
+    current = auth_client.get(f"/api/agents/profiles/{profile['id']}").json()
+    assert current["version"] == uploaded["version"]
+    assert current["active_version"] == uploaded["active_version"]
+    assert current["logo_mode"] == "none"
+    assert current["logo_background_mode"] == "opaque"
+
+
+def test_svg_transparent_preview_uses_rasterized_copy(
+    auth_client, monkeypatch
+):
+    rendered = Image.new("RGBA", (106, 82), (0, 0, 0, 0))
+    background = Image.open(io.BytesIO(_logo_with_background())).convert("RGBA")
+    rendered.alpha_composite(background, (5, 5))
+    monkeypatch.setattr(
+        "factory_api.logo_assets._rasterize_svg",
+        lambda path, width, height: rendered.copy(),
+    )
+    profile = auth_client.post(
+        "/api/agents/slides/profiles", json={"name": "Logo SVG transparente"}
+    ).json()
+    svg = (
+        b'<svg xmlns="http://www.w3.org/2000/svg" width="96" height="72">'
+        b'<rect width="96" height="72" fill="white"/>'
+        b'<rect x="20" y="18" width="56" height="36" fill="#b23a26"/>'
+        b"</svg>"
+    )
+    uploaded = auth_client.post(
+        f"/api/agents/profiles/{profile['id']}/logos/upload",
+        files={"file": ("marca.svg", svg, "image/svg+xml")},
+    ).json()
+    logo = uploaded["logo_candidates"][0]
+    preview = auth_client.post(
+        f"/api/agents/profiles/{profile['id']}/logos/{logo['id']}/transparent-preview"
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["media_type"] == "image/png"
+    transparent = auth_client.get(
+        f"/api/agents/profiles/{profile['id']}/logos/{logo['id']}"
+        "?variant=transparent"
+    )
+    with Image.open(io.BytesIO(transparent.content)) as image:
+        assert image.getchannel("A").getextrema() == (0, 255)
+        assert image.getpixel((0, 0))[3] == 0
 
 
 @pytest.mark.parametrize(

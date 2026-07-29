@@ -148,9 +148,27 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
     )
     slide_logo = None
     if config.get("logo_mode", "none") != "none" and logo_candidate is not None:
+        background_mode = config.get("logo_background_mode", "opaque")
+        transparent_variant = logo_candidate.get("transparent_variant") or {}
+        effective = (
+            transparent_variant
+            if background_mode == "transparent"
+            else logo_candidate
+        )
         slide_logo = {
             **logo_candidate,
             "mode": config.get("logo_mode"),
+            "background_mode": background_mode,
+            "original_path": logo_candidate.get("path"),
+            "original_media_type": logo_candidate.get("media_type"),
+            "original_width": logo_candidate.get("width"),
+            "original_height": logo_candidate.get("height"),
+            "original_sha256": logo_candidate.get("sha256"),
+            "effective_path": effective.get("path"),
+            "effective_media_type": effective.get("media_type"),
+            "effective_width": effective.get("width"),
+            "effective_height": effective.get("height"),
+            "effective_sha256": effective.get("sha256"),
             "placement": config.get("logo_placement", "top-right"),
             "size": config.get("logo_size", "small"),
             "margin_px": int(config.get("logo_margin_px", 32)),

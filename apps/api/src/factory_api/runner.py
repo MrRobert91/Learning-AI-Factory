@@ -1189,7 +1189,9 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
     if isinstance(slide_logo, dict):
         from factory_api.logo_assets import stored_logo_path
 
-        logo_source = stored_logo_path(str(slide_logo.get("path", "")))
+        logo_source = stored_logo_path(
+            str(slide_logo.get("effective_path") or slide_logo.get("path", ""))
+        )
         if logo_source is None:
             raise RuntimeError(
                 "El logo congelado del perfil ya no est\u00e1 disponible; "
@@ -1362,6 +1364,28 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
                 "width": slide_logo.get("width"),
                 "height": slide_logo.get("height"),
                 "sha256": slide_logo.get("sha256"),
+                "original_path": slide_logo.get("original_path")
+                or slide_logo.get("path"),
+                "original_media_type": slide_logo.get("original_media_type")
+                or slide_logo.get("media_type"),
+                "original_width": slide_logo.get("original_width")
+                or slide_logo.get("width"),
+                "original_height": slide_logo.get("original_height")
+                or slide_logo.get("height"),
+                "original_sha256": slide_logo.get("original_sha256")
+                or slide_logo.get("sha256"),
+                "effective_media_type": slide_logo.get("effective_media_type")
+                or slide_logo.get("media_type"),
+                "effective_width": slide_logo.get("effective_width")
+                or slide_logo.get("width"),
+                "effective_height": slide_logo.get("effective_height")
+                or slide_logo.get("height"),
+                "effective_sha256": slide_logo.get("effective_sha256")
+                or slide_logo.get("sha256"),
+                "background_mode": slide_logo.get("background_mode", "opaque"),
+                "background_removal": slide_logo.get("transparent_variant")
+                if slide_logo.get("background_mode") == "transparent"
+                else None,
                 "prompt": slide_logo.get("prompt"),
                 "model": slide_logo.get("model"),
                 "seed": slide_logo.get("seed"),

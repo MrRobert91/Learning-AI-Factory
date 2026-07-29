@@ -130,6 +130,16 @@ class AgentSpecRead(BaseModel):
     produces: list[str]
 
 
+class LogoTransparentVariantRead(BaseModel):
+    path: str
+    media_type: Literal["image/png"] = "image/png"
+    width: int
+    height: int
+    sha256: str
+    source_sha256: str
+    method: str
+
+
 class LogoCandidateRead(BaseModel):
     id: str
     source: Literal["uploaded", "generated"]
@@ -147,6 +157,7 @@ class LogoCandidateRead(BaseModel):
     created_at: datetime
     status: Literal["available", "error"] = "available"
     error: str | None = None
+    transparent_variant: LogoTransparentVariantRead | None = None
 
 
 class LogoVisibility(BaseModel):
@@ -196,6 +207,7 @@ class ProfileCreate(BaseModel):
     logo_size: Literal["small", "medium", "large"] | None = None
     logo_margin_px: int | None = Field(default=None, ge=0, le=128)
     logo_opacity: float | None = Field(default=None, ge=0, le=1)
+    logo_background_mode: Literal["opaque", "transparent"] | None = None
     logo_visibility: LogoVisibility | None = None
 
 
@@ -226,6 +238,7 @@ class ProfileUpdate(BaseModel):
     logo_size: Literal["small", "medium", "large"] | None = None
     logo_margin_px: int | None = Field(default=None, ge=0, le=128)
     logo_opacity: float | None = Field(default=None, ge=0, le=1)
+    logo_background_mode: Literal["opaque", "transparent"] | None = None
     logo_visibility: LogoVisibility | None = None
     is_default: bool | None = None
     note: str = ""
@@ -261,6 +274,7 @@ class ProfileRead(BaseModel):
     logo_size: Literal["small", "medium", "large"] | None = None
     logo_margin_px: int | None = None
     logo_opacity: float | None = None
+    logo_background_mode: Literal["opaque", "transparent"] | None = None
     logo_visibility: LogoVisibility | None = None
     logo_candidates: list[LogoCandidateRead] | None = None
     version: int
@@ -299,6 +313,7 @@ class ProfileVersionRead(BaseModel):
     logo_size: Literal["small", "medium", "large"] | None = None
     logo_margin_px: int | None = None
     logo_opacity: float | None = None
+    logo_background_mode: Literal["opaque", "transparent"] | None = None
     logo_visibility: LogoVisibility | None = None
     logo_candidates: list[LogoCandidateRead] | None = None
     note: str

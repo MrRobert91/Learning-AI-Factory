@@ -135,7 +135,11 @@ def test_slides_profile_copies_frozen_logo_into_every_deck(auth_client, monkeypa
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected image call")),
     )
     buffer = io.BytesIO()
-    Image.new("RGBA", (80, 60), (178, 58, 38, 255)).save(buffer, format="PNG")
+    logo_image = Image.new("RGB", (80, 60), "white")
+    for x in range(16, 64):
+        for y in range(12, 48):
+            logo_image.putpixel((x, y), (178, 58, 38))
+    logo_image.save(buffer, format="PNG")
 
     project = _create_project(auth_client)
     for agent in ("curator", "planner", "lessons"):
@@ -149,6 +153,10 @@ def test_slides_profile_copies_frozen_logo_into_every_deck(auth_client, monkeypa
         files={"file": ("marca.png", buffer.getvalue(), "image/png")},
     ).json()
     logo = profile["logo_candidates"][0]
+    preview = auth_client.post(
+        f"/api/agents/profiles/{profile['id']}/logos/{logo['id']}/transparent-preview"
+    )
+    assert preview.status_code == 200, preview.text
     profile = auth_client.patch(
         f"/api/agents/profiles/{profile['id']}",
         json={
@@ -156,6 +164,7 @@ def test_slides_profile_copies_frozen_logo_into_every_deck(auth_client, monkeypa
             "active_logo_id": logo["id"],
             "logo_placement": "bottom-right",
             "logo_size": "medium",
+            "logo_background_mode": "transparent",
         },
     ).json()
 
@@ -170,6 +179,11 @@ def test_slides_profile_copies_frozen_logo_into_every_deck(auth_client, monkeypa
         assert logo_metadata["source_logo_id"] == logo["id"]
         assert logo_metadata["profile_version"] == profile["version"]
         assert logo_metadata["placement"] == "bottom-right"
+        assert logo_metadata["background_mode"] == "transparent"
+        assert logo_metadata["effective_media_type"] == "image/png"
+        assert logo_metadata["original_sha256"] == logo["sha256"]
+        assert logo_metadata["effective_sha256"] != logo["sha256"]
+        assert logo_metadata["background_removal"]["source_sha256"] == logo["sha256"]
         deck = auth_client.get(f"/api/artifacts/{slide['id']}").json()
         assert "factory-logo:start" in deck["content"]
         assert "brand-logo.png" in deck["content"]
