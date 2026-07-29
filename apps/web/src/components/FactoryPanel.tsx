@@ -39,6 +39,15 @@ import {
   IconX,
   Spinner,
 } from "@/components/ui";
+import {
+  AGENT_INPUTS,
+  AGENT_NAMES,
+  AGENT_OUTPUTS,
+  contextualArtifactActions,
+  WORKFLOW_AGENTS,
+  type ContextualArtifactAction,
+  type WorkflowAgent,
+} from "@/lib/workflowRules";
 
 const STATUS_BADGE: Record<Job["status"], { label: string; className: string }> = {
   queued: { label: "En cola", className: "badge-neutral" },
@@ -69,7 +78,7 @@ const KIND_LABELS: Record<string, string> = {
 };
 
 const STAGES: {
-  agent: string;
+  agent: WorkflowAgent;
   label: string;
   description: string;
   produces: string;
@@ -79,70 +88,61 @@ const STAGES: {
     agent: "curator",
     label: "Curador",
     description: "Investiga el tema y produce un brief documentado",
-    produces: "research_brief",
-    consumes: [],
+    produces: AGENT_OUTPUTS.curator[0],
+    consumes: AGENT_INPUTS.curator,
   },
   {
     agent: "planner",
     label: "Plan del curso",
     description: "Estructura el curso en módulos y lecciones",
-    produces: "course_plan",
-    consumes: ["research_brief"],
+    produces: AGENT_OUTPUTS.planner[0],
+    consumes: AGENT_INPUTS.planner,
   },
   {
     agent: "lessons",
     label: "Lecciones",
     description: "Redacta el contenido completo de cada lección",
-    produces: "lesson_content",
-    consumes: ["research_brief", "course_plan"],
+    produces: AGENT_OUTPUTS.lessons[0],
+    consumes: AGENT_INPUTS.lessons,
   },
   {
     agent: "slides",
     label: "Slides",
     description: "Convierte cada lección en diapositivas",
-    produces: "slide_deck",
-    consumes: ["course_plan", "lesson_content"],
+    produces: AGENT_OUTPUTS.slides[0],
+    consumes: AGENT_INPUTS.slides,
   },
   {
     agent: "script",
     label: "Guion docente",
     description: "Escribe el guion palabra a palabra por lección",
-    produces: "teaching_script",
-    consumes: ["slide_deck"],
+    produces: AGENT_OUTPUTS.script[0],
+    consumes: AGENT_INPUTS.script,
   },
   {
     agent: "voice",
     label: "Adaptación a voz",
     description: "Adapta el guion a narración por segmentos",
-    produces: "voice_script",
-    consumes: ["teaching_script"],
+    produces: AGENT_OUTPUTS.voice[0],
+    consumes: AGENT_INPUTS.voice,
   },
   {
     agent: "video",
     label: "Vídeo",
     description: "Sintetiza la voz y monta el vídeo (TTS + ffmpeg)",
-    produces: "video",
-    consumes: ["voice_script", "slide_deck"],
+    produces: AGENT_OUTPUTS.video[0],
+    consumes: AGENT_INPUTS.video,
   },
   {
     agent: "publisher",
     label: "Publicación",
     description: "Prepara título, descripción, capítulos y miniatura",
-    produces: "publication_package",
-    consumes: ["video"],
+    produces: AGENT_OUTPUTS.publisher[0],
+    consumes: AGENT_INPUTS.publisher,
   },
 ];
 
-const PROFILE_AGENTS = [
-  "curator",
-  "planner",
-  "lessons",
-  "slides",
-  "script",
-  "voice",
-  "video",
-  "publisher",
-];
+const PROFILE_AGENTS = WORKFLOW_AGENTS;
 
 const TYPE_LABELS: Record<string, string> = {
   research_brief: "Research brief",
@@ -299,6 +299,35 @@ const ACTIVE_STATUSES: Job["status"][] = [
   "canceling",
 ];
 
+type PendingArtifactAction =
+  | {
+      kind: "agent";
+      action: ContextualArtifactAction;
+      sourceArtifactId: string;
+      requestId: string;
+    }
+  | {
+      kind: "course_video";
+      sourceArtifactId: string;
+      requestId: string;
+    };
+
+function selectedArtifactIdsByType(
+  artifacts: Artifact[],
+): Record<string, string[]> {
+  const selected: Record<string, string[]> = {};
+  for (const artifact of artifacts) {
+    (selected[artifact.type] ??= []).push(artifact.id);
+  }
+  return selected;
+}
+
+function artifactActionLabel(action: ContextualArtifactAction): string {
+  return `${action.regenerates ? "Regenerar" : "Continuar con"} ${
+    AGENT_NAMES[action.agent]
+  }`;
+}
+
 export default function FactoryPanel({
   projectId,
   durationConfigured = true,
@@ -356,8 +385,12 @@ export default function FactoryPanel({
   const [loadingCourseVideoPreflight, setLoadingCourseVideoPreflight] =
     useState(false);
   const [startingCourseVideo, setStartingCourseVideo] = useState(false);
+  const [pendingArtifactAction, setPendingArtifactAction] =
+    useState<PendingArtifactAction | null>(null);
+  const [startingArtifactAction, setStartingArtifactAction] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const eventsEndRef = useRef<HTMLLIElement>(null);
+  const launchLocksRef = useRef(new Set<string>());
 
   const refresh = useCallback(async () => {
     const [runList, artifactList] = await Promise.all([
@@ -513,6 +546,8 @@ export default function FactoryPanel({
     activeRun?.status === "running" ||
     activeRun?.status === "pausing" ||
     activeRun?.status === "canceling";
+  const launchBlocked =
+    activeRun !== null && ACTIVE_STATUSES.includes(activeRun.status);
 
   // Elapsed-time ticker while a run is live.
   useEffect(() => {
@@ -526,18 +561,34 @@ export default function FactoryPanel({
     eventsEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [events.length]);
 
-  async function start(agent: string) {
+  async function start(
+    agent: WorkflowAgent,
+    trigger: "stage_card" | "artifact_card" = "stage_card",
+    requestId = crypto.randomUUID(),
+  ): Promise<boolean> {
+    const lockKey = `${trigger}:${agent}`;
+    if (launchLocksRef.current.has(lockKey)) return false;
+    launchLocksRef.current.add(lockKey);
     setError(null);
     try {
       const job = await api.createAgentRun(
         projectId,
         agent,
         selectedProfile[agent] || undefined,
+        {
+          expected_input_artifact_ids: selectedArtifactIdsByType(artifacts),
+          request_id: requestId,
+          trigger,
+        },
       );
       await refresh();
       follow(job);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo lanzar");
+      return false;
+    } finally {
+      launchLocksRef.current.delete(lockKey);
     }
   }
 
@@ -552,8 +603,11 @@ export default function FactoryPanel({
     }
   }
 
-  async function startCourseVideo() {
-    if (courseVideoSubtitles === null) return;
+  async function startCourseVideo(requestId?: string): Promise<boolean> {
+    if (courseVideoSubtitles === null) return false;
+    const lockKey = "course-video";
+    if (launchLocksRef.current.has(lockKey)) return false;
+    launchLocksRef.current.add(lockKey);
     setStartingCourseVideo(true);
     setError(null);
     try {
@@ -561,18 +615,37 @@ export default function FactoryPanel({
         include_subtitles: courseVideoSubtitles,
         include_chapters: courseVideoChapters,
         transition: courseVideoTransition,
+        request_id: requestId,
       });
       await refresh();
       follow(job);
+      return true;
     } catch (err) {
       setError(
         err instanceof Error
           ? err.message
           : "No se pudo generar el vídeo completo",
       );
+      return false;
     } finally {
+      launchLocksRef.current.delete(lockKey);
       setStartingCourseVideo(false);
     }
+  }
+
+  async function confirmArtifactAction() {
+    if (!pendingArtifactAction) return;
+    setStartingArtifactAction(true);
+    const launched =
+      pendingArtifactAction.kind === "agent"
+        ? await start(
+            pendingArtifactAction.action.agent,
+            "artifact_card",
+            pendingArtifactAction.requestId,
+          )
+        : await startCourseVideo(pendingArtifactAction.requestId);
+    if (launched) setPendingArtifactAction(null);
+    setStartingArtifactAction(false);
   }
 
   async function startWorkflow() {
@@ -813,6 +886,26 @@ export default function FactoryPanel({
     artifactFilter === "all"
       ? artifacts
       : artifacts.filter((artifact) => artifact.type === artifactFilter);
+  const pendingAgent =
+    pendingArtifactAction?.kind === "agent"
+      ? pendingArtifactAction.action.agent
+      : null;
+  const pendingProfile = pendingAgent
+    ? (profilesByAgent[pendingAgent] ?? []).find(
+        (profile) =>
+          profile.id === selectedProfile[pendingAgent] ||
+          (!selectedProfile[pendingAgent] && profile.is_default),
+      )
+    : null;
+  const pendingInputTypes =
+    pendingArtifactAction?.kind === "agent"
+      ? pendingArtifactAction.action.inputs
+      : pendingArtifactAction?.kind === "course_video"
+        ? ["course_plan", "video"]
+        : [];
+  const pendingInputArtifacts = artifacts.filter((artifact) =>
+    pendingInputTypes.includes(artifact.type),
+  );
 
   const canPause =
     activeRun?.status === "queued" ||
@@ -863,7 +956,7 @@ export default function FactoryPanel({
               onChange={(event) =>
                 void saveWorkflowSelection(event.target.value)
               }
-              disabled={running || workflowPreferenceState === "saving"}
+              disabled={launchBlocked || workflowPreferenceState === "saving"}
               className="input max-w-56 py-2 text-sm"
               aria-label="Workflow a ejecutar"
             >
@@ -887,7 +980,7 @@ export default function FactoryPanel({
           <button
             onClick={startWorkflow}
             disabled={
-              running ||
+              launchBlocked ||
               !workflowId ||
               workflowMissing.length > 0 ||
               (!durationConfigured && workflowNeedsDuration)
@@ -908,7 +1001,7 @@ export default function FactoryPanel({
           </button>
           <button
             onClick={startAnalytics}
-            disabled={running}
+            disabled={launchBlocked}
             title="Analiza métricas y comentarios de los vídeos publicados de este proyecto"
             className="btn-secondary"
           >
@@ -1105,7 +1198,7 @@ export default function FactoryPanel({
                 )}
                 <button
                   onClick={() => start(stage.agent)}
-                  disabled={running || missingInputs.length > 0 || needsDuration}
+                  disabled={launchBlocked || missingInputs.length > 0 || needsDuration}
                   className="btn-secondary btn-sm shrink-0"
                   title={
                     needsDuration
@@ -1446,7 +1539,7 @@ export default function FactoryPanel({
               type="button"
               className="btn-primary"
               disabled={
-                running ||
+                launchBlocked ||
                 startingCourseVideo ||
                 loadingCourseVideoPreflight ||
                 !courseVideoPreflight?.ready
@@ -1631,9 +1724,23 @@ export default function FactoryPanel({
                 ? "Job"
                 : null;
             const duration = durationLabel(artifact.metadata.duration_seconds);
+            const cardActions = contextualArtifactActions(
+              artifact.type,
+              artifactTypes,
+            );
+            const primaryAction =
+              cardActions.find(
+                (action) => action.missing.length === 0 && !action.regenerates,
+              ) ??
+              cardActions.find((action) => action.missing.length === 0) ??
+              null;
+            const secondaryActions = cardActions.filter(
+              (action) => action !== primaryAction,
+            );
+            const hasCourseVideoAction = artifact.type === "video";
             return (
               <li key={artifact.id}>
-                <div className="card card-hover flex items-center gap-2 px-3 py-3 text-sm">
+                <div className="card card-hover flex flex-wrap items-center gap-2 px-3 py-3 text-sm">
                   <Link
                     href={"/artifacts/" + artifact.id}
                     className="flex min-w-0 flex-1 items-center gap-3"
@@ -1676,6 +1783,109 @@ export default function FactoryPanel({
                       )}
                     </span>
                   </Link>
+                  {primaryAction && (
+                    <button
+                      type="button"
+                      className="btn-secondary btn-sm shrink-0"
+                      disabled={
+                        launchBlocked ||
+                        primaryAction.missing.length > 0 ||
+                        (!durationConfigured &&
+                          primaryAction.agent !== "curator")
+                      }
+                      title="Usará todas las versiones activas de los inputs"
+                      onClick={() =>
+                        setPendingArtifactAction({
+                          kind: "agent",
+                          action: primaryAction,
+                          sourceArtifactId: artifact.id,
+                          requestId: crypto.randomUUID(),
+                        })
+                      }
+                    >
+                      <IconPlay size={12} />
+                      {artifactActionLabel(primaryAction)}
+                    </button>
+                  )}
+                  {(secondaryActions.length > 0 || hasCourseVideoAction) && (
+                    <details className="relative shrink-0">
+                      <summary className="btn-ghost btn-sm cursor-pointer list-none">
+                        Acciones
+                      </summary>
+                      <div className="absolute right-0 z-20 mt-1 w-72 space-y-1 rounded-lg border border-zinc-700 bg-zinc-950 p-2 shadow-xl">
+                        {secondaryActions.map((action) => {
+                          const needsDuration =
+                            !durationConfigured && action.agent !== "curator";
+                          const disabled =
+                            launchBlocked ||
+                            action.missing.length > 0 ||
+                            needsDuration;
+                          return (
+                            <button
+                              key={action.agent}
+                              type="button"
+                              className="btn-ghost w-full justify-start text-left text-xs"
+                              disabled={disabled}
+                              title={
+                                needsDuration
+                                  ? "Configura antes la duración y estructura del proyecto"
+                                  : action.missing.length > 0
+                                    ? `Antes necesitas: ${action.missing
+                                        .map((type) => TYPE_LABELS[type] ?? type)
+                                        .join(", ")}`
+                                    : "Usará todas las versiones activas de los inputs"
+                              }
+                              onClick={() =>
+                                setPendingArtifactAction({
+                                  kind: "agent",
+                                  action,
+                                  sourceArtifactId: artifact.id,
+                                  requestId: crypto.randomUUID(),
+                                })
+                              }
+                            >
+                              {artifactActionLabel(action)}
+                              {action.missing.length > 0 && (
+                                <span className="ml-1 text-zinc-600">
+                                  · faltan{" "}
+                                  {action.missing
+                                    .map((type) => TYPE_LABELS[type] ?? type)
+                                    .join(", ")}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                        {hasCourseVideoAction && (
+                          <button
+                            type="button"
+                            className="btn-ghost w-full justify-start text-left text-xs"
+                            disabled={
+                              launchBlocked ||
+                              loadingCourseVideoPreflight ||
+                              !courseVideoPreflight?.ready
+                            }
+                            title={
+                              courseVideoPreflight?.ready
+                                ? "Usará los vídeos activos en orden pedagógico"
+                                : "Completa los vídeos requeridos por el plan del curso"
+                            }
+                            onClick={() =>
+                              setPendingArtifactAction({
+                                kind: "course_video",
+                                sourceArtifactId: artifact.id,
+                                requestId: crypto.randomUUID(),
+                              })
+                            }
+                          >
+                            {artifactTypes.has("course_video")
+                              ? "Regenerar vídeo completo"
+                              : "Generar vídeo completo"}
+                          </button>
+                        )}
+                      </div>
+                    </details>
+                  )}
                   <select
                     value={artifact.id}
                     onChange={(event) => chooseArtifact(event.target.value)}
@@ -1718,6 +1928,65 @@ export default function FactoryPanel({
           })}
         </ul>
       )}
+      <ConfirmDialog
+        open={pendingArtifactAction !== null}
+        tone="default"
+        title={
+          pendingArtifactAction?.kind === "agent"
+            ? artifactActionLabel(pendingArtifactAction.action)
+            : artifactTypes.has("course_video")
+              ? "Regenerar vídeo completo"
+              : "Generar vídeo completo"
+        }
+        description={
+          <div className="space-y-3">
+            <p>
+              La fase volverá a validar y congelar las versiones activas al
+              iniciar. Si la selección cambia antes del POST, no se lanzará el
+              job.
+            </p>
+            {pendingAgent && (
+              <p className="rounded-md border border-white/[0.06] bg-white/[0.03] p-2 text-xs">
+                Perfil:{" "}
+                <strong className="text-zinc-100">
+                  {pendingProfile
+                    ? `${pendingProfile.name} · v${pendingProfile.active_version} activa`
+                    : "perfil predeterminado"}
+                </strong>
+              </p>
+            )}
+            {pendingInputArtifacts.length > 0 ? (
+              <ul className="space-y-1 text-xs text-zinc-400">
+                {pendingInputArtifacts.map((input) => (
+                  <li key={input.id}>
+                    <Link
+                      href={`/artifacts/${input.id}`}
+                      className="text-indigo-300 hover:underline"
+                    >
+                      {TYPE_LABELS[input.type] ?? input.type} · v{input.version} ·{" "}
+                      {input.title || input.id.slice(0, 8)}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-xs text-zinc-500">
+                Esta fase usa el contexto del proyecto y no requiere artefactos
+                previos.
+              </p>
+            )}
+            <p className="text-xs text-zinc-500">
+              Un resultado nuevo creará otra versión. Si el job falla o se
+              cancela, la selección anterior seguirá activa.
+            </p>
+          </div>
+        }
+        confirmLabel="Iniciar fase"
+        busyLabel="Iniciando…"
+        busy={startingArtifactAction}
+        onCancel={() => setPendingArtifactAction(null)}
+        onConfirm={() => void confirmArtifactAction()}
+      />
       <ConfirmDialog
         open={confirmCancel}
         title="Cancelar ejecución"

@@ -3,12 +3,13 @@ import json
 from typing import Annotated
 
 from factory_agents.agents.curator import render_curator_input
+from factory_agents.contracts.agent_io import AGENT_OUTPUTS
 from factory_agents.tools.images import DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_STYLE
 from factory_agents.tools.palette import DEFAULT_SLIDE_PALETTE, normalize_palette
 from factory_agents.tools.tts import default_tts_config, resolve_tts_config
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from factory_api.auth import CurrentUser
@@ -109,6 +110,79 @@ RUNNABLE_AGENTS = (
     "video",
     "publisher",
 )
+ACTIVE_PROJECT_JOB_STATUSES = (
+    "queued",
+    "running",
+    "pausing",
+    "paused",
+    "waiting_approval",
+    "canceling",
+)
+
+
+def _selected_artifact_ids(db: Session, project_id: str) -> dict[str, list[str]]:
+    artifacts = db.scalars(
+        select(Artifact)
+        .where(
+            Artifact.project_id == project_id,
+            Artifact.is_selected.is_(True),
+        )
+        .order_by(Artifact.created_at, Artifact.id)
+    ).all()
+    selected: dict[str, list[str]] = {}
+    for artifact in artifacts:
+        selected.setdefault(artifact.type, []).append(artifact.id)
+    return selected
+
+
+def _idempotent_project_job(
+    db: Session,
+    project_id: str,
+    request_id: str | None,
+    *,
+    kind: str,
+) -> Job | None:
+    if not request_id:
+        return None
+    jobs = db.scalars(
+        select(Job)
+        .where(Job.project_id == project_id)
+        .order_by(Job.created_at.desc())
+        .limit(50)
+    ).all()
+    for job in jobs:
+        try:
+            payload = json.loads(job.payload_json or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if job.kind == kind and payload.get("request_id") == request_id:
+            return job
+    return None
+
+
+def _begin_serialized_job_creation(db: Session) -> None:
+    """Serialize the check-and-create sequence in the project's SQLite database."""
+    db.execute(text("BEGIN IMMEDIATE"))
+
+
+def _ensure_project_has_no_active_job(db: Session, project_id: str) -> None:
+    active = db.scalars(
+        select(Job)
+        .where(
+            Job.project_id == project_id,
+            Job.status.in_(ACTIVE_PROJECT_JOB_STATUSES),
+        )
+        .order_by(Job.created_at.desc())
+        .limit(1)
+    ).first()
+    if active is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Ya existe una ejecución activa incompatible para este proyecto: "
+                f"{active.kind} ({active.status}, job {active.id[:8]})."
+            ),
+        )
 
 
 def _profile_fields(profile: AgentProfile | None) -> dict:
@@ -249,20 +323,47 @@ def _base_payload(db: Session, project: Project) -> dict:
     status_code=status.HTTP_201_CREATED,
 )
 def create_agent_run(project_id: str, body: AgentRunCreate, user: CurrentUser, db: DB):
+    _begin_serialized_job_creation(db)
     project = db.get(Project, project_id)
     if project is None or project.owner_id != user.id:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
 
+    requested_kind = "pipeline_run" if body.agent == "pipeline" else f"{body.agent}_run"
+    existing = _idempotent_project_job(
+        db,
+        project_id,
+        body.request_id,
+        kind=requested_kind,
+    )
+    if existing is not None:
+        return _job_read(existing)
+    _ensure_project_has_no_active_job(db, project_id)
+
     payload = _base_payload(db, project)
 
-    available = set(
-        db.scalars(
-            select(Artifact.type).where(
-                Artifact.project_id == project_id,
-                Artifact.is_selected.is_(True),
+    selected_inputs = _selected_artifact_ids(db, project_id)
+    available = set(selected_inputs)
+    if body.expected_input_artifact_ids is not None:
+        expected = {
+            type_: sorted(set(ids))
+            for type_, ids in body.expected_input_artifact_ids.items()
+            if ids
+        }
+        current = {type_: sorted(ids) for type_, ids in selected_inputs.items() if ids}
+        if expected != current:
+            changed = sorted(
+                type_
+                for type_ in set(expected) | set(current)
+                if expected.get(type_, []) != current.get(type_, [])
             )
-        ).all()
-    )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "La selección de artefactos cambió antes de iniciar la fase"
+                    + (f": {', '.join(changed)}." if changed else ".")
+                    + " Revisa las versiones activas y vuelve a confirmar."
+                ),
+            )
 
     if project.duration_spec is None and (
         body.agent == "pipeline"
@@ -296,6 +397,13 @@ def create_agent_run(project_id: str, body: AgentRunCreate, user: CurrentUser, d
         else:
             profile = get_default_profile(db, body.agent)
         payload.update(_profile_fields(profile))
+        payload["input_artifact_ids"] = selected_inputs
+        payload["previous_output_artifact_ids"] = {
+            type_: list(selected_inputs.get(type_, []))
+            for type_ in AGENT_OUTPUTS[body.agent]
+        }
+        payload["request_id"] = body.request_id
+        payload["trigger"] = body.trigger
         kind = f"{body.agent}_run"
     else:
         raise HTTPException(status_code=422, detail=f"Agente no ejecutable: {body.agent}")

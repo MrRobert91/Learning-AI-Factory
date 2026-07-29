@@ -391,15 +391,17 @@ export function ConfirmDialog({
   confirmLabel = "Eliminar",
   busyLabel = "Eliminando…",
   busy = false,
+  tone = "danger",
   onConfirm,
   onCancel,
 }: {
   open: boolean;
   title: string;
-  description: string;
+  description: ReactNode;
   confirmLabel?: string;
   busyLabel?: string;
   busy?: boolean;
+  tone?: "danger" | "default";
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -417,24 +419,36 @@ export function ConfirmDialog({
         aria-modal="true"
         aria-labelledby="confirm-dialog-title"
         aria-describedby="confirm-dialog-description"
-        className="card animate-in w-full max-w-md overflow-hidden border-red-400/25 shadow-2xl"
+        className={`card animate-in w-full max-w-md overflow-hidden shadow-2xl ${
+          tone === "danger" ? "border-red-400/25" : "border-indigo-400/25"
+        }`}
       >
-        <div className="border-b border-red-400/15 bg-red-500/[0.07] px-5 py-4">
+        <div
+          className={`border-b px-5 py-4 ${
+            tone === "danger"
+              ? "border-red-400/15 bg-red-500/[0.07]"
+              : "border-indigo-400/15 bg-indigo-500/[0.07]"
+          }`}
+        >
           <h2 id="confirm-dialog-title" className="font-semibold text-zinc-50">
             {title}
           </h2>
         </div>
-        <p
+        <div
           id="confirm-dialog-description"
           className="px-5 py-4 text-sm leading-relaxed text-zinc-300"
         >
           {description}
-        </p>
+        </div>
         <div className="flex justify-end gap-2 border-t border-white/[0.06] px-5 py-4">
           <button disabled={busy} onClick={onCancel} className="btn-secondary">
             Cancelar
           </button>
-          <button disabled={busy} onClick={onConfirm} className="btn-danger">
+          <button
+            disabled={busy}
+            onClick={onConfirm}
+            className={tone === "danger" ? "btn-danger" : "btn-primary"}
+          >
             {busy ? busyLabel : confirmLabel}
           </button>
         </div>

@@ -1,0 +1,42 @@
+{
+  "curator": {
+    "inputs": [],
+    "outputs": ["research_brief"],
+    "name": "Curador"
+  },
+  "planner": {
+    "inputs": ["research_brief"],
+    "outputs": ["course_plan"],
+    "name": "Plan del curso"
+  },
+  "lessons": {
+    "inputs": ["research_brief", "course_plan"],
+    "outputs": ["lesson_content"],
+    "name": "Lecciones"
+  },
+  "slides": {
+    "inputs": ["course_plan", "lesson_content"],
+    "outputs": ["slide_deck"],
+    "name": "Slides"
+  },
+  "script": {
+    "inputs": ["slide_deck"],
+    "outputs": ["teaching_script"],
+    "name": "Guion docente"
+  },
+  "voice": {
+    "inputs": ["teaching_script"],
+    "outputs": ["voice_script"],
+    "name": "Adaptación a voz"
+  },
+  "video": {
+    "inputs": ["slide_deck", "voice_script"],
+    "outputs": ["video", "subtitles"],
+    "name": "Vídeo"
+  },
+  "publisher": {
+    "inputs": ["video"],
+    "outputs": ["publication_package", "thumbnail"],
+    "name": "Publicación"
+  }
+}

@@ -814,10 +814,23 @@ export const api = {
     ),
   profileLogoUrl: (id: string, logoId: string, thumbnail = false) =>
     `/api/agents/profiles/${id}/logos/${encodeURIComponent(logoId)}${thumbnail ? "?thumbnail=true" : ""}`,
-  createAgentRun: (projectId: string, agent: string, profileId?: string) =>
+  createAgentRun: (
+    projectId: string,
+    agent: string,
+    profileId?: string,
+    options?: {
+      expected_input_artifact_ids?: Record<string, string[]>;
+      request_id?: string;
+      trigger?: "stage_card" | "artifact_card";
+    },
+  ) =>
     request<Job>(`/api/projects/${projectId}/agent-runs`, {
       method: "POST",
-      body: JSON.stringify({ agent, profile_id: profileId ?? null }),
+      body: JSON.stringify({
+        agent,
+        profile_id: profileId ?? null,
+        ...options,
+      }),
     }),
   getCourseVideoPreflight: (
     projectId: string,
@@ -846,6 +859,7 @@ export const api = {
       include_subtitles: boolean;
       include_chapters: boolean;
       transition: CourseVideoTransition;
+      request_id?: string;
     },
   ) =>
     request<Job>(`/api/projects/${projectId}/course-video`, {

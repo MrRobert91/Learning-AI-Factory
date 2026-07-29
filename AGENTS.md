@@ -60,8 +60,12 @@ docker compose up --build                # stack completo (2 contenedores)
   volcar documentos completos al prompt.
 - **Editor de workflows**: los workflows editables empiezan siempre por
   `curator`. La compatibilidad entre pasos depende de los artefactos disponibles
-  y se define en `apps/web/src/lib/workflowRules.ts`; debe mantenerse alineada
-  con `AGENT_INPUTS`/`AGENT_OUTPUTS` de `factory_api/workflow_engine.py`.
+  y se define una sola vez en
+  `packages/factory_agents/src/factory_agents/contracts/agent_io.json`;
+  `workflowRules.ts` y `factory_api.workflow_engine` consumen esa misma matriz.
+  Las acciones contextuales de las tarjetas congelan los IDs seleccionados al
+  crear el job, rechazan una selección obsoleta y restauran la selección de
+  outputs anterior si una regeneración falla o se cancela.
 - **Workflow seleccionado**: `projects.selected_workflow_id` conserva la
   preferencia mutable de cada proyecto. La UI solo usa un fallback temporal si
   falta o dejó de estar disponible; cada run congela por separado su ID, nombre
