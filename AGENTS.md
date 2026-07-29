@@ -99,9 +99,13 @@ docker compose up --build                # stack completo (2 contenedores)
   versionados. Inputs y opciones idénticos reutilizan la versión válida.
 - **Imágenes de slides**: son opcionales y se configuran/versionan en el perfil
   de `slides` (modelo OpenRouter + preset o prompt personalizado). El agente
-  selecciona como máximo 6 por lección; los originales viven como assets de la
-  versión del `slide_deck` y prompts/modelo/coste quedan en sus metadatos. Una
-  regeneración individual siempre crea una nueva versión autosuficiente del deck.
+  selecciona como máximo 6 por lección y solo puede pedir composición lateral
+  `left`/`right`; `background` o cualquier layout automático inválido se
+  normaliza a `right`, conservando requested/effective layout en metadatos. Los
+  fondos explícitos históricos/importados siguen siendo compatibles. Los
+  originales viven como assets de la versión del `slide_deck` y
+  prompts/modelo/coste quedan en sus metadatos. Una regeneración individual
+  conserva el lateral y siempre crea una nueva versión autosuficiente del deck.
 - **Uso y costes**: cada llamada LLM/evaluador/imagen/TTS se registra una sola
   vez en `usage_records` sin prompts ni respuestas. El histórico es inmutable;
   el coste activo se deriva de `usage_record_ids` en los artefactos seleccionados,

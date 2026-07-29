@@ -192,7 +192,7 @@ def test_slides_profile_generates_selected_images_without_blocking_pipeline(
         lambda *args, **kwargs: (
             "---\nmarp: true\n---\n\n# Portada\n---\n# Concepto\n"
             '<!-- factory-image {"prompt":"A learning network",'
-            '"layout":"right","alt":"Network"} -->\n'
+            '"layout":"background","alt":"Network"} -->\n'
         ),
     )
     monkeypatch.setattr(
@@ -220,6 +220,10 @@ def test_slides_profile_generates_selected_images_without_blocking_pipeline(
     assert all(item["metadata"]["image_generation"]["generated"] == 1 for item in slides)
     first = auth_client.get(f"/api/artifacts/{slides[0]['id']}").json()
     assert "factory-image-id: slide-2" in first["content"]
+    assert "![bg right:42%]" in first["content"]
+    assert "brightness:0.42" not in first["content"]
+    assert first["metadata"]["images"][0]["requested_layout"] == "background"
+    assert first["metadata"]["images"][0]["effective_layout"] == "right"
     image = auth_client.get(f"/api/artifacts/{slides[0]['id']}/images/slide-2")
     assert image.content == b"generated"
 
