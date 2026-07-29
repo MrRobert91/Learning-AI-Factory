@@ -190,7 +190,7 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
         "image_style": config.get("image_style") or DEFAULT_IMAGE_STYLE,
         "image_style_prompt": config.get("image_style_prompt") or "",
         "profile_id": profile.id,
-        "profile_version": profile.version,
+        "profile_version": profile.active_version,
         "automatic_review_enabled": bool(config.get("automatic_review_enabled", False)),
         "max_automatic_regenerations": int(
             config.get("max_automatic_regenerations", 0) or 0

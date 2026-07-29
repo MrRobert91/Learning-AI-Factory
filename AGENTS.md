@@ -66,6 +66,11 @@ docker compose up --build                # stack completo (2 contenedores)
   preferencia mutable de cada proyecto. La UI solo usa un fallback temporal si
   falta o dejó de estar disponible; cada run congela por separado su ID, nombre
   y definición, y nunca se reescribe al cambiar la preferencia del proyecto.
+- **Versión activa de perfiles**: `AgentProfile.version` es la última versión
+  monotónica y `active_version` apunta al snapshot usado por futuras
+  ejecuciones. Activar una versión histórica no crea otra versión; los campos
+  actuales reflejan ese snapshot y editarlo crea la siguiente versión máxima,
+  que pasa a ser activa. Cada run congela la versión activa y su configuración.
 - **LLM**: OpenRouter (OpenAI-compatible), modelo por defecto en
   `Settings.openrouter_model`. Los agentes conversacionales (ideación) usan
   el cliente openai directo; los task agents usan deepagents.

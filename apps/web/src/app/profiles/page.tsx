@@ -228,7 +228,10 @@ export default function ProfilesPage() {
                         <span className="badge-info shrink-0">Con logo</span>
                       )}
                       <span className="shrink-0 text-xs text-zinc-500">
-                        v{p.version}
+                        v{p.active_version} activa
+                        {p.active_version !== p.version
+                          ? ` · última v${p.version}`
+                          : ""}
                       </span>
                     </Link>
                   </li>

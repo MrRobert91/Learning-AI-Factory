@@ -1079,7 +1079,7 @@ export default function FactoryPanel({
                   >
                     {profiles.map((p) => (
                       <option key={p.id} value={p.id}>
-                        {p.name} (v{p.version})
+                        {p.name} (v{p.active_version} activa)
                         {p.orientation
                           ? ` · ${p.orientation === "vertical" ? "9:16" : "16:9"}`
                           : ""}

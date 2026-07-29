@@ -81,6 +81,10 @@ export default function ProfileEditorPage() {
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [versionToActivate, setVersionToActivate] = useState<ProfileVersion | null>(
+    null,
+  );
+  const [activatingVersion, setActivatingVersion] = useState(false);
 
   async function load() {
     const [p, options, palettes, voiceOptions] = await Promise.all([
@@ -334,6 +338,76 @@ export default function ProfileEditorPage() {
     router.push("/profiles");
   }
 
+  function activationSummary(target: ProfileVersion) {
+    if (!profile) return "";
+    const changes: string[] = [];
+    if (
+      target.soul_md !== profile.soul_md ||
+      target.agents_md !== profile.agents_md
+    ) {
+      changes.push("personalidad o reglas");
+    }
+    if (target.model !== profile.model) changes.push("modelo");
+    if (
+      target.orientation !== profile.orientation ||
+      target.images_enabled !== profile.images_enabled ||
+      target.image_model !== profile.image_model ||
+      target.image_style !== profile.image_style
+    ) {
+      changes.push("presentación e imágenes");
+    }
+    if (
+      target.automatic_review_enabled !== profile.automatic_review_enabled ||
+      target.max_automatic_regenerations !==
+        profile.max_automatic_regenerations ||
+      target.human_review_enabled !== profile.human_review_enabled
+    ) {
+      changes.push("políticas de revisión");
+    }
+    if (
+      target.tts_provider !== profile.tts_provider ||
+      target.tts_model !== profile.tts_model ||
+      target.tts_language !== profile.tts_language ||
+      target.tts_voice !== profile.tts_voice
+    ) {
+      changes.push("configuración de voz");
+    }
+    if (target.subtitles_mode !== profile.subtitles_mode) {
+      changes.push("subtítulos");
+    }
+    if (
+      JSON.stringify(target.slide_palette) !==
+        JSON.stringify(profile.slide_palette) ||
+      target.logo_mode !== profile.logo_mode ||
+      target.active_logo_id !== profile.active_logo_id
+    ) {
+      changes.push("paleta o logo");
+    }
+    return changes.length > 0
+      ? `Cambiarán: ${changes.join(", ")}.`
+      : "La configuración efectiva coincide con la versión activa actual.";
+  }
+
+  async function activateVersion() {
+    if (!versionToActivate) return;
+    setActivatingVersion(true);
+    setError(null);
+    try {
+      await api.activateProfileVersion(id, versionToActivate.version);
+      setVersionToActivate(null);
+      await load();
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "No se pudo activar la versión",
+      );
+      setVersionToActivate(null);
+    } finally {
+      setActivatingVersion(false);
+    }
+  }
+
   async function uploadLogo(file: File) {
     setLogoBusy(true);
     setError(null);
@@ -467,7 +541,12 @@ export default function ProfileEditorPage() {
           onChange={(e) => setName(e.target.value)}
           className="flex-1 rounded-lg border border-transparent bg-transparent text-2xl font-semibold tracking-tight text-zinc-50 outline-none focus:border-white/[0.15]"
         />
-        <span className="badge-neutral shrink-0">v{profile.version}</span>
+        <span className="badge-neutral shrink-0">
+          v{profile.active_version} activa
+          {profile.active_version !== profile.version
+            ? ` · última disponible v${profile.version}`
+            : ""}
+        </span>
       </div>
       <p className="mb-6 text-sm text-zinc-500">
         Agente: <span className="text-zinc-400">{profile.agent_type}</span>
@@ -1260,6 +1339,9 @@ export default function ProfileEditorPage() {
               <div className="flex items-center justify-between gap-3">
                 <span className="flex items-center gap-2 font-semibold text-zinc-200">
                   v{v.version}
+                  {v.is_active && (
+                    <span className="badge-success font-normal">Activa</span>
+                  )}
                   {v.orientation && (
                     <span className="badge-neutral font-normal">
                       {v.orientation === "vertical"
@@ -1331,9 +1413,20 @@ export default function ProfileEditorPage() {
                     </span>
                   )}
                 </span>
-                <span className="text-xs text-zinc-500">
-                  {new Date(v.created_at).toLocaleString("es")}
-                </span>
+                <div className="flex shrink-0 items-center gap-3">
+                  <span className="text-xs text-zinc-500">
+                    {new Date(v.created_at).toLocaleString("es")}
+                  </span>
+                  {!v.is_active && (
+                    <button
+                      type="button"
+                      className="btn-secondary btn-sm"
+                      onClick={() => setVersionToActivate(v)}
+                    >
+                      Usar esta versión
+                    </button>
+                  )}
+                </div>
               </div>
               {v.note && (
                 <p className="mt-1 text-sm leading-relaxed text-zinc-400">
@@ -1344,6 +1437,24 @@ export default function ProfileEditorPage() {
           ))}
         </ul>
       </section>
+      <ConfirmDialog
+        open={versionToActivate !== null}
+        title={
+          versionToActivate
+            ? `Usar la versión ${versionToActivate.version}`
+            : "Usar versión histórica"
+        }
+        description={
+          versionToActivate
+            ? `${activationSummary(versionToActivate)} Las nuevas ejecuciones usarán este snapshot; los runs existentes no cambiarán y no se creará otra versión.`
+            : ""
+        }
+        confirmLabel="Usar esta versión"
+        busyLabel="Activando…"
+        busy={activatingVersion}
+        onCancel={() => setVersionToActivate(null)}
+        onConfirm={activateVersion}
+      />
       <ConfirmDialog
         open={confirmDelete}
         title="Eliminar perfil"

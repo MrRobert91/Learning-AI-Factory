@@ -173,6 +173,7 @@ class AgentProfile(Base):
     agents_md: Mapped[str] = mapped_column(Text, default="", nullable=False)
     config_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
     version: Mapped[int] = mapped_column(default=1, nullable=False)
+    active_version: Mapped[int] = mapped_column(default=1, nullable=False)
     is_default: Mapped[bool] = mapped_column(default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
