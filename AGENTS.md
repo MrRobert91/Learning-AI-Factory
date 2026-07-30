@@ -96,6 +96,14 @@ docker compose up --build                # stack completo (2 contenedores)
   `subtitles_mode` (`none` por
   defecto, `srt` o `burned_and_srt`); la incrustación usa duraciones TTS reales,
   respeta orientación/logos y nunca añade llamadas LLM.
+- **Catálogo y expresividad TTS**: OpenRouter se descubre mediante Models API y
+  se conserva en un snapshot backend con TTL y fallback al último válido; las
+  voces documentadas completan metadata incompleta del API. Solo se muestran y
+  envían controles declarados por el modelo (`speed`, instrucciones, estilo,
+  intensidad, tags/pronunciación). El perfil versiona esas opciones, el
+  `voice_script` congela entrada de catálogo/precio/configuración y la clave de
+  caché incluye toda opción audible; una combinación retirada bloquea runs
+  nuevos, pero vídeo sigue consumiendo snapshots históricos autosuficientes.
 - **Vídeo completo del curso**: `course_video_export` consume el `course_plan` y
   las versiones seleccionadas de `video`/`subtitles` en orden pedagógico. El
   preflight bloquea inputs ausentes, corruptos o incompatibles antes de ffmpeg;

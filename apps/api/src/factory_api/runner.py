@@ -7,6 +7,7 @@ by appending JobEvents, which the SSE endpoint streams to the UI.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import shutil
@@ -1925,6 +1926,15 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                     "request_format": tts_config["tts_format"],
                     "output_format": tts_config["tts_output_format"],
                     "mime_type": tts_config["tts_mime_type"],
+                    "speed": tts_config["tts_speed"],
+                    "instructions_sha256": hashlib.sha256(
+                        tts_config["tts_instructions"].encode()
+                    ).hexdigest()
+                    if tts_config["tts_instructions"]
+                    else None,
+                    "style": tts_config["tts_style"],
+                    "style_degree": tts_config["tts_style_degree"],
+                    "catalog_updated_at": tts_config["tts_catalog_updated_at"],
                     "cache_hit": cache_hit,
                     "segment": segment_index,
                 },

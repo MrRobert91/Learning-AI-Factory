@@ -635,18 +635,29 @@ def test_automatic_review_policy_is_validated_and_versioned(auth_client):
 def test_tts_catalog_and_voice_profile_configuration_are_closed_and_versioned(
     auth_client,
 ):
-    options = auth_client.get("/api/agents/tts-options")
+    options = auth_client.get("/api/agents/tts-options?refresh=true")
     assert options.status_code == 200
-    models = options.json()["models"]
+    payload = options.json()
+    models = payload["models"]
     assert {
         (item["provider"], item["model"])
         for item in models
-    } == {
+    }.issuperset(
+        {
         ("openai", "gpt-4o-mini-tts"),
+        ("openai", "gpt-4o-mini-tts-2025-12-15"),
+        ("openai", "tts-1"),
+        ("openai", "tts-1-hd"),
         ("openrouter", "hexgrad/kokoro-82m"),
         ("openrouter", "google/gemini-3.1-flash-tts-preview"),
         ("openrouter", "microsoft/mai-voice-2"),
-    }
+        ("openrouter", "microsoft/mai-voice-2-flash"),
+        ("openrouter", "x-ai/grok-voice-tts-1.0"),
+        ("openrouter", "deepgram/aura-2"),
+        ("openrouter", "mistralai/voxtral-mini-tts-2603"),
+        }
+    )
+    assert payload["source"] in {"openrouter_models_api", "bundled_fallback"}
     gemini = next(
         item
         for item in models
@@ -658,6 +669,7 @@ def test_tts_catalog_and_voice_profile_configuration_are_closed_and_versioned(
     assert gemini["output_mime_type"] == "audio/wav"
     assert gemini["sample_rate_hz"] == 24000
     assert gemini["channels"] == 1
+    assert gemini["capabilities"]["instructions"] is True
 
     response = auth_client.post(
         "/api/agents/voice/profiles",
@@ -667,6 +679,7 @@ def test_tts_catalog_and_voice_profile_configuration_are_closed_and_versioned(
             "tts_model": "hexgrad/kokoro-82m",
             "tts_language": "es-ES",
             "tts_voice": "ef_dora",
+            "tts_speed": 1.0,
         },
     )
     assert response.status_code == 201, response.text
@@ -679,12 +692,18 @@ def test_tts_catalog_and_voice_profile_configuration_are_closed_and_versioned(
         json={
             "tts_model": "microsoft/mai-voice-2",
             "tts_language": "es-ES",
+            "tts_speed": 1.2,
+            "tts_style": "cheerful",
+            "tts_style_degree": 1.3,
             "note": "Cambiar a MAI",
         },
     )
     assert changed.status_code == 200, changed.text
     assert changed.json()["version"] == 2
     assert changed.json()["tts_voice"] == "es-ES-Marta:MAI-Voice-2"
+    assert changed.json()["tts_speed"] == 1.2
+    assert changed.json()["tts_style"] == "cheerful"
+    assert changed.json()["tts_style_degree"] == 1.3
 
     invalid = auth_client.patch(
         f"/api/agents/profiles/{profile['id']}",
@@ -705,6 +724,7 @@ def test_tts_catalog_and_voice_profile_configuration_are_closed_and_versioned(
         f"/api/agents/profiles/{profile['id']}/versions"
     ).json()
     assert versions[0]["tts_model"] == "microsoft/mai-voice-2"
+    assert versions[0]["tts_style"] == "cheerful"
     assert versions[1]["tts_model"] == "hexgrad/kokoro-82m"
 
 
@@ -742,6 +762,8 @@ def test_video_subtitles_mode_defaults_to_none_and_is_versioned(auth_client):
 def test_tts_preview_returns_audio_without_creating_a_profile_version(
     auth_client, monkeypatch
 ):
+    captured = {}
+
     class FakeProvider:
         last_generation_id = "gen-preview"
 
@@ -751,7 +773,7 @@ def test_tts_preview_returns_audio_without_creating_a_profile_version(
 
     monkeypatch.setattr(
         "factory_api.routers.agents.build_tts_provider",
-        lambda *args, **kwargs: FakeProvider(),
+        lambda config, **kwargs: (captured.update(config) or FakeProvider()),
     )
     profile = auth_client.post(
         "/api/agents/voice/profiles",
@@ -765,12 +787,19 @@ def test_tts_preview_returns_audio_without_creating_a_profile_version(
             "tts_model": "gpt-4o-mini-tts",
             "tts_language": "inherit",
             "tts_voice": "nova",
+            "tts_speed": 1.15,
+            "tts_instructions": "Tono cercano y pausado",
+            "tts_style": None,
+            "tts_style_degree": None,
+            "tts_advanced_options": {},
         },
     )
     assert response.status_code == 200, response.text
     assert response.content == b"ID3preview"
     assert response.headers["content-type"].startswith("audio/mpeg")
     assert response.headers["x-generation-id"] == "gen-preview"
+    assert captured["tts_speed"] == 1.15
+    assert captured["tts_instructions"] == "Tono cercano y pausado"
     assert (
         len(
             auth_client.get(
