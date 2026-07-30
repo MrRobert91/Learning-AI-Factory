@@ -10,7 +10,12 @@ from factory_api.auth import CurrentUser
 from factory_api.course_video import build_preflight, public_preflight
 from factory_api.db import get_db
 from factory_api.models import Job, Project
-from factory_api.routers.runs import _job_read
+from factory_api.routers.runs import (
+    _begin_serialized_job_creation,
+    _ensure_project_has_no_active_job,
+    _idempotent_project_job,
+    _job_read,
+)
 from factory_api.runner import runner
 from factory_api.schemas import (
     CourseVideoCreate,
@@ -64,7 +69,17 @@ def create_course_video(
     user: CurrentUser,
     db: DB,
 ):
+    _begin_serialized_job_creation(db)
     project = _project(db, user.id, project_id)
+    existing = _idempotent_project_job(
+        db,
+        project_id,
+        body.request_id,
+        kind="course_video_export",
+    )
+    if existing is not None:
+        return _job_read(existing)
+    _ensure_project_has_no_active_job(db, project_id)
     preflight = build_preflight(
         db,
         project,
@@ -88,6 +103,8 @@ def create_course_video(
         "include_chapters": body.include_chapters,
         "transition": body.transition,
         "expected_input_signature": public["input_signature"],
+        "request_id": body.request_id,
+        "trigger": "artifact_card",
     }
     job = Job(
         kind="course_video_export",

@@ -1,7 +1,20 @@
 import json
+from pathlib import Path
 
 from factory_agents.contracts import CoursePlan
+from factory_agents.contracts.agent_io import (
+    AGENT_CONTRACTS,
+    AGENT_INPUTS,
+    AGENT_OUTPUTS,
+)
 from factory_agents.runtime import RunEvent
+from factory_api.artifact_versions import add_artifact_version
+from factory_api.db import SessionLocal
+from factory_api.models import Artifact, Job
+from factory_api.runner import (
+    _latest_artifact_content,
+    _restore_previous_output_selections,
+)
 from test_runs import _create_project, _fake_curator, _wait_for_job
 
 FAKE_PLAN = CoursePlan(
@@ -151,6 +164,140 @@ def test_unknown_agent_rejected(auth_client):
         f"/api/projects/{project['id']}/agent-runs", json={"agent": "nope"}
     )
     assert resp.status_code == 422
+
+
+def test_agent_contract_matrix_is_canonical():
+    assert AGENT_INPUTS["slides"] == ("course_plan", "lesson_content")
+    assert AGENT_OUTPUTS["video"] == ("video", "subtitles")
+    web_contracts = json.loads(
+        Path("apps/web/src/lib/agent_io.generated.json").read_text(encoding="utf-8")
+    )
+    assert web_contracts == AGENT_CONTRACTS
+
+
+def test_contextual_run_revalidates_and_freezes_selected_inputs(
+    auth_client,
+    monkeypatch,
+):
+    _patch_all(monkeypatch)
+    project = _create_project(auth_client)
+    first = auth_client.post(
+        f"/api/projects/{project['id']}/artifacts",
+        files={"file": ("brief-1.md", b"# Brief 1", "text/markdown")},
+        data={"type": "research_brief", "title": "Brief"},
+    ).json()
+    second = auth_client.post(
+        f"/api/projects/{project['id']}/artifacts",
+        files={"file": ("brief-2.md", b"# Brief 2", "text/markdown")},
+        data={"type": "research_brief", "title": "Brief"},
+    ).json()
+
+    stale = auth_client.post(
+        f"/api/projects/{project['id']}/agent-runs",
+        json={
+            "agent": "planner",
+            "expected_input_artifact_ids": {"research_brief": [first["id"]]},
+            "request_id": "stale-selection",
+            "trigger": "artifact_card",
+        },
+    )
+    assert stale.status_code == 409
+    assert "selección de artefactos cambió" in stale.json()["detail"]
+
+    created = auth_client.post(
+        f"/api/projects/{project['id']}/agent-runs",
+        json={
+            "agent": "planner",
+            "expected_input_artifact_ids": {"research_brief": [second["id"]]},
+            "request_id": "planner-from-card",
+            "trigger": "artifact_card",
+        },
+    )
+    assert created.status_code == 201
+    job_id = created.json()["id"]
+    with SessionLocal() as db:
+        payload = json.loads(db.get(Job, job_id).payload_json)
+    assert payload["input_artifact_ids"] == {"research_brief": [second["id"]]}
+    assert payload["previous_output_artifact_ids"] == {"course_plan": []}
+    assert _latest_artifact_content(payload, "research_brief") == (
+        second["id"],
+        "# Brief 2",
+    )
+    assert _wait_for_job(auth_client, job_id)["status"] == "done"
+
+    repeated = auth_client.post(
+        f"/api/projects/{project['id']}/agent-runs",
+        json={
+            "agent": "planner",
+            "expected_input_artifact_ids": {"research_brief": [second["id"]]},
+            "request_id": "planner-from-card",
+            "trigger": "artifact_card",
+        },
+    )
+    assert repeated.status_code == 201
+    assert repeated.json()["id"] == job_id
+
+
+def test_contextual_run_rejects_an_active_project_job(auth_client):
+    project = _create_project(auth_client)
+    with SessionLocal() as db:
+        active = Job(kind="curator_run", project_id=project["id"], status="paused")
+        db.add(active)
+        db.commit()
+        active_id = active.id
+
+    response = auth_client.post(
+        f"/api/projects/{project['id']}/agent-runs",
+        json={"agent": "curator", "request_id": "blocked-by-active"},
+    )
+    assert response.status_code == 409
+    assert active_id[:8] in response.json()["detail"]
+
+
+def test_failed_contextual_regeneration_restores_previous_selection(auth_client):
+    project = _create_project(auth_client)
+    with SessionLocal() as db:
+        previous = add_artifact_version(
+            db,
+            project_id=project["id"],
+            type_="course_plan",
+            format_="json",
+            title="Plan",
+            path="artifacts/previous.json",
+        )
+        db.flush()
+        job = Job(
+            kind="planner_run",
+            project_id=project["id"],
+            payload_json=json.dumps(
+                {
+                    "project_id": project["id"],
+                    "previous_output_artifact_ids": {
+                        "course_plan": [previous.id],
+                    },
+                }
+            ),
+        )
+        db.add(job)
+        db.flush()
+        replacement = add_artifact_version(
+            db,
+            project_id=project["id"],
+            type_="course_plan",
+            format_="json",
+            title="Plan",
+            path="artifacts/replacement.json",
+            created_by_job_id=job.id,
+        )
+        db.commit()
+        previous_id = previous.id
+        replacement_id = replacement.id
+        job_id = job.id
+
+    _restore_previous_output_selections(job_id)
+    with SessionLocal() as db:
+        assert db.get(Artifact, previous_id).is_selected is True
+        assert db.get(Artifact, replacement_id).is_selected is False
 
 
 def test_upload_external_artifact(auth_client):

@@ -435,12 +435,16 @@ class RunControlRequest(BaseModel):
 class AgentRunCreate(BaseModel):
     agent: str = Field(description="curator | planner | lessons | slides | pipeline")
     profile_id: str | None = None
+    expected_input_artifact_ids: dict[str, list[str]] | None = None
+    request_id: str | None = Field(default=None, min_length=1, max_length=64)
+    trigger: str | None = Field(default=None, max_length=32)
 
 
 class CourseVideoCreate(BaseModel):
     include_subtitles: bool = True
     include_chapters: bool = True
     transition: Literal["none", "fade_500ms", "gap_500ms"] = "none"
+    request_id: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class CourseVideoPreflightIssue(BaseModel):
