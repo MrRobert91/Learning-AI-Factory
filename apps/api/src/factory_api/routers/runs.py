@@ -5,7 +5,7 @@ from typing import Annotated
 from factory_agents.agents.curator import render_curator_input
 from factory_agents.tools.images import DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_STYLE
 from factory_agents.tools.palette import DEFAULT_SLIDE_PALETTE, normalize_palette
-from factory_agents.tools.tts import default_tts_config, resolve_tts_config
+from factory_agents.tools.tts import default_tts_config
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
@@ -18,6 +18,7 @@ from factory_api.routers.agents import get_default_profile
 from factory_api.run_control import SSE_STOP_STATUSES, load_control
 from factory_api.runner import runner
 from factory_api.schemas import AgentRunCreate, JobEventRead, JobRead
+from factory_api.tts_catalog import resolve_current_tts_config
 from factory_api.usage import job_usage_summary
 from factory_api.workflow_engine import missing_agent_inputs
 
@@ -171,7 +172,7 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
                 )
             )
         try:
-            tts_config = resolve_tts_config(candidate)
+            tts_config = resolve_current_tts_config(candidate)
         except ValueError as exc:
             raise HTTPException(
                 status_code=409,

@@ -167,6 +167,11 @@ class TTSPreviewRequest(BaseModel):
     tts_model: str | None = None
     tts_language: str | None = None
     tts_voice: str | None = None
+    tts_speed: float | None = None
+    tts_instructions: str | None = Field(default=None, max_length=1000)
+    tts_style: str | None = None
+    tts_style_degree: float | None = None
+    tts_advanced_options: dict[str, str | int | float | bool] | None = None
 
 
 class ProfileCreate(BaseModel):
@@ -186,6 +191,11 @@ class ProfileCreate(BaseModel):
     tts_model: str | None = None
     tts_language: str | None = None
     tts_voice: str | None = None
+    tts_speed: float | None = None
+    tts_instructions: str | None = Field(default=None, max_length=1000)
+    tts_style: str | None = None
+    tts_style_degree: float | None = None
+    tts_advanced_options: dict[str, str | int | float | bool] | None = None
     subtitles_mode: Literal["none", "srt", "burned_and_srt"] | None = None
     slide_palette: dict[str, str] | None = None
     logo_mode: Literal["none", "uploaded", "generated"] | None = None
@@ -216,6 +226,11 @@ class ProfileUpdate(BaseModel):
     tts_model: str | None = None
     tts_language: str | None = None
     tts_voice: str | None = None
+    tts_speed: float | None = None
+    tts_instructions: str | None = Field(default=None, max_length=1000)
+    tts_style: str | None = None
+    tts_style_degree: float | None = None
+    tts_advanced_options: dict[str, str | int | float | bool] | None = None
     subtitles_mode: Literal["none", "srt", "burned_and_srt"] | None = None
     slide_palette: dict[str, str] | None = None
     logo_mode: Literal["none", "uploaded", "generated"] | None = None
@@ -251,6 +266,11 @@ class ProfileRead(BaseModel):
     tts_language: str | None = None
     tts_voice: str | None = None
     tts_available: bool | None = None
+    tts_speed: float | None = None
+    tts_instructions: str | None = None
+    tts_style: str | None = None
+    tts_style_degree: float | None = None
+    tts_advanced_options: dict[str, str | int | float | bool] | None = None
     subtitles_mode: Literal["none", "srt", "burned_and_srt"] | None = None
     slide_palette: dict[str, str] | None = None
     logo_mode: Literal["none", "uploaded", "generated"] | None = None
@@ -289,6 +309,11 @@ class ProfileVersionRead(BaseModel):
     tts_language: str | None = None
     tts_voice: str | None = None
     tts_available: bool | None = None
+    tts_speed: float | None = None
+    tts_instructions: str | None = None
+    tts_style: str | None = None
+    tts_style_degree: float | None = None
+    tts_advanced_options: dict[str, str | int | float | bool] | None = None
     subtitles_mode: Literal["none", "srt", "burned_and_srt"] | None = None
     slide_palette: dict[str, str] | None = None
     logo_mode: Literal["none", "uploaded", "generated"] | None = None

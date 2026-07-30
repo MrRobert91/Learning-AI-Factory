@@ -47,6 +47,14 @@ export default function ProfileEditorPage() {
   const [ttsModel, setTTSModel] = useState("");
   const [ttsLanguage, setTTSLanguage] = useState("inherit");
   const [ttsVoice, setTTSVoice] = useState("");
+  const [ttsSpeed, setTTSSpeed] = useState(1);
+  const [ttsInstructions, setTTSInstructions] = useState("");
+  const [ttsStyle, setTTSStyle] = useState<string | null>(null);
+  const [ttsStyleDegree, setTTSStyleDegree] = useState<number | null>(null);
+  const [ttsAdvancedOptions, setTTSAdvancedOptions] = useState<
+    Record<string, string | number | boolean>
+  >({});
+  const [ttsCatalogBusy, setTTSCatalogBusy] = useState(false);
   const [ttsSample, setTTSSample] = useState(
     "Hola. Esta es una muestra de la voz seleccionada para tu curso.",
   );
@@ -112,6 +120,13 @@ export default function ProfileEditorPage() {
     setTTSModel(p.tts_model ?? voiceOptions.default.tts_model);
     setTTSLanguage(p.tts_language ?? voiceOptions.default.tts_language);
     setTTSVoice(p.tts_voice ?? voiceOptions.default.tts_voice);
+    setTTSSpeed(p.tts_speed ?? voiceOptions.default.tts_speed);
+    setTTSInstructions(p.tts_instructions ?? voiceOptions.default.tts_instructions);
+    setTTSStyle(p.tts_style ?? voiceOptions.default.tts_style);
+    setTTSStyleDegree(p.tts_style_degree ?? voiceOptions.default.tts_style_degree);
+    setTTSAdvancedOptions(
+      p.tts_advanced_options ?? voiceOptions.default.tts_advanced_options,
+    );
     setSubtitlesMode(p.subtitles_mode ?? "none");
     setPaletteOptions(palettes);
     setSlidePalette(p.slide_palette ?? palettes.default);
@@ -162,6 +177,11 @@ export default function ProfileEditorPage() {
       tts_model?: string;
       tts_language?: string;
       tts_voice?: string;
+      tts_speed?: number;
+      tts_instructions?: string;
+      tts_style?: string | null;
+      tts_style_degree?: number | null;
+      tts_advanced_options?: Record<string, string | number | boolean>;
       subtitles_mode?: "none" | "srt" | "burned_and_srt";
       slide_palette?: SlidePalette;
       logo_mode?: "none" | "uploaded" | "generated";
@@ -219,6 +239,29 @@ export default function ProfileEditorPage() {
     }
     if (profile.tts_voice !== null && ttsVoice !== profile.tts_voice) {
       patch.tts_voice = ttsVoice;
+    }
+    if (profile.tts_speed !== null && ttsSpeed !== profile.tts_speed) {
+      patch.tts_speed = ttsSpeed;
+    }
+    if (
+      profile.tts_instructions !== null &&
+      ttsInstructions !== profile.tts_instructions
+    ) {
+      patch.tts_instructions = ttsInstructions;
+    }
+    if (profile.tts_style !== null || ttsStyle !== null) {
+      if (ttsStyle !== profile.tts_style) patch.tts_style = ttsStyle;
+    }
+    if (profile.tts_style_degree !== null || ttsStyleDegree !== null) {
+      if (ttsStyleDegree !== profile.tts_style_degree) {
+        patch.tts_style_degree = ttsStyleDegree;
+      }
+    }
+    if (
+      JSON.stringify(ttsAdvancedOptions) !==
+      JSON.stringify(profile.tts_advanced_options ?? {})
+    ) {
+      patch.tts_advanced_options = ttsAdvancedOptions;
     }
     if (
       profile.subtitles_mode !== null &&
@@ -279,6 +322,11 @@ export default function ProfileEditorPage() {
       patch.tts_model !== undefined ||
       patch.tts_language !== undefined ||
       patch.tts_voice !== undefined ||
+      patch.tts_speed !== undefined ||
+      patch.tts_instructions !== undefined ||
+      patch.tts_style !== undefined ||
+      patch.tts_style_degree !== undefined ||
+      patch.tts_advanced_options !== undefined ||
       patch.subtitles_mode !== undefined ||
       patch.slide_palette !== undefined ||
       patch.logo_mode !== undefined ||
@@ -368,7 +416,13 @@ export default function ProfileEditorPage() {
       target.tts_provider !== profile.tts_provider ||
       target.tts_model !== profile.tts_model ||
       target.tts_language !== profile.tts_language ||
-      target.tts_voice !== profile.tts_voice
+      target.tts_voice !== profile.tts_voice ||
+      target.tts_speed !== profile.tts_speed ||
+      target.tts_instructions !== profile.tts_instructions ||
+      target.tts_style !== profile.tts_style ||
+      target.tts_style_degree !== profile.tts_style_degree ||
+      JSON.stringify(target.tts_advanced_options ?? {}) !==
+        JSON.stringify(profile.tts_advanced_options ?? {})
     ) {
       changes.push("configuración de voz");
     }
@@ -468,6 +522,11 @@ export default function ProfileEditorPage() {
         tts_model: ttsModel,
         tts_language: ttsLanguage,
         tts_voice: ttsVoice,
+        tts_speed: ttsSpeed,
+        tts_instructions: ttsInstructions,
+        tts_style: ttsStyle,
+        tts_style_degree: ttsStyleDegree,
+        tts_advanced_options: ttsAdvancedOptions,
       });
       const nextUrl = URL.createObjectURL(blob);
       setTTSPreviewUrl(nextUrl);
@@ -475,6 +534,20 @@ export default function ProfileEditorPage() {
       setError(err instanceof Error ? err.message : "No se pudo generar la muestra");
     } finally {
       setTTSPreviewBusy(false);
+    }
+  }
+
+  async function refreshTTSCatalog() {
+    setTTSCatalogBusy(true);
+    setError(null);
+    try {
+      setTTSOptions(await api.getTTSOptions(true));
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "No se pudo actualizar el catálogo TTS",
+      );
+    } finally {
+      setTTSCatalogBusy(false);
     }
   }
 
@@ -671,12 +744,34 @@ export default function ProfileEditorPage() {
         {isVoice && ttsOptions && (
           <div className="card p-5">
             <div className="mb-4">
-              <label className="label">Síntesis de voz (TTS)</label>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="label">Síntesis de voz (TTS)</label>
+                <button
+                  type="button"
+                  onClick={refreshTTSCatalog}
+                  disabled={ttsCatalogBusy}
+                  className="btn-secondary btn-sm"
+                >
+                  {ttsCatalogBusy ? "Actualizando…" : "Actualizar catálogo"}
+                </button>
+              </div>
               <p className="text-xs leading-relaxed text-zinc-500">
                 Proveedor, modelo, idioma y voz quedan congelados en cada
                 <code className="mx-1 text-zinc-300">voice_script</code>. El montaje
                 usa ese snapshot aunque edites después el perfil.
               </p>
+              <p className="mt-1 text-xs text-zinc-500">
+                Catálogo {ttsOptions.source === "openrouter_models_api" ? "OpenRouter" : "local"}
+                {ttsOptions.updated_at
+                  ? ` · ${new Date(ttsOptions.updated_at).toLocaleString("es-ES")}`
+                  : ""}
+                {ttsOptions.stale ? " · usando último snapshot válido" : ""}
+              </p>
+              {ttsOptions.error && (
+                <p className="mt-1 text-xs text-amber-200">
+                  No se pudo refrescar: {ttsOptions.error}
+                </p>
+              )}
             </div>
             {profile.tts_available === false && (
               <div className="mb-4 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">
@@ -699,6 +794,11 @@ export default function ProfileEditorPage() {
                     setTTSModel(option.model);
                     setTTSLanguage("inherit");
                     setTTSVoice(option.default_voice);
+                    setTTSSpeed(1);
+                    setTTSInstructions("");
+                    setTTSStyle(null);
+                    setTTSStyleDegree(null);
+                    setTTSAdvancedOptions({});
                   }}
                   className="input"
                 >
@@ -789,6 +889,116 @@ export default function ProfileEditorPage() {
                 )}
               </div>
             </div>
+            {selectedTTSModel && (
+              <div className="mt-4 rounded-lg border border-white/[0.08] bg-white/[0.02] p-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+                  Controles expresivos compatibles
+                </p>
+                <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                  {selectedTTSModel.capabilities.speed && (
+                    <div>
+                      <label className="label">
+                        Velocidad · {ttsSpeed.toFixed(2)}×
+                      </label>
+                      <input
+                        type="range"
+                        min={selectedTTSModel.capabilities.speed.min}
+                        max={selectedTTSModel.capabilities.speed.max}
+                        step={selectedTTSModel.capabilities.speed.step}
+                        value={ttsSpeed}
+                        onChange={(event) => setTTSSpeed(Number(event.target.value))}
+                        className="w-full"
+                      />
+                    </div>
+                  )}
+                  {selectedTTSModel.capabilities.styles.length > 0 && (
+                    <div>
+                      <label className="label">Estilo</label>
+                      <select
+                        value={ttsStyle ?? ""}
+                        onChange={(event) => {
+                          const nextStyle = event.target.value || null;
+                          setTTSStyle(nextStyle);
+                          if (!nextStyle) setTTSStyleDegree(null);
+                        }}
+                        className="input"
+                      >
+                        <option value="">Sin estilo forzado</option>
+                        {selectedTTSModel.capabilities.styles.map((style) => (
+                          <option key={style} value={style}>
+                            {style}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  {selectedTTSModel.capabilities.style_degree && ttsStyle && (
+                    <div>
+                      <label className="label">
+                        Intensidad · {(ttsStyleDegree ?? 1).toFixed(2)}
+                      </label>
+                      <input
+                        type="range"
+                        min={selectedTTSModel.capabilities.style_degree.min}
+                        max={selectedTTSModel.capabilities.style_degree.max}
+                        step={selectedTTSModel.capabilities.style_degree.step}
+                        value={ttsStyleDegree ?? 1}
+                        onChange={(event) =>
+                          setTTSStyleDegree(Number(event.target.value))
+                        }
+                        className="w-full"
+                      />
+                    </div>
+                  )}
+                  {selectedTTSModel.capabilities.pronunciation && (
+                    <div>
+                      <label className="label">Pronunciación específica</label>
+                      <input
+                        value={String(ttsAdvancedOptions.pronunciation ?? "")}
+                        onChange={(event) =>
+                          setTTSAdvancedOptions((current) => ({
+                            ...current,
+                            pronunciation: event.target.value,
+                          }))
+                        }
+                        placeholder="término=pronunciación"
+                        className="input"
+                      />
+                    </div>
+                  )}
+                </div>
+                {selectedTTSModel.capabilities.instructions && (
+                  <div className="mt-4">
+                    <label className="label">
+                      Instrucciones de tono, ritmo y emoción
+                    </label>
+                    <textarea
+                      value={ttsInstructions}
+                      maxLength={1000}
+                      rows={3}
+                      onChange={(event) => setTTSInstructions(event.target.value)}
+                      placeholder="Ej.: tono cercano, ritmo pausado y énfasis en las ideas clave."
+                      className="input resize-y"
+                    />
+                  </div>
+                )}
+                {selectedTTSModel.capabilities.inline_tags.length > 0 && (
+                  <p className="mt-3 text-xs text-zinc-500">
+                    Tags admitidos en el guion:{" "}
+                    {selectedTTSModel.capabilities.inline_tags.join(", ")}. No se
+                    insertan automáticamente.
+                  </p>
+                )}
+                {!selectedTTSModel.capabilities.speed &&
+                  !selectedTTSModel.capabilities.instructions &&
+                  selectedTTSModel.capabilities.styles.length === 0 &&
+                  !selectedTTSModel.capabilities.pronunciation && (
+                    <p className="mt-2 text-xs text-zinc-500">
+                      Este modelo no publica controles expresivos adicionales.
+                    </p>
+                  )}
+              </div>
+            )}
             <div className="mt-4">
               <label className="label">Muestra de voz · máximo 300 caracteres</label>
               <textarea

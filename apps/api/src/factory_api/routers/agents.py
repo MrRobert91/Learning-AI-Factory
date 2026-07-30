@@ -1,3 +1,4 @@
+import hashlib
 import json
 import secrets
 import time
@@ -27,9 +28,6 @@ from factory_agents.tools.tts import (
     build_tts_provider,
     default_tts_config,
     estimated_tts_cost,
-    normalize_tts_selection,
-    resolve_tts_config,
-    tts_options,
 )
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, Response
@@ -58,6 +56,11 @@ from factory_api.schemas import (
     ProfileVersionRead,
     TTSPreviewRequest,
 )
+from factory_api.tts_catalog import (
+    catalog_state,
+    normalize_current_tts_selection,
+    resolve_current_tts_config,
+)
 from factory_api.usage import record_usage
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
@@ -79,7 +82,14 @@ LOGO_CONFIG_KEYS = {
     "logo_opacity",
     "logo_visibility",
 }
-TTS_CONFIG_KEYS = {"tts_provider", "tts_model", "tts_language", "tts_voice"}
+TTS_BASE_CONFIG_KEYS = {"tts_provider", "tts_model", "tts_language", "tts_voice"}
+TTS_CONFIG_KEYS = TTS_BASE_CONFIG_KEYS | {
+    "tts_speed",
+    "tts_instructions",
+    "tts_style",
+    "tts_style_degree",
+    "tts_advanced_options",
+}
 DEFAULT_LOGO_VISIBILITY = {"cover": True, "content": True, "summary": True}
 _TTS_PREVIEW_CALLS: dict[str, list[float]] = {}
 
@@ -108,6 +118,11 @@ def _profile_config(
     tts_model: str | None = None,
     tts_language: str | None = None,
     tts_voice: str | None = None,
+    tts_speed: float | None = None,
+    tts_instructions: str | None = None,
+    tts_style: str | None = None,
+    tts_style_degree: float | None = None,
+    tts_advanced_options: dict | None = None,
     subtitles_mode: str | None = None,
 ) -> dict:
     config = {
@@ -147,8 +162,17 @@ def _profile_config(
         )
         if tts_language:
             config["tts_language"] = tts_language
+        for key, value in {
+            "tts_speed": tts_speed,
+            "tts_instructions": tts_instructions,
+            "tts_style": tts_style,
+            "tts_style_degree": tts_style_degree,
+            "tts_advanced_options": tts_advanced_options,
+        }.items():
+            if value is not None:
+                config[key] = value
         try:
-            normalize_tts_selection(config, changed_fields=TTS_CONFIG_KEYS)
+            normalize_current_tts_selection(config, changed_fields=TTS_CONFIG_KEYS)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
     if agent_type == "video":
@@ -212,17 +236,21 @@ def _voice_tts_fields(config: dict, agent_type: str) -> dict:
             "tts_language": None,
             "tts_voice": None,
             "tts_available": None,
+            "tts_speed": None,
+            "tts_instructions": None,
+            "tts_style": None,
+            "tts_style_degree": None,
+            "tts_advanced_options": None,
         }
     effective = dict(config)
-    if not TTS_CONFIG_KEYS.issubset(effective):
-        effective.update(
-            default_tts_config(
-                model=get_settings().tts_model,
-                voice=get_settings().tts_voice,
-            )
-        )
+    defaults = default_tts_config(
+        model=get_settings().tts_model,
+        voice=get_settings().tts_voice,
+    )
+    for key, value in defaults.items():
+        effective.setdefault(key, value)
     try:
-        resolved = resolve_tts_config(effective)
+        resolved = resolve_current_tts_config(effective)
         available = True
     except ValueError:
         resolved = {
@@ -230,6 +258,11 @@ def _voice_tts_fields(config: dict, agent_type: str) -> dict:
             "tts_model": effective.get("tts_model"),
             "tts_language": effective.get("tts_language") or "inherit",
             "tts_voice": effective.get("tts_voice"),
+            "tts_speed": effective.get("tts_speed", 1.0),
+            "tts_instructions": effective.get("tts_instructions", ""),
+            "tts_style": effective.get("tts_style"),
+            "tts_style_degree": effective.get("tts_style_degree"),
+            "tts_advanced_options": effective.get("tts_advanced_options") or {},
         }
         available = False
     return {
@@ -238,6 +271,11 @@ def _voice_tts_fields(config: dict, agent_type: str) -> dict:
         "tts_language": resolved.get("tts_language"),
         "tts_voice": resolved.get("tts_voice"),
         "tts_available": available,
+        "tts_speed": resolved.get("tts_speed", 1.0),
+        "tts_instructions": resolved.get("tts_instructions", ""),
+        "tts_style": resolved.get("tts_style"),
+        "tts_style_degree": resolved.get("tts_style_degree"),
+        "tts_advanced_options": resolved.get("tts_advanced_options") or {},
     }
 
 
@@ -253,7 +291,11 @@ def _supplied_tts_config(body: ProfileCreate | ProfileUpdate) -> dict:
     return {
         key: getattr(body, key)
         for key in TTS_CONFIG_KEYS
-        if key in body.model_fields_set and getattr(body, key) is not None
+        if key in body.model_fields_set
+        and (
+            getattr(body, key) is not None
+            or key in {"tts_style", "tts_style_degree"}
+        )
     }
 
 
@@ -270,7 +312,7 @@ def _validate_media_profile_config(
         )
     if agent_type == "voice":
         try:
-            normalize_tts_selection(
+            normalize_current_tts_selection(
                 config,
                 changed_fields=changed_tts_fields or set(),
             )
@@ -478,8 +520,8 @@ def get_palette_options(user: CurrentUser):
 
 
 @router.get("/tts-options")
-def get_tts_options(user: CurrentUser):
-    return tts_options()
+def get_tts_options(user: CurrentUser, refresh: bool = False):
+    return catalog_state(refresh=refresh)
 
 
 @router.get("/{agent_type}/profiles", response_model=list[ProfileRead])
@@ -539,6 +581,11 @@ def create_profile(agent_type: str, body: ProfileCreate, user: CurrentUser, db: 
         tts_model=body.tts_model,
         tts_language=body.tts_language,
         tts_voice=body.tts_voice,
+        tts_speed=body.tts_speed,
+        tts_instructions=body.tts_instructions,
+        tts_style=body.tts_style,
+        tts_style_degree=body.tts_style_degree,
+        tts_advanced_options=body.tts_advanced_options,
         subtitles_mode=body.subtitles_mode,
     )
     _validate_media_profile_config(
@@ -603,25 +650,24 @@ def preview_profile_tts(
     _TTS_PREVIEW_CALLS[user.id] = calls
 
     config = json.loads(profile.config_json or "{}")
-    if not TTS_CONFIG_KEYS.issubset(config):
-        config.update(
-            default_tts_config(
-                model=get_settings().tts_model,
-                voice=get_settings().tts_voice,
-            )
-        )
+    defaults = default_tts_config(
+        model=get_settings().tts_model,
+        voice=get_settings().tts_voice,
+    )
+    for key, value in defaults.items():
+        config.setdefault(key, value)
     for key in TTS_CONFIG_KEYS:
         value = getattr(body, key)
-        if value is not None:
+        if value is not None or (
+            key in {"tts_style", "tts_style_degree"} and key in body.model_fields_set
+        ):
             config[key] = value
     try:
-        normalize_tts_selection(
+        normalize_current_tts_selection(
             config,
-            changed_fields={
-                key for key in TTS_CONFIG_KEYS if getattr(body, key) is not None
-            },
+            changed_fields=TTS_CONFIG_KEYS.intersection(body.model_fields_set),
         )
-        resolved = resolve_tts_config(config)
+        resolved = resolve_current_tts_config(config)
         provider = build_tts_provider(
             resolved,
             openai_api_key=get_settings().openai_api_key,
@@ -667,6 +713,15 @@ def preview_profile_tts(
             "request_format": resolved["tts_format"],
             "output_format": resolved["tts_output_format"],
             "mime_type": resolved["tts_mime_type"],
+            "speed": resolved["tts_speed"],
+            "instructions_sha256": hashlib.sha256(
+                resolved["tts_instructions"].encode()
+            ).hexdigest()
+            if resolved["tts_instructions"]
+            else None,
+            "style": resolved["tts_style"],
+            "style_degree": resolved["tts_style_degree"],
+            "catalog_updated_at": resolved["tts_catalog_updated_at"],
         },
     )
     media_type = getattr(provider, "mime_type", resolved["tts_mime_type"])
@@ -788,13 +843,12 @@ def update_profile(profile_id: str, body: ProfileUpdate, user: CurrentUser, db: 
 
     current_config = json.loads(profile.config_json or "{}")
     proposed_config = dict(current_config)
-    if profile.agent_type == "voice" and not TTS_CONFIG_KEYS.issubset(proposed_config):
-        proposed_config.update(
-            default_tts_config(
-                model=get_settings().tts_model,
-                voice=get_settings().tts_voice,
-            )
-        )
+    if profile.agent_type == "voice":
+        for key, value in default_tts_config(
+            model=get_settings().tts_model,
+            voice=get_settings().tts_voice,
+        ).items():
+            proposed_config.setdefault(key, value)
     supplied_images = _supplied_image_config(body)
     if supplied_images:
         _validate_slide_image_config(profile.agent_type, supplied_images)

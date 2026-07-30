@@ -270,6 +270,11 @@ export interface AgentProfile {
   tts_language: string | null;
   tts_voice: string | null;
   tts_available: boolean | null;
+  tts_speed: number | null;
+  tts_instructions: string | null;
+  tts_style: string | null;
+  tts_style_degree: number | null;
+  tts_advanced_options: Record<string, string | number | boolean> | null;
   subtitles_mode: "none" | "srt" | "burned_and_srt" | null;
   slide_palette: SlidePalette | null;
   logo_mode: "none" | "uploaded" | "generated" | null;
@@ -306,6 +311,11 @@ export interface ProfileVersion {
   tts_language: string | null;
   tts_voice: string | null;
   tts_available: boolean | null;
+  tts_speed: number | null;
+  tts_instructions: string | null;
+  tts_style: string | null;
+  tts_style_degree: number | null;
+  tts_advanced_options: Record<string, string | number | boolean> | null;
   subtitles_mode: "none" | "srt" | "burned_and_srt" | null;
   slide_palette: SlidePalette | null;
   logo_mode: "none" | "uploaded" | "generated" | null;
@@ -347,6 +357,19 @@ export interface TTSModelOption {
   provider_options: string[];
   price_per_million_characters_usd: number | null;
   price_hint: string;
+  available: boolean;
+  catalog_source: string;
+  catalog_updated_at: string | null;
+  status: "stable" | "preview";
+  max_characters: number | null;
+  capabilities: {
+    speed: { min: number; max: number; step: number } | null;
+    instructions: boolean;
+    styles: string[];
+    style_degree: { min: number; max: number; step: number } | null;
+    inline_tags: string[];
+    pronunciation: boolean;
+  };
 }
 
 export interface TTSOptions {
@@ -355,8 +378,17 @@ export interface TTSOptions {
     tts_model: string;
     tts_language: string;
     tts_voice: string;
+    tts_speed: number;
+    tts_instructions: string;
+    tts_style: string | null;
+    tts_style_degree: number | null;
+    tts_advanced_options: Record<string, string | number | boolean>;
   };
   models: TTSModelOption[];
+  source: string;
+  updated_at: string | null;
+  stale: boolean;
+  error: string | null;
 }
 
 export interface JobEvent {
@@ -684,7 +716,8 @@ export const api = {
   listAgents: () => request<AgentSpec[]>("/api/agents"),
   getImageOptions: () => request<ImageOptions>("/api/agents/image-options"),
   getPaletteOptions: () => request<PaletteOptions>("/api/agents/palette-options"),
-  getTTSOptions: () => request<TTSOptions>("/api/agents/tts-options"),
+  getTTSOptions: (refresh = false) =>
+    request<TTSOptions>(`/api/agents/tts-options${refresh ? "?refresh=true" : ""}`),
   listProfiles: (agentType: string) =>
     request<AgentProfile[]>(`/api/agents/${agentType}/profiles`),
   createProfile: (
@@ -706,6 +739,11 @@ export const api = {
       tts_model?: string;
       tts_language?: string;
       tts_voice?: string;
+      tts_speed?: number;
+      tts_instructions?: string;
+      tts_style?: string | null;
+      tts_style_degree?: number | null;
+      tts_advanced_options?: Record<string, string | number | boolean>;
       subtitles_mode?: "none" | "srt" | "burned_and_srt";
       slide_palette?: SlidePalette;
       logo_mode?: "none" | "uploaded" | "generated";
@@ -749,6 +787,11 @@ export const api = {
         | "tts_model"
         | "tts_language"
         | "tts_voice"
+        | "tts_speed"
+        | "tts_instructions"
+        | "tts_style"
+        | "tts_style_degree"
+        | "tts_advanced_options"
         | "subtitles_mode"
         | "slide_palette"
         | "logo_mode"
@@ -773,6 +816,11 @@ export const api = {
       tts_model: string;
       tts_language: string;
       tts_voice: string;
+      tts_speed: number;
+      tts_instructions: string;
+      tts_style: string | null;
+      tts_style_degree: number | null;
+      tts_advanced_options: Record<string, string | number | boolean>;
     },
   ) => {
     const response = await fetch(`/api/agents/profiles/${id}/tts-preview`, {
