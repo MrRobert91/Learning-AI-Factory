@@ -127,7 +127,11 @@ docker compose up --build                # stack completo (2 contenedores)
   clona assets y vuelve a renderizar sin llamar a LLM ni regenerar imágenes.
 - **Logos de slides**: la biblioteca y presentación viven en el perfil
   versionado. El run copia el logo activo a cada versión del `slide_deck` y lo
-  inyecta con `tools/logos.py`; nunca lo regenera durante la producción.
+  inyecta con `tools/logos.py` como capa absoluta respecto al canvas; una imagen
+  lateral nunca cambia su esquina. `logo_background_mode` es `opaque` por
+  defecto o `transparent`: este último conserva el original, reutiliza un PNG
+  RGBA derivado y validado, y congela ambos hashes/asset efectivo en el snapshot.
+  Nunca elimines el fondo ni regeneres el logo durante la producción.
 
 - **Seguridad de dependencias**: CI bloquea vulnerabilidades `high`/`critical`
   con `npm run audit:prod`, `npm run audit:all` y `pip-audit==2.10.1` sobre el

@@ -42,16 +42,19 @@ from factory_api.db import get_db
 from factory_api.logo_assets import (
     MAX_LOGO_BYTES,
     LogoValidationError,
+    prepare_transparent_logo,
     remove_logo_files,
     remove_profile_logo_files,
     store_logo,
     stored_logo_path,
+    transparent_logo_path,
     validate_logo,
 )
 from factory_api.models import AgentProfile, AgentProfileVersion, Artifact
 from factory_api.schemas import (
     AgentSpecRead,
     LogoGenerateRequest,
+    LogoTransparentVariantRead,
     ProfileCreate,
     ProfileRead,
     ProfileUpdate,
@@ -77,6 +80,7 @@ LOGO_CONFIG_KEYS = {
     "logo_size",
     "logo_margin_px",
     "logo_opacity",
+    "logo_background_mode",
     "logo_visibility",
 }
 TTS_CONFIG_KEYS = {"tts_provider", "tts_model", "tts_language", "tts_voice"}
@@ -103,6 +107,7 @@ def _profile_config(
     logo_size: str | None = None,
     logo_margin_px: int | None = None,
     logo_opacity: float | None = None,
+    logo_background_mode: str | None = None,
     logo_visibility: dict[str, bool] | None = None,
     tts_provider: str | None = None,
     tts_model: str | None = None,
@@ -133,6 +138,7 @@ def _profile_config(
                 "logo_size": logo_size or "small",
                 "logo_margin_px": 32 if logo_margin_px is None else logo_margin_px,
                 "logo_opacity": 1.0 if logo_opacity is None else logo_opacity,
+                "logo_background_mode": logo_background_mode or "opaque",
                 "logo_visibility": logo_visibility or dict(DEFAULT_LOGO_VISIBILITY),
                 "logo_candidates": [],
             }
@@ -189,6 +195,7 @@ def _slide_logo_fields(config: dict, agent_type: str) -> dict:
             "logo_size": None,
             "logo_margin_px": None,
             "logo_opacity": None,
+            "logo_background_mode": None,
             "logo_visibility": None,
             "logo_candidates": None,
         }
@@ -199,6 +206,7 @@ def _slide_logo_fields(config: dict, agent_type: str) -> dict:
         "logo_size": config.get("logo_size") or "small",
         "logo_margin_px": int(config.get("logo_margin_px", 32)),
         "logo_opacity": float(config.get("logo_opacity", 1.0)),
+        "logo_background_mode": config.get("logo_background_mode") or "opaque",
         "logo_visibility": config.get("logo_visibility") or dict(DEFAULT_LOGO_VISIBILITY),
         "logo_candidates": config.get("logo_candidates") or [],
     }
@@ -363,6 +371,54 @@ def _validate_slide_logo_config(agent_type: str, config: dict) -> None:
             status_code=422,
             detail="El modo del logo no coincide con el origen del candidato activo",
         )
+    if config.get("logo_background_mode", "opaque") == "transparent":
+        variant = candidate.get("transparent_variant")
+        if not isinstance(variant, dict) or not variant.get("path"):
+            raise HTTPException(
+                status_code=422,
+                detail="Prepara la variante transparente antes de guardar el perfil",
+            )
+
+
+def _prepare_active_transparent_variant(config: dict) -> None:
+    active_logo_id = config.get("active_logo_id")
+    candidates = config.get("logo_candidates") or []
+    candidate = next(
+        (item for item in candidates if item.get("id") == active_logo_id),
+        None,
+    )
+    if candidate is None:
+        raise HTTPException(status_code=422, detail="Selecciona un logo disponible")
+    original = stored_logo_path(str(candidate.get("path") or ""))
+    if original is None:
+        raise HTTPException(
+            status_code=409,
+            detail="El archivo original del logo ya no est\u00e1 disponible",
+        )
+    try:
+        variant = prepare_transparent_logo(
+            original,
+            source_sha256=str(candidate.get("sha256") or ""),
+            width=int(candidate.get("width") or 0),
+            height=int(candidate.get("height") or 0),
+        )
+    except LogoValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    variant_data = {
+        "path": variant.path,
+        "media_type": variant.media_type,
+        "width": variant.width,
+        "height": variant.height,
+        "sha256": variant.sha256,
+        "source_sha256": variant.source_sha256,
+        "method": variant.method,
+    }
+    config["logo_candidates"] = [
+        {**item, "transparent_variant": variant_data}
+        if item.get("id") == active_logo_id
+        else item
+        for item in candidates
+    ]
 
 
 def _normalize_supplied_palette(
@@ -534,6 +590,7 @@ def create_profile(agent_type: str, body: ProfileCreate, user: CurrentUser, db: 
         logo_size=body.logo_size,
         logo_margin_px=body.logo_margin_px,
         logo_opacity=body.logo_opacity,
+        logo_background_mode=body.logo_background_mode,
         logo_visibility=body.logo_visibility.model_dump() if body.logo_visibility else None,
         tts_provider=body.tts_provider,
         tts_model=body.tts_model,
@@ -727,11 +784,12 @@ def _validate_profile_version_assets(profile: AgentProfile, config: dict) -> Non
         ),
         None,
     )
-    asset_paths = (
-        [candidate.get("path"), candidate.get("thumbnail_path")]
-        if candidate is not None
-        else []
-    )
+    asset_paths = []
+    if candidate is not None:
+        asset_paths.extend([candidate.get("path"), candidate.get("thumbnail_path")])
+        if config.get("logo_background_mode", "opaque") == "transparent":
+            variant = candidate.get("transparent_variant") or {}
+            asset_paths.append(variant.get("path"))
     if not asset_paths or any(
         stored_logo_path(str(relative_path or "")) is None
         for relative_path in asset_paths
@@ -812,6 +870,9 @@ def update_profile(profile_id: str, body: ProfileUpdate, user: CurrentUser, db: 
         proposed_config.update(supplied_logo)
         if proposed_config.get("logo_mode") == "none":
             proposed_config["active_logo_id"] = None
+            proposed_config["logo_background_mode"] = "opaque"
+        elif proposed_config.get("logo_background_mode", "opaque") == "transparent":
+            _prepare_active_transparent_variant(proposed_config)
     if body.model is not None:
         if body.model:
             proposed_config["model"] = body.model
@@ -1042,22 +1103,70 @@ def get_profile_logo(
     user: CurrentUser,
     db: DB,
     thumbnail: bool = False,
+    variant: str = "original",
 ):
     profile = _slides_profile(db, profile_id)
     config = json.loads(profile.config_json or "{}")
     candidate = _candidate(config, logo_id)
     if candidate is None:
         raise HTTPException(status_code=404, detail="Logo no encontrado")
+    if variant not in {"original", "transparent"}:
+        raise HTTPException(status_code=422, detail="Variante de logo desconocida")
     relative_path = candidate.get("thumbnail_path" if thumbnail else "path", "")
     path = stored_logo_path(str(relative_path))
+    if variant == "transparent" and path is not None:
+        prepared_path = transparent_logo_path(path)
+        path = prepared_path if prepared_path.is_file() else None
     if path is None:
         raise HTTPException(status_code=404, detail="El archivo del logo no est\u00e1 disponible")
     media_type = (
-        candidate.get("media_type")
+        "image/png"
+        if variant == "transparent"
+        else candidate.get("media_type")
         if not thumbnail or candidate.get("media_type") == "image/svg+xml"
         else "image/png"
     )
     return FileResponse(path, media_type=media_type)
+
+
+@router.post(
+    "/profiles/{profile_id}/logos/{logo_id}/transparent-preview",
+    response_model=LogoTransparentVariantRead,
+)
+def prepare_profile_logo_transparent_preview(
+    profile_id: str,
+    logo_id: str,
+    user: CurrentUser,
+    db: DB,
+):
+    profile = _slides_profile(db, profile_id)
+    config = json.loads(profile.config_json or "{}")
+    candidate = _candidate(config, logo_id)
+    if candidate is None or candidate.get("status") != "available":
+        raise HTTPException(status_code=404, detail="Logo no encontrado")
+    original = stored_logo_path(str(candidate.get("path") or ""))
+    if original is None:
+        raise HTTPException(
+            status_code=404, detail="El archivo original del logo no est\u00e1 disponible"
+        )
+    try:
+        variant = prepare_transparent_logo(
+            original,
+            source_sha256=str(candidate.get("sha256") or ""),
+            width=int(candidate.get("width") or 0),
+            height=int(candidate.get("height") or 0),
+        )
+    except LogoValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return LogoTransparentVariantRead(
+        path=variant.path,
+        media_type="image/png",
+        width=variant.width,
+        height=variant.height,
+        sha256=variant.sha256,
+        source_sha256=variant.source_sha256,
+        method=variant.method,
+    )
 
 
 @router.delete(
