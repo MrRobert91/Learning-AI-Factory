@@ -242,6 +242,17 @@ export interface LogoCandidate {
   created_at: string;
   status: "available" | "error";
   error?: string | null;
+  transparent_variant?: LogoTransparentVariant | null;
+}
+
+export interface LogoTransparentVariant {
+  path: string;
+  media_type: "image/png";
+  width: number;
+  height: number;
+  sha256: string;
+  source_sha256: string;
+  method: string;
 }
 
 export interface LogoVisibility {
@@ -278,6 +289,7 @@ export interface AgentProfile {
   logo_size: "small" | "medium" | "large" | null;
   logo_margin_px: number | null;
   logo_opacity: number | null;
+  logo_background_mode: "opaque" | "transparent" | null;
   logo_visibility: LogoVisibility | null;
   logo_candidates: LogoCandidate[] | null;
   version: number;
@@ -314,6 +326,7 @@ export interface ProfileVersion {
   logo_size: "small" | "medium" | "large" | null;
   logo_margin_px: number | null;
   logo_opacity: number | null;
+  logo_background_mode: "opaque" | "transparent" | null;
   logo_visibility: LogoVisibility | null;
   logo_candidates: LogoCandidate[] | null;
   note: string;
@@ -714,6 +727,7 @@ export const api = {
       logo_size?: "small" | "medium" | "large";
       logo_margin_px?: number;
       logo_opacity?: number;
+      logo_background_mode?: "opaque" | "transparent";
       logo_visibility?: LogoVisibility;
     },
   ) =>
@@ -757,6 +771,7 @@ export const api = {
         | "logo_size"
         | "logo_margin_px"
         | "logo_opacity"
+        | "logo_background_mode"
         | "logo_visibility"
       >
     > & { model?: string; note?: string },
@@ -812,8 +827,26 @@ export const api = {
       `/api/agents/profiles/${id}/logos/${encodeURIComponent(logoId)}`,
       { method: "DELETE" },
     ),
-  profileLogoUrl: (id: string, logoId: string, thumbnail = false) =>
-    `/api/agents/profiles/${id}/logos/${encodeURIComponent(logoId)}${thumbnail ? "?thumbnail=true" : ""}`,
+  prepareTransparentProfileLogo: (id: string, logoId: string) =>
+    request<LogoTransparentVariant>(
+      `/api/agents/profiles/${id}/logos/${encodeURIComponent(logoId)}/transparent-preview`,
+      { method: "POST" },
+    ),
+  profileLogoUrl: (
+    id: string,
+    logoId: string,
+    options: boolean | { thumbnail?: boolean; variant?: "original" | "transparent" } = false,
+  ) => {
+    const normalized =
+      typeof options === "boolean" ? { thumbnail: options } : options;
+    const params = new URLSearchParams();
+    if (normalized.thumbnail) params.set("thumbnail", "true");
+    if (normalized.variant && normalized.variant !== "original") {
+      params.set("variant", normalized.variant);
+    }
+    const query = params.size > 0 ? `?${params.toString()}` : "";
+    return `/api/agents/profiles/${id}/logos/${encodeURIComponent(logoId)}${query}`;
+  },
   createAgentRun: (
     projectId: string,
     agent: string,
