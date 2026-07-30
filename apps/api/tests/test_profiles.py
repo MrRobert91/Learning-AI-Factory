@@ -3,6 +3,7 @@ import wave
 
 import pytest
 from factory_agents.tools.images import GeneratedImage
+from factory_api.logo_assets import stored_logo_path
 from PIL import Image
 
 
@@ -17,6 +18,16 @@ def _logo_raster(format_: str) -> bytes:
     image = Image.new("RGBA", (64, 48), (178, 58, 38, 255))
     if format_ == "JPEG":
         image = image.convert("RGB")
+    image.save(buffer, format=format_)
+    return buffer.getvalue()
+
+
+def _logo_with_background(format_: str = "PNG") -> bytes:
+    buffer = io.BytesIO()
+    image = Image.new("RGB", (96, 72), "white")
+    for x in range(20, 76):
+        for y in range(18, 54):
+            image.putpixel((x, y), (178, 58, 38))
     image.save(buffer, format=format_)
     return buffer.getvalue()
 
@@ -56,6 +67,7 @@ def test_default_profiles_seeded(auth_client):
     assert slides[0]["logo_mode"] == "none"
     assert slides[0]["active_logo_id"] is None
     assert slides[0]["logo_placement"] == "top-right"
+    assert slides[0]["logo_background_mode"] == "opaque"
     assert slides[0]["logo_candidates"] == []
     assert videos[0]["orientation"] == "horizontal"
     assert slides[0]["automatic_review_enabled"] is False
@@ -197,6 +209,140 @@ def test_uploaded_logo_is_sanitized_versioned_and_protected(auth_client):
         ("marca.png", "PNG", "image/png"),
         ("marca.webp", "WEBP", "image/webp"),
         ("marca.jpg", "JPEG", "image/jpeg"),
+    ],
+)
+def test_transparent_logo_preview_is_cached_then_versioned_without_changing_original(
+    auth_client, filename, format_, media_type
+):
+    profile = auth_client.post(
+        "/api/agents/slides/profiles", json={"name": f"Transparencia {format_}"}
+    ).json()
+    original_bytes = _logo_with_background(format_)
+    uploaded = auth_client.post(
+        f"/api/agents/profiles/{profile['id']}/logos/upload",
+        files={"file": (filename, original_bytes, media_type)},
+    ).json()
+    logo = uploaded["logo_candidates"][0]
+    version_before_preview = uploaded["version"]
+
+    preview = auth_client.post(
+        f"/api/agents/profiles/{profile['id']}/logos/{logo['id']}/transparent-preview"
+    )
+    assert preview.status_code == 200, preview.text
+    variant = preview.json()
+    assert variant["media_type"] == "image/png"
+    assert variant["source_sha256"] == logo["sha256"]
+    assert len(variant["sha256"]) == 64
+    assert (
+        auth_client.get(f"/api/agents/profiles/{profile['id']}").json()["version"]
+        == version_before_preview
+    )
+
+    transparent = auth_client.get(
+        f"/api/agents/profiles/{profile['id']}/logos/{logo['id']}"
+        "?variant=transparent"
+    )
+    assert transparent.status_code == 200
+    with Image.open(io.BytesIO(transparent.content)) as image:
+        assert image.mode == "RGBA"
+        assert image.getchannel("A").getextrema() == (0, 255)
+    original = auth_client.get(
+        f"/api/agents/profiles/{profile['id']}/logos/{logo['id']}"
+    )
+    assert original.content == original_bytes
+
+    selected = auth_client.patch(
+        f"/api/agents/profiles/{profile['id']}",
+        json={
+            "logo_mode": "uploaded",
+            "active_logo_id": logo["id"],
+            "logo_background_mode": "transparent",
+        },
+    )
+    assert selected.status_code == 200, selected.text
+    saved = selected.json()
+    assert saved["version"] == version_before_preview + 1
+    assert saved["logo_background_mode"] == "transparent"
+    saved_variant = saved["logo_candidates"][0]["transparent_variant"]
+    assert saved_variant["sha256"] == variant["sha256"]
+    assert saved_variant["source_sha256"] == logo["sha256"]
+
+    versions = auth_client.get(
+        f"/api/agents/profiles/{profile['id']}/versions"
+    ).json()
+    assert versions[0]["logo_background_mode"] == "transparent"
+    assert versions[-1]["logo_background_mode"] == "opaque"
+
+
+def test_transparent_logo_failure_does_not_change_active_profile(auth_client):
+    profile = auth_client.post(
+        "/api/agents/slides/profiles", json={"name": "Fondo no eliminable"}
+    ).json()
+    uploaded = auth_client.post(
+        f"/api/agents/profiles/{profile['id']}/logos/upload",
+        files={"file": ("solid.png", _logo_png(), "image/png")},
+    ).json()
+    logo = uploaded["logo_candidates"][0]
+    failed = auth_client.patch(
+        f"/api/agents/profiles/{profile['id']}",
+        json={
+            "logo_mode": "uploaded",
+            "active_logo_id": logo["id"],
+            "logo_background_mode": "transparent",
+        },
+    )
+    assert failed.status_code == 422
+    current = auth_client.get(f"/api/agents/profiles/{profile['id']}").json()
+    assert current["version"] == uploaded["version"]
+    assert current["active_version"] == uploaded["active_version"]
+    assert current["logo_mode"] == "none"
+    assert current["logo_background_mode"] == "opaque"
+
+
+def test_svg_transparent_preview_uses_rasterized_copy(
+    auth_client, monkeypatch
+):
+    rendered = Image.new("RGBA", (106, 82), (0, 0, 0, 0))
+    background = Image.open(io.BytesIO(_logo_with_background())).convert("RGBA")
+    rendered.alpha_composite(background, (5, 5))
+    monkeypatch.setattr(
+        "factory_api.logo_assets._rasterize_svg",
+        lambda path, width, height: rendered.copy(),
+    )
+    profile = auth_client.post(
+        "/api/agents/slides/profiles", json={"name": "Logo SVG transparente"}
+    ).json()
+    svg = (
+        b'<svg xmlns="http://www.w3.org/2000/svg" width="96" height="72">'
+        b'<rect width="96" height="72" fill="white"/>'
+        b'<rect x="20" y="18" width="56" height="36" fill="#b23a26"/>'
+        b"</svg>"
+    )
+    uploaded = auth_client.post(
+        f"/api/agents/profiles/{profile['id']}/logos/upload",
+        files={"file": ("marca.svg", svg, "image/svg+xml")},
+    ).json()
+    logo = uploaded["logo_candidates"][0]
+    preview = auth_client.post(
+        f"/api/agents/profiles/{profile['id']}/logos/{logo['id']}/transparent-preview"
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["media_type"] == "image/png"
+    transparent = auth_client.get(
+        f"/api/agents/profiles/{profile['id']}/logos/{logo['id']}"
+        "?variant=transparent"
+    )
+    with Image.open(io.BytesIO(transparent.content)) as image:
+        assert image.getchannel("A").getextrema() == (0, 255)
+        assert image.getpixel((0, 0))[3] == 0
+
+
+@pytest.mark.parametrize(
+    ("filename", "format_", "media_type"),
+    [
+        ("marca.png", "PNG", "image/png"),
+        ("marca.webp", "WEBP", "image/webp"),
+        ("marca.jpg", "JPEG", "image/jpeg"),
         ("marca.jpeg", "JPEG", "image/jpeg"),
     ],
 )
@@ -298,6 +444,7 @@ def test_profile_crud_and_versioning(auth_client):
     assert resp.status_code == 201
     profile = resp.json()
     assert profile["version"] == 1
+    assert profile["active_version"] == 1
 
     # Content change bumps version and snapshots it
     resp = auth_client.patch(
@@ -306,6 +453,7 @@ def test_profile_crud_and_versioning(auth_client):
     )
     assert resp.status_code == 200
     assert resp.json()["version"] == 2
+    assert resp.json()["active_version"] == 2
 
     # Name-only change does not bump version
     resp = auth_client.patch(
@@ -315,6 +463,7 @@ def test_profile_crud_and_versioning(auth_client):
 
     versions = auth_client.get(f"/api/agents/profiles/{profile['id']}/versions").json()
     assert [v["version"] for v in versions] == [2, 1]
+    assert [v["is_active"] for v in versions] == [True, False]
     assert versions[0]["note"] == "más humor"
 
     # Make it default, then deleting is refused
@@ -332,6 +481,108 @@ def test_profile_crud_and_versioning(auth_client):
     ][0]
     auth_client.patch(f"/api/agents/profiles/{factory['id']}", json={"is_default": True})
     assert auth_client.delete(f"/api/agents/profiles/{profile['id']}").status_code == 204
+
+
+def test_historical_profile_version_can_be_activated_and_edited(auth_client):
+    created = auth_client.post(
+        "/api/agents/curator/profiles",
+        json={
+            "name": "Curador con historial",
+            "soul_md": "SOUL-v1",
+            "agents_md": "AGENTS-v1",
+        },
+    ).json()
+    updated = auth_client.patch(
+        f"/api/agents/profiles/{created['id']}",
+        json={
+            "soul_md": "SOUL-v2",
+            "agents_md": "AGENTS-v2",
+            "note": "Segunda versión",
+        },
+    ).json()
+    assert updated["version"] == 2
+    assert updated["active_version"] == 2
+
+    activated = auth_client.post(
+        f"/api/agents/profiles/{created['id']}/versions/1/activate"
+    )
+    assert activated.status_code == 200
+    active = activated.json()
+    assert active["version"] == 2
+    assert active["active_version"] == 1
+    assert active["soul_md"] == "SOUL-v1"
+    assert active["agents_md"] == "AGENTS-v1"
+
+    repeated = auth_client.post(
+        f"/api/agents/profiles/{created['id']}/versions/1/activate"
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["active_version"] == 1
+    versions = auth_client.get(
+        f"/api/agents/profiles/{created['id']}/versions"
+    ).json()
+    assert [item["version"] for item in versions] == [2, 1]
+    assert [item["is_active"] for item in versions] == [False, True]
+
+    edited = auth_client.patch(
+        f"/api/agents/profiles/{created['id']}",
+        json={"soul_md": "SOUL-v3 desde v1", "note": "Editar la activa histórica"},
+    ).json()
+    assert edited["version"] == 3
+    assert edited["active_version"] == 3
+    assert edited["soul_md"] == "SOUL-v3 desde v1"
+    assert edited["agents_md"] == "AGENTS-v1"
+    versions = auth_client.get(
+        f"/api/agents/profiles/{created['id']}/versions"
+    ).json()
+    assert versions[0]["version"] == 3
+    assert versions[0]["agents_md"] == "AGENTS-v1"
+    assert versions[1]["agents_md"] == "AGENTS-v2"
+    assert sum(item["is_active"] for item in versions) == 1
+
+    missing = auth_client.post(
+        f"/api/agents/profiles/{created['id']}/versions/99/activate"
+    )
+    assert missing.status_code == 404
+
+
+def test_historical_profile_version_with_missing_logo_cannot_be_activated(auth_client):
+    profile = auth_client.post(
+        "/api/agents/slides/profiles",
+        json={"name": "Slides con logo histórico"},
+    ).json()
+    uploaded = auth_client.post(
+        f"/api/agents/profiles/{profile['id']}/logos/upload",
+        files={"file": ("marca.png", _logo_png(), "image/png")},
+    ).json()
+    logo_id = uploaded["logo_candidates"][0]["id"]
+    with_logo = auth_client.patch(
+        f"/api/agents/profiles/{profile['id']}",
+        json={"logo_mode": "uploaded", "active_logo_id": logo_id},
+    ).json()
+    assert with_logo["active_version"] == 3
+    without_logo = auth_client.patch(
+        f"/api/agents/profiles/{profile['id']}",
+        json={"logo_mode": "none", "active_logo_id": None},
+    ).json()
+    assert without_logo["active_version"] == 4
+
+    versions = auth_client.get(
+        f"/api/agents/profiles/{profile['id']}/versions"
+    ).json()
+    logo_version = next(item for item in versions if item["version"] == 3)
+    original = stored_logo_path(logo_version["logo_candidates"][0]["path"])
+    assert original is not None
+    original.unlink()
+
+    activation = auth_client.post(
+        f"/api/agents/profiles/{profile['id']}/versions/3/activate"
+    )
+    assert activation.status_code == 409
+    assert "logo" in activation.json()["detail"].lower()
+    current = auth_client.get(f"/api/agents/profiles/{profile['id']}").json()
+    assert current["active_version"] == 4
+    assert current["logo_mode"] == "none"
 
 
 def test_automatic_review_policy_is_validated_and_versioned(auth_client):
@@ -384,18 +635,29 @@ def test_automatic_review_policy_is_validated_and_versioned(auth_client):
 def test_tts_catalog_and_voice_profile_configuration_are_closed_and_versioned(
     auth_client,
 ):
-    options = auth_client.get("/api/agents/tts-options")
+    options = auth_client.get("/api/agents/tts-options?refresh=true")
     assert options.status_code == 200
-    models = options.json()["models"]
+    payload = options.json()
+    models = payload["models"]
     assert {
         (item["provider"], item["model"])
         for item in models
-    } == {
+    }.issuperset(
+        {
         ("openai", "gpt-4o-mini-tts"),
+        ("openai", "gpt-4o-mini-tts-2025-12-15"),
+        ("openai", "tts-1"),
+        ("openai", "tts-1-hd"),
         ("openrouter", "hexgrad/kokoro-82m"),
         ("openrouter", "google/gemini-3.1-flash-tts-preview"),
         ("openrouter", "microsoft/mai-voice-2"),
-    }
+        ("openrouter", "microsoft/mai-voice-2-flash"),
+        ("openrouter", "x-ai/grok-voice-tts-1.0"),
+        ("openrouter", "deepgram/aura-2"),
+        ("openrouter", "mistralai/voxtral-mini-tts-2603"),
+        }
+    )
+    assert payload["source"] in {"openrouter_models_api", "bundled_fallback"}
     gemini = next(
         item
         for item in models
@@ -407,6 +669,7 @@ def test_tts_catalog_and_voice_profile_configuration_are_closed_and_versioned(
     assert gemini["output_mime_type"] == "audio/wav"
     assert gemini["sample_rate_hz"] == 24000
     assert gemini["channels"] == 1
+    assert gemini["capabilities"]["instructions"] is True
 
     response = auth_client.post(
         "/api/agents/voice/profiles",
@@ -416,6 +679,7 @@ def test_tts_catalog_and_voice_profile_configuration_are_closed_and_versioned(
             "tts_model": "hexgrad/kokoro-82m",
             "tts_language": "es-ES",
             "tts_voice": "ef_dora",
+            "tts_speed": 1.0,
         },
     )
     assert response.status_code == 201, response.text
@@ -428,12 +692,18 @@ def test_tts_catalog_and_voice_profile_configuration_are_closed_and_versioned(
         json={
             "tts_model": "microsoft/mai-voice-2",
             "tts_language": "es-ES",
+            "tts_speed": 1.2,
+            "tts_style": "cheerful",
+            "tts_style_degree": 1.3,
             "note": "Cambiar a MAI",
         },
     )
     assert changed.status_code == 200, changed.text
     assert changed.json()["version"] == 2
     assert changed.json()["tts_voice"] == "es-ES-Marta:MAI-Voice-2"
+    assert changed.json()["tts_speed"] == 1.2
+    assert changed.json()["tts_style"] == "cheerful"
+    assert changed.json()["tts_style_degree"] == 1.3
 
     invalid = auth_client.patch(
         f"/api/agents/profiles/{profile['id']}",
@@ -454,6 +724,7 @@ def test_tts_catalog_and_voice_profile_configuration_are_closed_and_versioned(
         f"/api/agents/profiles/{profile['id']}/versions"
     ).json()
     assert versions[0]["tts_model"] == "microsoft/mai-voice-2"
+    assert versions[0]["tts_style"] == "cheerful"
     assert versions[1]["tts_model"] == "hexgrad/kokoro-82m"
 
 
@@ -491,6 +762,8 @@ def test_video_subtitles_mode_defaults_to_none_and_is_versioned(auth_client):
 def test_tts_preview_returns_audio_without_creating_a_profile_version(
     auth_client, monkeypatch
 ):
+    captured = {}
+
     class FakeProvider:
         last_generation_id = "gen-preview"
 
@@ -500,7 +773,7 @@ def test_tts_preview_returns_audio_without_creating_a_profile_version(
 
     monkeypatch.setattr(
         "factory_api.routers.agents.build_tts_provider",
-        lambda *args, **kwargs: FakeProvider(),
+        lambda config, **kwargs: (captured.update(config) or FakeProvider()),
     )
     profile = auth_client.post(
         "/api/agents/voice/profiles",
@@ -514,12 +787,19 @@ def test_tts_preview_returns_audio_without_creating_a_profile_version(
             "tts_model": "gpt-4o-mini-tts",
             "tts_language": "inherit",
             "tts_voice": "nova",
+            "tts_speed": 1.15,
+            "tts_instructions": "Tono cercano y pausado",
+            "tts_style": None,
+            "tts_style_degree": None,
+            "tts_advanced_options": {},
         },
     )
     assert response.status_code == 200, response.text
     assert response.content == b"ID3preview"
     assert response.headers["content-type"].startswith("audio/mpeg")
     assert response.headers["x-generation-id"] == "gen-preview"
+    assert captured["tts_speed"] == 1.15
+    assert captured["tts_instructions"] == "Tono cercano y pausado"
     assert (
         len(
             auth_client.get(

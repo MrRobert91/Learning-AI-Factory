@@ -37,6 +37,25 @@ def test_parse_image_slots_limits_cost_and_keeps_one_per_slide():
     assert len({slot.slide_number for slot in slots}) == 6
 
 
+def test_parse_image_slots_normalizes_background_and_invalid_layouts():
+    deck = (
+        "---\nmarp: true\n---\n\n"
+        f"# Fondo\n{_marker('background request', 'background')}\n"
+        "---\n"
+        f"# Inválido\n{_marker('invalid request', 'center')}\n"
+        "---\n"
+        f"# Izquierda\n{_marker('left request', 'left')}\n"
+    )
+
+    slots = images.parse_image_slots(deck)
+
+    assert [(slot.requested_layout, slot.layout) for slot in slots] == [
+        ("background", "right"),
+        ("center", "right"),
+        ("left", "left"),
+    ]
+
+
 def test_generate_image_retries_twice_and_uses_supported_orientation(monkeypatch):
     monkeypatch.setattr(images.time, "sleep", lambda _seconds: None)
 
@@ -147,9 +166,88 @@ def test_generate_deck_images_persists_assets_and_metadata(tmp_path, monkeypatch
 
     assert "factory-image-id: slide-2" in updated
     assert "![bg right:42%](assets/slide-2.png)" in updated
+    assert "factory-side-image-layout:start" in updated
+    assert "_class: factory-side-image factory-side-image-right" in updated
+    assert "--factory-side-image-width: 42%" in updated
     assert records[0]["path"] == "artifacts/project/assets/slide-2.png"
     assert records[0]["prompt"] == "A network of connected ideas"
+    assert records[0]["requested_layout"] == "right"
+    assert records[0]["effective_layout"] == "right"
     assert (tmp_path / "assets" / "slide-2.png").is_file()
+
+
+def test_vertical_generated_image_uses_narrower_panel_and_preserves_alt_metadata(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        images,
+        "generate_image",
+        lambda *args, **kwargs: GeneratedImage(b"\x89PNG image", "image/png", None),
+    )
+    deck = (
+        "---\nmarp: true\ntheme: factory-vertical\nsize: 9:16\n---\n\n"
+        f"# Concepto\n{_marker('A vertical concept', 'left')}"
+    )
+
+    updated, records = images.generate_deck_images(
+        deck,
+        api_key="test",
+        model=images.DEFAULT_IMAGE_MODEL,
+        style=images.DEFAULT_IMAGE_STYLE,
+        custom_style_prompt="",
+        orientation="vertical",
+        deck_identity="course:vertical",
+        output_dir=tmp_path / "assets",
+        markdown_asset_dir="assets",
+        storage_asset_dir="artifacts/project/assets",
+    )
+
+    assert "![bg left:32%](assets/slide-1.png)" in updated
+    assert "--factory-side-image-width: 32%" in updated
+    assert "padding-left: calc(" in updated
+    assert "object-fit: cover" in updated
+    assert "font-size: 1.55em" in updated
+    assert records[0]["alt"] == "Concepto"
+
+
+def test_explicit_historical_background_remains_unchanged():
+    legacy = (
+        "---\nmarp: true\n---\n\n# Histórico\n"
+        "![bg brightness:0.42](legacy-background.jpg)\n"
+    )
+
+    assert images.strip_unprocessed_markers(legacy) == legacy
+    assert "![bg brightness:0.42]" in images.apply_side_image_layout(
+        legacy, "horizontal"
+    )
+
+
+def test_replacing_generated_image_keeps_one_side_directive_and_normalizes_background():
+    deck = (
+        "---\nmarp: true\n---\n\n# Concepto\n"
+        "<!-- factory-image-id: slide-1 -->\n"
+        "![bg brightness:0.42](old.png)\n"
+    )
+
+    updated = images.replace_generated_image(
+        deck,
+        "slide-1",
+        "assets/new.png",
+        layout="background",
+        orientation="vertical",
+    )
+    updated = images.replace_generated_image(
+        updated,
+        "slide-1",
+        "assets/newer.png",
+        layout="right",
+        orientation="vertical",
+    )
+
+    assert "brightness:0.42" not in updated
+    assert "![bg right:32%](assets/newer.png)" in updated
+    assert updated.count("_class: factory-side-image") == 1
+    assert updated.count("factory-side-image-layout:start") == 1
 
 
 def test_inline_local_images_makes_html_source_portable(tmp_path):

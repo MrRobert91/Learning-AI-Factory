@@ -110,6 +110,7 @@ def approve_proposal(proposal_id: str, user: CurrentUser, db: DB):
             )
         profile.agents_md = proposal.proposed_content
         profile.version += 1
+        profile.active_version = profile.version
         db.add(
             AgentProfileVersion(
                 profile_id=profile.id,

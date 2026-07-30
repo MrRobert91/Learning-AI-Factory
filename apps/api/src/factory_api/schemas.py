@@ -130,6 +130,16 @@ class AgentSpecRead(BaseModel):
     produces: list[str]
 
 
+class LogoTransparentVariantRead(BaseModel):
+    path: str
+    media_type: Literal["image/png"] = "image/png"
+    width: int
+    height: int
+    sha256: str
+    source_sha256: str
+    method: str
+
+
 class LogoCandidateRead(BaseModel):
     id: str
     source: Literal["uploaded", "generated"]
@@ -147,6 +157,7 @@ class LogoCandidateRead(BaseModel):
     created_at: datetime
     status: Literal["available", "error"] = "available"
     error: str | None = None
+    transparent_variant: LogoTransparentVariantRead | None = None
 
 
 class LogoVisibility(BaseModel):
@@ -167,6 +178,11 @@ class TTSPreviewRequest(BaseModel):
     tts_model: str | None = None
     tts_language: str | None = None
     tts_voice: str | None = None
+    tts_speed: float | None = None
+    tts_instructions: str | None = Field(default=None, max_length=1000)
+    tts_style: str | None = None
+    tts_style_degree: float | None = None
+    tts_advanced_options: dict[str, str | int | float | bool] | None = None
 
 
 class ProfileCreate(BaseModel):
@@ -186,6 +202,11 @@ class ProfileCreate(BaseModel):
     tts_model: str | None = None
     tts_language: str | None = None
     tts_voice: str | None = None
+    tts_speed: float | None = None
+    tts_instructions: str | None = Field(default=None, max_length=1000)
+    tts_style: str | None = None
+    tts_style_degree: float | None = None
+    tts_advanced_options: dict[str, str | int | float | bool] | None = None
     subtitles_mode: Literal["none", "srt", "burned_and_srt"] | None = None
     slide_palette: dict[str, str] | None = None
     logo_mode: Literal["none", "uploaded", "generated"] | None = None
@@ -196,6 +217,7 @@ class ProfileCreate(BaseModel):
     logo_size: Literal["small", "medium", "large"] | None = None
     logo_margin_px: int | None = Field(default=None, ge=0, le=128)
     logo_opacity: float | None = Field(default=None, ge=0, le=1)
+    logo_background_mode: Literal["opaque", "transparent"] | None = None
     logo_visibility: LogoVisibility | None = None
 
 
@@ -216,6 +238,11 @@ class ProfileUpdate(BaseModel):
     tts_model: str | None = None
     tts_language: str | None = None
     tts_voice: str | None = None
+    tts_speed: float | None = None
+    tts_instructions: str | None = Field(default=None, max_length=1000)
+    tts_style: str | None = None
+    tts_style_degree: float | None = None
+    tts_advanced_options: dict[str, str | int | float | bool] | None = None
     subtitles_mode: Literal["none", "srt", "burned_and_srt"] | None = None
     slide_palette: dict[str, str] | None = None
     logo_mode: Literal["none", "uploaded", "generated"] | None = None
@@ -226,6 +253,7 @@ class ProfileUpdate(BaseModel):
     logo_size: Literal["small", "medium", "large"] | None = None
     logo_margin_px: int | None = Field(default=None, ge=0, le=128)
     logo_opacity: float | None = Field(default=None, ge=0, le=1)
+    logo_background_mode: Literal["opaque", "transparent"] | None = None
     logo_visibility: LogoVisibility | None = None
     is_default: bool | None = None
     note: str = ""
@@ -251,6 +279,11 @@ class ProfileRead(BaseModel):
     tts_language: str | None = None
     tts_voice: str | None = None
     tts_available: bool | None = None
+    tts_speed: float | None = None
+    tts_instructions: str | None = None
+    tts_style: str | None = None
+    tts_style_degree: float | None = None
+    tts_advanced_options: dict[str, str | int | float | bool] | None = None
     subtitles_mode: Literal["none", "srt", "burned_and_srt"] | None = None
     slide_palette: dict[str, str] | None = None
     logo_mode: Literal["none", "uploaded", "generated"] | None = None
@@ -261,9 +294,11 @@ class ProfileRead(BaseModel):
     logo_size: Literal["small", "medium", "large"] | None = None
     logo_margin_px: int | None = None
     logo_opacity: float | None = None
+    logo_background_mode: Literal["opaque", "transparent"] | None = None
     logo_visibility: LogoVisibility | None = None
     logo_candidates: list[LogoCandidateRead] | None = None
     version: int
+    active_version: int
     is_default: bool
     created_at: datetime
     updated_at: datetime
@@ -271,6 +306,7 @@ class ProfileRead(BaseModel):
 
 class ProfileVersionRead(BaseModel):
     version: int
+    is_active: bool
     soul_md: str
     agents_md: str
     model: str | None = None
@@ -287,6 +323,11 @@ class ProfileVersionRead(BaseModel):
     tts_language: str | None = None
     tts_voice: str | None = None
     tts_available: bool | None = None
+    tts_speed: float | None = None
+    tts_instructions: str | None = None
+    tts_style: str | None = None
+    tts_style_degree: float | None = None
+    tts_advanced_options: dict[str, str | int | float | bool] | None = None
     subtitles_mode: Literal["none", "srt", "burned_and_srt"] | None = None
     slide_palette: dict[str, str] | None = None
     logo_mode: Literal["none", "uploaded", "generated"] | None = None
@@ -297,6 +338,7 @@ class ProfileVersionRead(BaseModel):
     logo_size: Literal["small", "medium", "large"] | None = None
     logo_margin_px: int | None = None
     logo_opacity: float | None = None
+    logo_background_mode: Literal["opaque", "transparent"] | None = None
     logo_visibility: LogoVisibility | None = None
     logo_candidates: list[LogoCandidateRead] | None = None
     note: str
@@ -393,12 +435,16 @@ class RunControlRequest(BaseModel):
 class AgentRunCreate(BaseModel):
     agent: str = Field(description="curator | planner | lessons | slides | pipeline")
     profile_id: str | None = None
+    expected_input_artifact_ids: dict[str, list[str]] | None = None
+    request_id: str | None = Field(default=None, min_length=1, max_length=64)
+    trigger: str | None = Field(default=None, max_length=32)
 
 
 class CourseVideoCreate(BaseModel):
     include_subtitles: bool = True
     include_chapters: bool = True
     transition: Literal["none", "fade_500ms", "gap_500ms"] = "none"
+    request_id: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class CourseVideoPreflightIssue(BaseModel):

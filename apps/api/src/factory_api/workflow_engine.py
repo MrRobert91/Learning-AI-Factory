@@ -11,6 +11,11 @@ import time
 from contextlib import contextmanager
 from typing import Any, TypedDict
 
+from factory_agents.contracts.agent_io import (
+    AGENT_INPUTS,
+    AGENT_OUTPUTS,
+    VALID_AGENTS,
+)
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
@@ -18,36 +23,6 @@ from langgraph.types import interrupt
 from factory_api.config import get_settings
 from factory_api.run_control import checkpoint, load_scope_state, save_scope_state
 
-VALID_AGENTS = (
-    "curator",
-    "planner",
-    "lessons",
-    "slides",
-    "script",
-    "voice",
-    "video",
-    "publisher",
-)
-AGENT_INPUTS: dict[str, tuple[str, ...]] = {
-    "curator": (),
-    "planner": ("research_brief",),
-    "lessons": ("research_brief", "course_plan"),
-    "slides": ("course_plan", "lesson_content"),
-    "script": ("slide_deck",),
-    "voice": ("teaching_script",),
-    "video": ("voice_script", "slide_deck"),
-    "publisher": ("video",),
-}
-AGENT_OUTPUTS: dict[str, tuple[str, ...]] = {
-    "curator": ("research_brief",),
-    "planner": ("course_plan",),
-    "lessons": ("lesson_content",),
-    "slides": ("slide_deck",),
-    "script": ("teaching_script",),
-    "voice": ("voice_script",),
-    "video": ("video", "subtitles"),
-    "publisher": ("publication_package", "thumbnail"),
-}
 AGENT_LABELS = {
     "curator": "Curador de contenido",
     "planner": "Diseñador de curso",

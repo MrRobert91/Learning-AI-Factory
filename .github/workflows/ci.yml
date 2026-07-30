@@ -15,10 +15,28 @@ jobs:
           enable-cache: true
       - name: Install dependencies
         run: uv sync
+      - name: Install media tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
+      - name: Audit production dependencies
+        run: |
+          uv export --quiet --frozen --no-dev --no-hashes --no-emit-workspace --output-file "$RUNNER_TEMP/requirements-audit.txt"
+          uvx --from pip-audit==2.10.1 pip-audit --requirement "$RUNNER_TEMP/requirements-audit.txt"
       - name: Lint
         run: uv run ruff check .
       - name: Tests
-        run: uv run pytest apps/api/tests -q
+        run: uv run pytest apps/api/tests packages/factory_agents/tests -q
+      - name: Build and verify backend sandbox container
+        run: |
+          docker build --file apps/api/Dockerfile --tag learning-ai-factory-backend:test .
+          uid="$(docker run --rm --entrypoint id learning-ai-factory-backend:test -u)"
+          test "$uid" -ne 0
+          docker run --rm \
+            --env PYTHON_SANDBOX_MODE=isolated \
+            --entrypoint python \
+            learning-ai-factory-backend:test \
+            scripts/verify_python_sandbox.py
 
   web:
     runs-on: ubuntu-latest
@@ -34,7 +52,16 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
       - name: Install dependencies
         run: npm ci
+      - name: Audit production dependencies
+        run: npm run audit:prod
+      - name: Audit all dependencies
+        run: npm run audit:all
       - name: Typecheck
         run: npm run typecheck
       - name: Build
         run: npm run build
+      - name: Smoke test standalone proxy
+        run: npm run test:proxy
+      - name: Build frontend container
+        working-directory: ${{ github.workspace }}
+        run: docker build --file apps/web/Dockerfile apps/web

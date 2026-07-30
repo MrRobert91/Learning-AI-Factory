@@ -21,6 +21,8 @@ DEFAULT_IMAGE_MODEL = "bytedance-seed/seedream-4.5"
 DEFAULT_IMAGE_STYLE = "editorial_vector"
 MAX_IMAGES_PER_DECK = 6
 IMAGE_REQUEST_ATTEMPTS = 3  # Initial request plus two retries.
+AUTOMATIC_IMAGE_LAYOUTS = frozenset({"left", "right"})
+SIDE_IMAGE_WIDTHS = {"horizontal": 42, "vertical": 32}
 
 IMAGE_MODEL_OPTIONS: dict[str, dict[str, Any]] = {
     "bytedance-seed/seedream-4.5": {
@@ -104,7 +106,16 @@ CONSISTENCY_PROMPT = (
 MARKER_RE = re.compile(r"<!--\s*factory-image\s+(\{.*?\})\s*-->", re.DOTALL)
 FINAL_MARKER_RE = re.compile(
     r"<!--\s*factory-image-id:\s*(?P<id>[a-zA-Z0-9_-]+)\s*-->\s*\n"
+    r"(?:<!--\s*_class:\s*factory-side-image\s+"
+    r"factory-side-image-(?:left|right)\s*-->\s*\n)?"
     r"(?P<image>!\[[^\]]*\]\([^\n)]+\))"
+)
+SIDE_IMAGE_LAYOUT_START = "<!-- factory-side-image-layout:start -->"
+SIDE_IMAGE_LAYOUT_END = "<!-- factory-side-image-layout:end -->"
+SIDE_IMAGE_LAYOUT_RE = re.compile(
+    rf"{re.escape(SIDE_IMAGE_LAYOUT_START)}.*?"
+    rf"{re.escape(SIDE_IMAGE_LAYOUT_END)}\s*",
+    re.DOTALL,
 )
 
 logger = logging.getLogger(__name__)
@@ -119,6 +130,7 @@ class SlideImageSlot:
     image_id: str
     slide_number: int
     prompt: str
+    requested_layout: str
     layout: str
     alt: str
     marker: str
@@ -174,6 +186,13 @@ def _body_and_slides(deck: str) -> tuple[str, list[str]]:
     return prefix, re.split(r"(?m)^---\s*$", body)
 
 
+def normalize_automatic_image_layout(value: Any) -> tuple[str, str]:
+    """Return the requested and safe effective layout for generated images."""
+    requested = str(value or "right").strip().lower() or "right"
+    effective = requested if requested in AUTOMATIC_IMAGE_LAYOUTS else "right"
+    return requested, effective
+
+
 def parse_image_slots(deck: str, limit: int = MAX_IMAGES_PER_DECK) -> list[SlideImageSlot]:
     """Parse at most one valid marker per slide, capped for cost control."""
     _prefix, slides = _body_and_slides(deck)
@@ -190,14 +209,15 @@ def parse_image_slots(deck: str, limit: int = MAX_IMAGES_PER_DECK) -> list[Slide
         prompt = str(payload.get("prompt", "")).strip()
         if not prompt:
             continue
-        layout = str(payload.get("layout", "right")).lower()
-        if layout not in {"left", "right", "background"}:
-            layout = "right"
+        requested_layout, layout = normalize_automatic_image_layout(
+            payload.get("layout", "right")
+        )
         slots.append(
             SlideImageSlot(
                 image_id=f"slide-{slide_number}",
                 slide_number=slide_number,
                 prompt=prompt,
+                requested_layout=requested_layout,
                 layout=layout,
                 alt=str(payload.get("alt", "Ilustración generada")).strip()
                 or "Ilustración generada",
@@ -298,13 +318,84 @@ def generate_image(
     raise ImageGenerationError(f"No se pudo generar la imagen: {last_error}")
 
 
-def _image_markdown(slot: SlideImageSlot, markdown_path: str) -> str:
+def _side_image_layout_block(orientation: str) -> str:
+    width = SIDE_IMAGE_WIDTHS.get(orientation, SIDE_IMAGE_WIDTHS["horizontal"])
+    vertical_heading = (
+        """
+section.factory-side-image h1 {
+  font-size: 1.55em;
+  line-height: 1.12;
+}"""
+        if orientation == "vertical"
+        else ""
+    )
+    return f"""{SIDE_IMAGE_LAYOUT_START}
+<style>
+section.factory-side-image {{
+  --factory-side-image-width: {width}%;
+  --factory-side-image-gap: 20px;
+}}
+section.factory-side-image-right {{
+  padding-right: calc(var(--factory-side-image-width) + var(--factory-side-image-gap));
+}}
+section.factory-side-image-left {{
+  padding-left: calc(var(--factory-side-image-width) + var(--factory-side-image-gap));
+}}
+section.factory-side-image::after {{
+  background: var(--factory-background, #fff);
+  content: "";
+  inset-block: 0;
+  position: absolute;
+  width: var(--factory-side-image-gap);
+  z-index: 1;
+}}
+section.factory-side-image-right::after {{
+  right: calc(var(--factory-side-image-width) - 10px);
+}}
+section.factory-side-image-left::after {{
+  left: calc(var(--factory-side-image-width) - 10px);
+}}
+section.factory-side-image > :not(img) {{
+  position: relative;
+  z-index: 2;
+}}
+section.factory-side-image img[alt^="bg "] {{
+  object-fit: cover;
+}}{vertical_heading}
+</style>
+{SIDE_IMAGE_LAYOUT_END}"""
+
+
+def apply_side_image_layout(deck: str, orientation: str) -> str:
+    """Insert the portable CSS shared by Marp preview and every rendered format."""
+    clean = SIDE_IMAGE_LAYOUT_RE.sub("", deck.replace("\r\n", "\n")).strip()
+    block = _side_image_layout_block(orientation)
+    lines = clean.splitlines()
+    if lines and lines[0].strip() == "---":
+        try:
+            end = next(i for i, line in enumerate(lines[1:], 1) if line.strip() == "---")
+        except StopIteration:
+            end = -1
+        if end > 0:
+            frontmatter = "\n".join(lines[: end + 1])
+            body = "\n".join(lines[end + 1 :]).strip()
+            result = f"{frontmatter}\n\n{block}"
+            if body:
+                result += f"\n\n{body}"
+            return result.rstrip() + "\n"
+    return f"{block}\n\n{clean}".rstrip() + "\n"
+
+
+def _image_markdown(
+    slot: SlideImageSlot, markdown_path: str, *, orientation: str
+) -> str:
     marker = f"<!-- factory-image-id: {slot.image_id} -->"
-    if slot.layout == "background":
-        image = f"![bg brightness:0.42]({markdown_path})"
-    else:
-        image = f"![bg {slot.layout}:42%]({markdown_path})"
-    return f"{marker}\n{image}"
+    width = SIDE_IMAGE_WIDTHS.get(orientation, SIDE_IMAGE_WIDTHS["horizontal"])
+    class_directive = (
+        f"<!-- _class: factory-side-image factory-side-image-{slot.layout} -->"
+    )
+    image = f"![bg {slot.layout}:{width}%]({markdown_path})"
+    return f"{marker}\n{class_directive}\n{image}"
 
 
 def replace_generated_image(
@@ -314,11 +405,23 @@ def replace_generated_image(
     *,
     layout: str,
     alt: str = "Ilustración generada",
+    orientation: str = "horizontal",
 ) -> str:
-    slot = SlideImageSlot(image_id, 0, "", layout, alt, "")
-    replacement = _image_markdown(slot, markdown_path)
+    requested_layout, effective_layout = normalize_automatic_image_layout(layout)
+    slot = SlideImageSlot(
+        image_id,
+        0,
+        "",
+        requested_layout,
+        effective_layout,
+        alt,
+        "",
+    )
+    replacement = _image_markdown(slot, markdown_path, orientation=orientation)
     pattern = re.compile(
         rf"<!--\s*factory-image-id:\s*{re.escape(image_id)}\s*-->\s*\n"
+        r"(?:<!--\s*_class:\s*factory-side-image\s+"
+        r"factory-side-image-(?:left|right)\s*-->\s*\n)?"
         r"!\[[^\]]*\]\([^\n)]+\)"
     )
     updated, count = pattern.subn(replacement, deck, count=1)
@@ -329,7 +432,7 @@ def replace_generated_image(
         updated, count = failed_pattern.subn(replacement, deck, count=1)
     if count != 1:
         raise ValueError("No se encontró la imagen dentro del Markdown de las slides")
-    return updated
+    return apply_side_image_layout(updated, orientation)
 
 
 def generate_deck_images(
@@ -353,14 +456,20 @@ def generate_deck_images(
     slots = parse_image_slots(deck)
     output_dir.mkdir(parents=True, exist_ok=True)
     records: list[dict[str, Any]] = []
-    updated = deck
+    updated = apply_side_image_layout(deck, orientation) if slots else deck
     for slot in slots:
         resolved_prompt = f"{slot.prompt}\n\nSTYLE SYSTEM:\n{style_prompt}\n\n{CONSISTENCY_PROMPT}"
         if on_event:
             on_event(
                 "stage",
                 f"Generando imagen para la slide {slot.slide_number}…",
-                {"slide": slot.slide_number, "image_id": slot.image_id, "model": model},
+                {
+                    "slide": slot.slide_number,
+                    "image_id": slot.image_id,
+                    "model": model,
+                    "requested_layout": slot.requested_layout,
+                    "effective_layout": slot.layout,
+                },
             )
         try:
             generated = generate_image(
@@ -376,12 +485,18 @@ def generate_deck_images(
             path = output_dir / filename
             path.write_bytes(generated.content)
             markdown_path = f"{markdown_asset_dir}/{filename}".replace("\\", "/")
-            updated = updated.replace(slot.marker, _image_markdown(slot, markdown_path), 1)
+            updated = updated.replace(
+                slot.marker,
+                _image_markdown(slot, markdown_path, orientation=orientation),
+                1,
+            )
             records.append(
                 {
                     "id": slot.image_id,
                     "slide": slot.slide_number,
                     "prompt": slot.prompt,
+                    "requested_layout": slot.requested_layout,
+                    "effective_layout": slot.layout,
                     "layout": slot.layout,
                     "alt": slot.alt,
                     "model": model,
@@ -404,6 +519,8 @@ def generate_deck_images(
                     "id": slot.image_id,
                     "slide": slot.slide_number,
                     "prompt": slot.prompt,
+                    "requested_layout": slot.requested_layout,
+                    "effective_layout": slot.layout,
                     "layout": slot.layout,
                     "alt": slot.alt,
                     "model": model,

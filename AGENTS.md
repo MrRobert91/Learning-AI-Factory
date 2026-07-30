@@ -60,12 +60,23 @@ docker compose up --build                # stack completo (2 contenedores)
   volcar documentos completos al prompt.
 - **Editor de workflows**: los workflows editables empiezan siempre por
   `curator`. La compatibilidad entre pasos depende de los artefactos disponibles
-  y se define en `apps/web/src/lib/workflowRules.ts`; debe mantenerse alineada
-  con `AGENT_INPUTS`/`AGENT_OUTPUTS` de `factory_api/workflow_engine.py`.
+  y se define una sola vez en
+  `packages/factory_agents/src/factory_agents/contracts/agent_io.json`;
+  `factory_api.workflow_engine` la consume directamente y el contexto Docker
+  aislado de web usa `apps/web/src/lib/agent_io.generated.json`, un espejo cuya
+  igualdad exacta exige la suite backend. `workflowRules.ts` consume ese espejo.
+  Las acciones contextuales de las tarjetas congelan los IDs seleccionados al
+  crear el job, rechazan una selección obsoleta y restauran la selección de
+  outputs anterior si una regeneración falla o se cancela.
 - **Workflow seleccionado**: `projects.selected_workflow_id` conserva la
   preferencia mutable de cada proyecto. La UI solo usa un fallback temporal si
   falta o dejó de estar disponible; cada run congela por separado su ID, nombre
   y definición, y nunca se reescribe al cambiar la preferencia del proyecto.
+- **Versión activa de perfiles**: `AgentProfile.version` es la última versión
+  monotónica y `active_version` apunta al snapshot usado por futuras
+  ejecuciones. Activar una versión histórica no crea otra versión; los campos
+  actuales reflejan ese snapshot y editarlo crea la siguiente versión máxima,
+  que pasa a ser activa. Cada run congela la versión activa y su configuración.
 - **LLM**: OpenRouter (OpenAI-compatible), modelo por defecto en
   `Settings.openrouter_model`. Los agentes conversacionales (ideación) usan
   el cliente openai directo; los task agents usan deepagents.
@@ -91,17 +102,35 @@ docker compose up --build                # stack completo (2 contenedores)
   `subtitles_mode` (`none` por
   defecto, `srt` o `burned_and_srt`); la incrustación usa duraciones TTS reales,
   respeta orientación/logos y nunca añade llamadas LLM.
+- **Catálogo y expresividad TTS**: OpenRouter se descubre mediante Models API y
+  se conserva en un snapshot backend con TTL y fallback al último válido; las
+  voces documentadas completan metadata incompleta del API. Solo se muestran y
+  envían controles declarados por el modelo (`speed`, instrucciones, estilo,
+  intensidad, tags/pronunciación). El perfil versiona esas opciones, el
+  `voice_script` congela entrada de catálogo/precio/configuración y la clave de
+  caché incluye toda opción audible; una combinación retirada bloquea runs
+  nuevos, pero vídeo sigue consumiendo snapshots históricos autosuficientes.
 - **Vídeo completo del curso**: `course_video_export` consume el `course_plan` y
   las versiones seleccionadas de `video`/`subtitles` en orden pedagógico. El
   preflight bloquea inputs ausentes, corruptos o incompatibles antes de ffmpeg;
   el job concatena sin LLM/TTS, ajusta SRT/capítulos a la transición, valida la
   salida con ffprobe y solo entonces publica `course_video` y sus asociados
   versionados. Inputs y opciones idénticos reutilizan la versión válida.
+- **FFmpeg**: toda recodificación `libx264` usa la política efectiva
+  `FFMPEG_THREADS`/`FFMPEG_FILTER_THREADS`/`FFMPEG_FILTER_COMPLEX_THREADS`,
+  `FFMPEG_PRESET` y `FFMPEG_CRF`. La composición de lecciones precompone una
+  imagen estática cuando necesita fondo, publica cada segmento MP4 de forma
+  atómica con firma/manifiesto y `ffprobe`, y el runner debe pasar control
+  cooperativo para terminar el grupo FFmpeg activo al pausar o cancelar.
 - **Imágenes de slides**: son opcionales y se configuran/versionan en el perfil
   de `slides` (modelo OpenRouter + preset o prompt personalizado). El agente
-  selecciona como máximo 6 por lección; los originales viven como assets de la
-  versión del `slide_deck` y prompts/modelo/coste quedan en sus metadatos. Una
-  regeneración individual siempre crea una nueva versión autosuficiente del deck.
+  selecciona como máximo 6 por lección y solo puede pedir composición lateral
+  `left`/`right`; `background` o cualquier layout automático inválido se
+  normaliza a `right`, conservando requested/effective layout en metadatos. Los
+  fondos explícitos históricos/importados siguen siendo compatibles. Los
+  originales viven como assets de la versión del `slide_deck` y
+  prompts/modelo/coste quedan en sus metadatos. Una regeneración individual
+  conserva el lateral y siempre crea una nueva versión autosuficiente del deck.
 - **Uso y costes**: cada llamada LLM/evaluador/imagen/TTS se registra una sola
   vez en `usage_records` sin prompts ni respuestas. El histórico es inmutable;
   el coste activo se deriva de `usage_record_ids` en los artefactos seleccionados,
@@ -112,11 +141,27 @@ docker compose up --build                # stack completo (2 contenedores)
   clona assets y vuelve a renderizar sin llamar a LLM ni regenerar imágenes.
 - **Logos de slides**: la biblioteca y presentación viven en el perfil
   versionado. El run copia el logo activo a cada versión del `slide_deck` y lo
-  inyecta con `tools/logos.py`; nunca lo regenera durante la producción.
+  inyecta con `tools/logos.py` como capa absoluta respecto al canvas; una imagen
+  lateral nunca cambia su esquina. `logo_background_mode` es `opaque` por
+  defecto o `transparent`: este último conserva el original, reutiliza un PNG
+  RGBA derivado y validado, y congela ambos hashes/asset efectivo en el snapshot.
+  Nunca elimines el fondo ni regeneres el logo durante la producción.
 - **Logs del backend**: la consola es la única salida. Usa el formatter legible
   canónico y categorías `HTTP`/`JOB`/`STEP`/`EVAL`/multimedia; no restaures
   `backend.jsonl`, no dupliques `uvicorn.access` y nunca registres payloads,
   prompts, respuestas, texto TTS, documentos, binarios ni secretos.
+- **Seguridad de dependencias**: CI bloquea vulnerabilidades `high`/`critical`
+  con `npm run audit:prod`, `npm run audit:all` y `pip-audit==2.10.1` sobre el
+  export congelado de uv. Mantén Next.js en la serie 15 y React en la 19 hasta
+  una migración explícita; los overrides de PostCSS/Sharp son parches
+  documentados y deben retirarse cuando Next los incorpore. Dependabot propone
+  actualizaciones semanales a `dev`, sin auto-merge.
+- **Sandbox de Python**: el código generado se ejecuta con
+  `PYTHON_SANDBOX_MODE=isolated` bajo Landlock + seccomp, sin acceso a `/app` o
+  `/data` y sin syscalls de red/procesos/namespaces; el backend Docker corre
+  como usuario no root. Fuera de Docker el valor seguro es `disabled`;
+  `local-unsafe` debe elegirse explícitamente y nunca es fallback de un
+  aislamiento fallido.
 
 ## Convenciones
 

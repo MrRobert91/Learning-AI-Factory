@@ -17,6 +17,7 @@ from factory_agents.tools.images import (
     consistency_seed,
     generate_image,
     media_extension,
+    normalize_automatic_image_layout,
     replace_generated_image,
     resolve_style_prompt,
 )
@@ -461,13 +462,20 @@ def regenerate_slide_image(
     if previous_path is not None and previous_path != target:
         previous_path.unlink(missing_ok=True)
     markdown_path = f"{output_dir.name}/{filename}"
+    requested_layout = cloned_image.get(
+        "requested_layout", cloned_image.get("layout", "right")
+    )
+    _, effective_layout = normalize_automatic_image_layout(
+        cloned_image.get("effective_layout", cloned_image.get("layout", "right"))
+    )
     try:
         markdown = replace_generated_image(
             markdown,
             image_id,
             markdown_path,
-            layout=cloned_image.get("layout", "right"),
+            layout=effective_layout,
             alt=cloned_image.get("alt", "Ilustración generada"),
+            orientation=cloned_metadata.get("orientation", "horizontal"),
         )
     except ValueError as exc:
         shutil.rmtree(output_dir, ignore_errors=True)
@@ -485,6 +493,9 @@ def regenerate_slide_image(
             "media_type": generated.media_type,
             "cost_usd": generated.cost_usd,
             "status": "generated",
+            "requested_layout": requested_layout,
+            "effective_layout": effective_layout,
+            "layout": effective_layout,
         }
     )
     cloned_image.pop("error", None)

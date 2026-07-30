@@ -1,50 +1,23 @@
 import type { WorkflowStep } from "@/lib/api";
+import agentContracts from "@/lib/agent_io.generated.json";
 
-export const WORKFLOW_AGENTS = [
-  "curator",
-  "planner",
-  "lessons",
-  "slides",
-  "script",
-  "voice",
-  "video",
-  "publisher",
-] as const;
+export const WORKFLOW_AGENTS = Object.keys(agentContracts) as Array<
+  keyof typeof agentContracts
+>;
 
 export type WorkflowAgent = (typeof WORKFLOW_AGENTS)[number];
 
-export const AGENT_NAMES: Record<WorkflowAgent, string> = {
-  curator: "Curador",
-  planner: "Plan del curso",
-  lessons: "Lecciones",
-  slides: "Slides",
-  script: "Guion docente",
-  voice: "Adaptaci\u00f3n a voz",
-  video: "V\u00eddeo",
-  publisher: "Publicaci\u00f3n",
-};
+export const AGENT_NAMES = Object.fromEntries(
+  WORKFLOW_AGENTS.map((agent) => [agent, agentContracts[agent].name]),
+) as Record<WorkflowAgent, string>;
 
-export const AGENT_INPUTS: Record<WorkflowAgent, string[]> = {
-  curator: [],
-  planner: ["research_brief"],
-  lessons: ["research_brief", "course_plan"],
-  slides: ["course_plan", "lesson_content"],
-  script: ["slide_deck"],
-  voice: ["teaching_script"],
-  video: ["slide_deck", "voice_script"],
-  publisher: ["video"],
-};
+export const AGENT_INPUTS = Object.fromEntries(
+  WORKFLOW_AGENTS.map((agent) => [agent, [...agentContracts[agent].inputs]]),
+) as Record<WorkflowAgent, string[]>;
 
-export const AGENT_OUTPUTS: Record<WorkflowAgent, string[]> = {
-  curator: ["research_brief"],
-  planner: ["course_plan"],
-  lessons: ["lesson_content"],
-  slides: ["slide_deck"],
-  script: ["teaching_script"],
-  voice: ["voice_script"],
-  video: ["video", "subtitles"],
-  publisher: ["publication_package", "thumbnail"],
-};
+export const AGENT_OUTPUTS = Object.fromEntries(
+  WORKFLOW_AGENTS.map((agent) => [agent, [...agentContracts[agent].outputs]]),
+) as Record<WorkflowAgent, string[]>;
 
 export const ARTIFACT_NAMES: Record<string, string> = {
   course_idea_brief: "brief de la idea",
@@ -57,6 +30,31 @@ export const ARTIFACT_NAMES: Record<string, string> = {
   video: "v\u00eddeo",
   subtitles: "subt\u00edtulos",
 };
+
+export interface ContextualArtifactAction {
+  agent: WorkflowAgent;
+  inputs: string[];
+  outputs: string[];
+  missing: string[];
+  regenerates: boolean;
+}
+
+export function contextualArtifactActions(
+  artifactType: string,
+  selectedTypes: ReadonlySet<string>,
+): ContextualArtifactAction[] {
+  return WORKFLOW_AGENTS.filter(
+    (agent) =>
+      AGENT_INPUTS[agent].includes(artifactType) ||
+      AGENT_OUTPUTS[agent].includes(artifactType),
+  ).map((agent) => ({
+    agent,
+    inputs: AGENT_INPUTS[agent],
+    outputs: AGENT_OUTPUTS[agent],
+    missing: AGENT_INPUTS[agent].filter((type) => !selectedTypes.has(type)),
+    regenerates: AGENT_OUTPUTS[agent].some((type) => selectedTypes.has(type)),
+  }));
+}
 
 export function requiredInitialArtifacts(steps: WorkflowStep[]): string[] {
   if (steps.length === 0) return [];

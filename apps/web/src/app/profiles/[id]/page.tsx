@@ -7,6 +7,7 @@ import {
   api,
   type AgentProfile,
   type ImageOptions,
+  type LogoTransparentVariant,
   type LogoVisibility,
   type PaletteOptions,
   type ProfileVersion,
@@ -47,6 +48,14 @@ export default function ProfileEditorPage() {
   const [ttsModel, setTTSModel] = useState("");
   const [ttsLanguage, setTTSLanguage] = useState("inherit");
   const [ttsVoice, setTTSVoice] = useState("");
+  const [ttsSpeed, setTTSSpeed] = useState(1);
+  const [ttsInstructions, setTTSInstructions] = useState("");
+  const [ttsStyle, setTTSStyle] = useState<string | null>(null);
+  const [ttsStyleDegree, setTTSStyleDegree] = useState<number | null>(null);
+  const [ttsAdvancedOptions, setTTSAdvancedOptions] = useState<
+    Record<string, string | number | boolean>
+  >({});
+  const [ttsCatalogBusy, setTTSCatalogBusy] = useState(false);
   const [ttsSample, setTTSSample] = useState(
     "Hola. Esta es una muestra de la voz seleccionada para tu curso.",
   );
@@ -66,6 +75,12 @@ export default function ProfileEditorPage() {
   const [logoSize, setLogoSize] = useState<"small" | "medium" | "large">("small");
   const [logoMarginPx, setLogoMarginPx] = useState(32);
   const [logoOpacity, setLogoOpacity] = useState(1);
+  const [logoBackgroundMode, setLogoBackgroundMode] = useState<
+    "opaque" | "transparent"
+  >("opaque");
+  const [transparentLogoPreview, setTransparentLogoPreview] =
+    useState<LogoTransparentVariant | null>(null);
+  const [confirmTransparentLogo, setConfirmTransparentLogo] = useState(false);
   const [logoVisibility, setLogoVisibility] = useState<LogoVisibility>({
     cover: true,
     content: true,
@@ -81,6 +96,10 @@ export default function ProfileEditorPage() {
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [versionToActivate, setVersionToActivate] = useState<ProfileVersion | null>(
+    null,
+  );
+  const [activatingVersion, setActivatingVersion] = useState(false);
 
   async function load() {
     const [p, options, palettes, voiceOptions] = await Promise.all([
@@ -108,6 +127,13 @@ export default function ProfileEditorPage() {
     setTTSModel(p.tts_model ?? voiceOptions.default.tts_model);
     setTTSLanguage(p.tts_language ?? voiceOptions.default.tts_language);
     setTTSVoice(p.tts_voice ?? voiceOptions.default.tts_voice);
+    setTTSSpeed(p.tts_speed ?? voiceOptions.default.tts_speed);
+    setTTSInstructions(p.tts_instructions ?? voiceOptions.default.tts_instructions);
+    setTTSStyle(p.tts_style ?? voiceOptions.default.tts_style);
+    setTTSStyleDegree(p.tts_style_degree ?? voiceOptions.default.tts_style_degree);
+    setTTSAdvancedOptions(
+      p.tts_advanced_options ?? voiceOptions.default.tts_advanced_options,
+    );
     setSubtitlesMode(p.subtitles_mode ?? "none");
     setPaletteOptions(palettes);
     setSlidePalette(p.slide_palette ?? palettes.default);
@@ -117,6 +143,11 @@ export default function ProfileEditorPage() {
     setLogoSize(p.logo_size ?? "small");
     setLogoMarginPx(p.logo_margin_px ?? 32);
     setLogoOpacity(p.logo_opacity ?? 1);
+    setLogoBackgroundMode(p.logo_background_mode ?? "opaque");
+    setTransparentLogoPreview(
+      p.logo_candidates?.find((candidate) => candidate.id === p.active_logo_id)
+        ?.transparent_variant ?? null,
+    );
     setLogoVisibility(
       p.logo_visibility ?? { cover: true, content: true, summary: true },
     );
@@ -158,6 +189,11 @@ export default function ProfileEditorPage() {
       tts_model?: string;
       tts_language?: string;
       tts_voice?: string;
+      tts_speed?: number;
+      tts_instructions?: string;
+      tts_style?: string | null;
+      tts_style_degree?: number | null;
+      tts_advanced_options?: Record<string, string | number | boolean>;
       subtitles_mode?: "none" | "srt" | "burned_and_srt";
       slide_palette?: SlidePalette;
       logo_mode?: "none" | "uploaded" | "generated";
@@ -166,6 +202,7 @@ export default function ProfileEditorPage() {
       logo_size?: "small" | "medium" | "large";
       logo_margin_px?: number;
       logo_opacity?: number;
+      logo_background_mode?: "opaque" | "transparent";
       logo_visibility?: LogoVisibility;
       note?: string;
     } = {};
@@ -216,6 +253,29 @@ export default function ProfileEditorPage() {
     if (profile.tts_voice !== null && ttsVoice !== profile.tts_voice) {
       patch.tts_voice = ttsVoice;
     }
+    if (profile.tts_speed !== null && ttsSpeed !== profile.tts_speed) {
+      patch.tts_speed = ttsSpeed;
+    }
+    if (
+      profile.tts_instructions !== null &&
+      ttsInstructions !== profile.tts_instructions
+    ) {
+      patch.tts_instructions = ttsInstructions;
+    }
+    if (profile.tts_style !== null || ttsStyle !== null) {
+      if (ttsStyle !== profile.tts_style) patch.tts_style = ttsStyle;
+    }
+    if (profile.tts_style_degree !== null || ttsStyleDegree !== null) {
+      if (ttsStyleDegree !== profile.tts_style_degree) {
+        patch.tts_style_degree = ttsStyleDegree;
+      }
+    }
+    if (
+      JSON.stringify(ttsAdvancedOptions) !==
+      JSON.stringify(profile.tts_advanced_options ?? {})
+    ) {
+      patch.tts_advanced_options = ttsAdvancedOptions;
+    }
     if (
       profile.subtitles_mode !== null &&
       subtitlesMode !== profile.subtitles_mode
@@ -248,6 +308,12 @@ export default function ProfileEditorPage() {
       patch.logo_opacity = logoOpacity;
     }
     if (
+      profile.logo_background_mode !== null &&
+      logoBackgroundMode !== profile.logo_background_mode
+    ) {
+      patch.logo_background_mode = logoBackgroundMode;
+    }
+    if (
       profile.logo_visibility !== null &&
       JSON.stringify(logoVisibility) !== JSON.stringify(profile.logo_visibility)
     ) {
@@ -275,6 +341,11 @@ export default function ProfileEditorPage() {
       patch.tts_model !== undefined ||
       patch.tts_language !== undefined ||
       patch.tts_voice !== undefined ||
+      patch.tts_speed !== undefined ||
+      patch.tts_instructions !== undefined ||
+      patch.tts_style !== undefined ||
+      patch.tts_style_degree !== undefined ||
+      patch.tts_advanced_options !== undefined ||
       patch.subtitles_mode !== undefined ||
       patch.slide_palette !== undefined ||
       patch.logo_mode !== undefined ||
@@ -283,6 +354,7 @@ export default function ProfileEditorPage() {
       patch.logo_size !== undefined ||
       patch.logo_margin_px !== undefined ||
       patch.logo_opacity !== undefined ||
+      patch.logo_background_mode !== undefined ||
       patch.logo_visibility !== undefined);
   const paletteChanged = patch?.slide_palette !== undefined;
   const currentPaletteWarnings = slidePalette ? paletteWarnings(slidePalette) : [];
@@ -334,6 +406,84 @@ export default function ProfileEditorPage() {
     router.push("/profiles");
   }
 
+  function activationSummary(target: ProfileVersion) {
+    if (!profile) return "";
+    const changes: string[] = [];
+    if (
+      target.soul_md !== profile.soul_md ||
+      target.agents_md !== profile.agents_md
+    ) {
+      changes.push("personalidad o reglas");
+    }
+    if (target.model !== profile.model) changes.push("modelo");
+    if (
+      target.orientation !== profile.orientation ||
+      target.images_enabled !== profile.images_enabled ||
+      target.image_model !== profile.image_model ||
+      target.image_style !== profile.image_style
+    ) {
+      changes.push("presentación e imágenes");
+    }
+    if (
+      target.automatic_review_enabled !== profile.automatic_review_enabled ||
+      target.max_automatic_regenerations !==
+        profile.max_automatic_regenerations ||
+      target.human_review_enabled !== profile.human_review_enabled
+    ) {
+      changes.push("políticas de revisión");
+    }
+    if (
+      target.tts_provider !== profile.tts_provider ||
+      target.tts_model !== profile.tts_model ||
+      target.tts_language !== profile.tts_language ||
+      target.tts_voice !== profile.tts_voice ||
+      target.tts_speed !== profile.tts_speed ||
+      target.tts_instructions !== profile.tts_instructions ||
+      target.tts_style !== profile.tts_style ||
+      target.tts_style_degree !== profile.tts_style_degree ||
+      JSON.stringify(target.tts_advanced_options ?? {}) !==
+        JSON.stringify(profile.tts_advanced_options ?? {})
+    ) {
+      changes.push("configuración de voz");
+    }
+    if (target.subtitles_mode !== profile.subtitles_mode) {
+      changes.push("subtítulos");
+    }
+    if (
+      JSON.stringify(target.slide_palette) !==
+        JSON.stringify(profile.slide_palette) ||
+      target.logo_mode !== profile.logo_mode ||
+      target.active_logo_id !== profile.active_logo_id ||
+      target.logo_background_mode !== profile.logo_background_mode ||
+      target.logo_placement !== profile.logo_placement
+    ) {
+      changes.push("paleta o logo");
+    }
+    return changes.length > 0
+      ? `Cambiarán: ${changes.join(", ")}.`
+      : "La configuración efectiva coincide con la versión activa actual.";
+  }
+
+  async function activateVersion() {
+    if (!versionToActivate) return;
+    setActivatingVersion(true);
+    setError(null);
+    try {
+      await api.activateProfileVersion(id, versionToActivate.version);
+      setVersionToActivate(null);
+      await load();
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "No se pudo activar la versión",
+      );
+      setVersionToActivate(null);
+    } finally {
+      setActivatingVersion(false);
+    }
+  }
+
   async function uploadLogo(file: File) {
     setLogoBusy(true);
     setError(null);
@@ -380,6 +530,31 @@ export default function ProfileEditorPage() {
     }
   }
 
+  async function prepareTransparentLogo() {
+    if (!activeLogoId) {
+      setConfirmTransparentLogo(false);
+      setError("Selecciona un logo antes de eliminar el fondo.");
+      return;
+    }
+    setLogoBusy(true);
+    setError(null);
+    try {
+      const variant = await api.prepareTransparentProfileLogo(id, activeLogoId);
+      setTransparentLogoPreview(variant);
+      setLogoBackgroundMode("transparent");
+      setConfirmTransparentLogo(false);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "No se pudo crear la variante transparente",
+      );
+      setConfirmTransparentLogo(false);
+    } finally {
+      setLogoBusy(false);
+    }
+  }
+
   async function previewVoice() {
     if (!ttsSample.trim()) {
       setError("Escribe un texto breve para escuchar la muestra.");
@@ -394,6 +569,11 @@ export default function ProfileEditorPage() {
         tts_model: ttsModel,
         tts_language: ttsLanguage,
         tts_voice: ttsVoice,
+        tts_speed: ttsSpeed,
+        tts_instructions: ttsInstructions,
+        tts_style: ttsStyle,
+        tts_style_degree: ttsStyleDegree,
+        tts_advanced_options: ttsAdvancedOptions,
       });
       const nextUrl = URL.createObjectURL(blob);
       setTTSPreviewUrl(nextUrl);
@@ -401,6 +581,20 @@ export default function ProfileEditorPage() {
       setError(err instanceof Error ? err.message : "No se pudo generar la muestra");
     } finally {
       setTTSPreviewBusy(false);
+    }
+  }
+
+  async function refreshTTSCatalog() {
+    setTTSCatalogBusy(true);
+    setError(null);
+    try {
+      setTTSOptions(await api.getTTSOptions(true));
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "No se pudo actualizar el catálogo TTS",
+      );
+    } finally {
+      setTTSCatalogBusy(false);
     }
   }
 
@@ -429,6 +623,16 @@ export default function ProfileEditorPage() {
   const selectedLogo = profile.logo_candidates?.find(
     (candidate) => candidate.id === activeLogoId,
   );
+  const transparentVariant =
+    transparentLogoPreview ?? selectedLogo?.transparent_variant ?? null;
+  const logoPreviewSource =
+    logoBackgroundMode === "transparent" && transparentVariant
+      ? api.profileLogoUrl(id, selectedLogo?.id ?? "", {
+          variant: "transparent",
+        })
+      : selectedLogo
+        ? api.profileLogoUrl(id, selectedLogo.id)
+        : "";
   const logoPositionStyle = {
     [logoPlacement.startsWith("top") ? "top" : "bottom"]: `${Math.max(4, logoMarginPx / 4)}px`,
     [logoPlacement.endsWith("left") ? "left" : "right"]: `${Math.max(4, logoMarginPx / 4)}px`,
@@ -467,7 +671,12 @@ export default function ProfileEditorPage() {
           onChange={(e) => setName(e.target.value)}
           className="flex-1 rounded-lg border border-transparent bg-transparent text-2xl font-semibold tracking-tight text-zinc-50 outline-none focus:border-white/[0.15]"
         />
-        <span className="badge-neutral shrink-0">v{profile.version}</span>
+        <span className="badge-neutral shrink-0">
+          v{profile.active_version} activa
+          {profile.active_version !== profile.version
+            ? ` · última disponible v${profile.version}`
+            : ""}
+        </span>
       </div>
       <p className="mb-6 text-sm text-zinc-500">
         Agente: <span className="text-zinc-400">{profile.agent_type}</span>
@@ -592,12 +801,34 @@ export default function ProfileEditorPage() {
         {isVoice && ttsOptions && (
           <div className="card p-5">
             <div className="mb-4">
-              <label className="label">Síntesis de voz (TTS)</label>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="label">Síntesis de voz (TTS)</label>
+                <button
+                  type="button"
+                  onClick={refreshTTSCatalog}
+                  disabled={ttsCatalogBusy}
+                  className="btn-secondary btn-sm"
+                >
+                  {ttsCatalogBusy ? "Actualizando…" : "Actualizar catálogo"}
+                </button>
+              </div>
               <p className="text-xs leading-relaxed text-zinc-500">
                 Proveedor, modelo, idioma y voz quedan congelados en cada
                 <code className="mx-1 text-zinc-300">voice_script</code>. El montaje
                 usa ese snapshot aunque edites después el perfil.
               </p>
+              <p className="mt-1 text-xs text-zinc-500">
+                Catálogo {ttsOptions.source === "openrouter_models_api" ? "OpenRouter" : "local"}
+                {ttsOptions.updated_at
+                  ? ` · ${new Date(ttsOptions.updated_at).toLocaleString("es-ES")}`
+                  : ""}
+                {ttsOptions.stale ? " · usando último snapshot válido" : ""}
+              </p>
+              {ttsOptions.error && (
+                <p className="mt-1 text-xs text-amber-200">
+                  No se pudo refrescar: {ttsOptions.error}
+                </p>
+              )}
             </div>
             {profile.tts_available === false && (
               <div className="mb-4 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">
@@ -620,6 +851,11 @@ export default function ProfileEditorPage() {
                     setTTSModel(option.model);
                     setTTSLanguage("inherit");
                     setTTSVoice(option.default_voice);
+                    setTTSSpeed(1);
+                    setTTSInstructions("");
+                    setTTSStyle(null);
+                    setTTSStyleDegree(null);
+                    setTTSAdvancedOptions({});
                   }}
                   className="input"
                 >
@@ -710,6 +946,116 @@ export default function ProfileEditorPage() {
                 )}
               </div>
             </div>
+            {selectedTTSModel && (
+              <div className="mt-4 rounded-lg border border-white/[0.08] bg-white/[0.02] p-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+                  Controles expresivos compatibles
+                </p>
+                <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                  {selectedTTSModel.capabilities.speed && (
+                    <div>
+                      <label className="label">
+                        Velocidad · {ttsSpeed.toFixed(2)}×
+                      </label>
+                      <input
+                        type="range"
+                        min={selectedTTSModel.capabilities.speed.min}
+                        max={selectedTTSModel.capabilities.speed.max}
+                        step={selectedTTSModel.capabilities.speed.step}
+                        value={ttsSpeed}
+                        onChange={(event) => setTTSSpeed(Number(event.target.value))}
+                        className="w-full"
+                      />
+                    </div>
+                  )}
+                  {selectedTTSModel.capabilities.styles.length > 0 && (
+                    <div>
+                      <label className="label">Estilo</label>
+                      <select
+                        value={ttsStyle ?? ""}
+                        onChange={(event) => {
+                          const nextStyle = event.target.value || null;
+                          setTTSStyle(nextStyle);
+                          if (!nextStyle) setTTSStyleDegree(null);
+                        }}
+                        className="input"
+                      >
+                        <option value="">Sin estilo forzado</option>
+                        {selectedTTSModel.capabilities.styles.map((style) => (
+                          <option key={style} value={style}>
+                            {style}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  {selectedTTSModel.capabilities.style_degree && ttsStyle && (
+                    <div>
+                      <label className="label">
+                        Intensidad · {(ttsStyleDegree ?? 1).toFixed(2)}
+                      </label>
+                      <input
+                        type="range"
+                        min={selectedTTSModel.capabilities.style_degree.min}
+                        max={selectedTTSModel.capabilities.style_degree.max}
+                        step={selectedTTSModel.capabilities.style_degree.step}
+                        value={ttsStyleDegree ?? 1}
+                        onChange={(event) =>
+                          setTTSStyleDegree(Number(event.target.value))
+                        }
+                        className="w-full"
+                      />
+                    </div>
+                  )}
+                  {selectedTTSModel.capabilities.pronunciation && (
+                    <div>
+                      <label className="label">Pronunciación específica</label>
+                      <input
+                        value={String(ttsAdvancedOptions.pronunciation ?? "")}
+                        onChange={(event) =>
+                          setTTSAdvancedOptions((current) => ({
+                            ...current,
+                            pronunciation: event.target.value,
+                          }))
+                        }
+                        placeholder="término=pronunciación"
+                        className="input"
+                      />
+                    </div>
+                  )}
+                </div>
+                {selectedTTSModel.capabilities.instructions && (
+                  <div className="mt-4">
+                    <label className="label">
+                      Instrucciones de tono, ritmo y emoción
+                    </label>
+                    <textarea
+                      value={ttsInstructions}
+                      maxLength={1000}
+                      rows={3}
+                      onChange={(event) => setTTSInstructions(event.target.value)}
+                      placeholder="Ej.: tono cercano, ritmo pausado y énfasis en las ideas clave."
+                      className="input resize-y"
+                    />
+                  </div>
+                )}
+                {selectedTTSModel.capabilities.inline_tags.length > 0 && (
+                  <p className="mt-3 text-xs text-zinc-500">
+                    Tags admitidos en el guion:{" "}
+                    {selectedTTSModel.capabilities.inline_tags.join(", ")}. No se
+                    insertan automáticamente.
+                  </p>
+                )}
+                {!selectedTTSModel.capabilities.speed &&
+                  !selectedTTSModel.capabilities.instructions &&
+                  selectedTTSModel.capabilities.styles.length === 0 &&
+                  !selectedTTSModel.capabilities.pronunciation && (
+                    <p className="mt-2 text-xs text-zinc-500">
+                      Este modelo no publica controles expresivos adicionales.
+                    </p>
+                  )}
+              </div>
+            )}
             <div className="mt-4">
               <label className="label">Muestra de voz · máximo 300 caracteres</label>
               <textarea
@@ -836,6 +1182,8 @@ export default function ProfileEditorPage() {
                 onClick={() => {
                   setLogoMode("none");
                   setActiveLogoId(null);
+                  setLogoBackgroundMode("opaque");
+                  setTransparentLogoPreview(null);
                 }}
                 className={logoMode === "none" ? "btn-primary btn-sm" : "btn-secondary btn-sm"}
               >
@@ -859,6 +1207,10 @@ export default function ProfileEditorPage() {
                       <button
                         type="button"
                         onClick={() => {
+                          if (candidate.id !== activeLogoId) {
+                            setLogoBackgroundMode("opaque");
+                            setTransparentLogoPreview(null);
+                          }
                           setActiveLogoId(candidate.id);
                           setLogoMode(candidate.source);
                         }}
@@ -1030,6 +1382,39 @@ export default function ProfileEditorPage() {
                   className="w-full"
                 />
               </div>
+              <div className="sm:col-span-2">
+                <label className="label">Fondo del logo</label>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={logoMode === "none" || logoBusy}
+                    onClick={() => setLogoBackgroundMode("opaque")}
+                    className={
+                      logoBackgroundMode === "opaque"
+                        ? "btn-primary btn-sm"
+                        : "btn-secondary btn-sm"
+                    }
+                  >
+                    Mantener fondo
+                  </button>
+                  <button
+                    type="button"
+                    disabled={logoMode === "none" || !activeLogoId || logoBusy}
+                    onClick={() => setConfirmTransparentLogo(true)}
+                    className={
+                      logoBackgroundMode === "transparent"
+                        ? "btn-primary btn-sm"
+                        : "btn-secondary btn-sm"
+                    }
+                  >
+                    Fondo transparente
+                  </button>
+                </div>
+                <p className="mt-1.5 text-[11px] text-zinc-500">
+                  El original se conserva. La variante transparente se procesa una vez,
+                  se valida y se reutiliza en futuras ejecuciones.
+                </p>
+              </div>
             </div>
 
             <div className="mt-4 flex flex-wrap gap-4 text-xs text-zinc-300">
@@ -1056,32 +1441,79 @@ export default function ProfileEditorPage() {
             </div>
 
             {selectedLogo && logoMode !== "none" && (
-              <div className="mt-5 grid items-start gap-4 sm:grid-cols-2">
+              <div className="mt-5">
+                {logoBackgroundMode === "transparent" && transparentVariant && (
+                  <div className="mb-4 grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <p className="mb-1 text-[11px] text-zinc-500">
+                        Original conservado
+                      </p>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={api.profileLogoUrl(id, selectedLogo.id)}
+                        alt={`${selectedLogo.name}, original`}
+                        className="h-24 w-full rounded-lg border border-white/10 bg-white/95 object-contain p-2"
+                      />
+                    </div>
+                    <div>
+                      <p className="mb-1 text-[11px] text-zinc-500">
+                        PNG transparente procesado
+                      </p>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={api.profileLogoUrl(id, selectedLogo.id, {
+                          variant: "transparent",
+                        })}
+                        alt={`${selectedLogo.name}, fondo transparente`}
+                        className="h-24 w-full rounded-lg border border-white/10 bg-zinc-800 object-contain p-2"
+                      />
+                    </div>
+                  </div>
+                )}
+                <div className="grid items-start gap-4 sm:grid-cols-2">
                 {[
-                  { label: "Vista 16:9", className: "aspect-video" },
-                  { label: "Vista 9:16", className: "mx-auto aspect-[9/16] w-2/3" },
+                  { label: "16:9 sin imagen", className: "aspect-video", side: false },
+                  {
+                    label: "16:9 con imagen lateral",
+                    className: "aspect-video",
+                    side: true,
+                  },
+                  {
+                    label: "9:16 sin imagen",
+                    className: "mx-auto aspect-[9/16] w-2/3",
+                    side: false,
+                  },
+                  {
+                    label: "9:16 con imagen lateral",
+                    className: "mx-auto aspect-[9/16] w-2/3",
+                    side: true,
+                  },
                 ].map((preview) => (
                   <div key={preview.label}>
                     <p className="mb-1 text-[11px] text-zinc-500">{preview.label}</p>
                     <div
                       className={`relative overflow-hidden rounded-lg border border-white/10 bg-[#f8f1e3] p-4 ${preview.className}`}
                     >
-                      <p className="max-w-[70%] text-sm font-semibold text-[#1f2937]">
+                      {preview.side && (
+                        <div className="absolute inset-y-0 right-0 w-[38%] bg-gradient-to-br from-[#b23a26] via-[#ca765d] to-[#312e81]" />
+                      )}
+                      <p className="relative z-10 max-w-[58%] text-sm font-semibold text-[#1f2937]">
                         Título de ejemplo
                       </p>
-                      <p className="mt-2 max-w-[68%] text-[10px] text-[#4b5563]">
+                      <p className="relative z-10 mt-2 max-w-[56%] text-[10px] text-[#4b5563]">
                         El logo usa la misma configuración programática del deck.
                       </p>
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
-                        src={api.profileLogoUrl(id, selectedLogo.id)}
+                        src={logoPreviewSource}
                         alt={selectedLogo.name}
-                        className="absolute max-h-[28%] object-contain"
+                        className="absolute z-30 max-h-[28%] object-contain"
                         style={logoPositionStyle}
                       />
                     </div>
                   </div>
                 ))}
+                </div>
               </div>
             )}
           </div>
@@ -1260,6 +1692,9 @@ export default function ProfileEditorPage() {
               <div className="flex items-center justify-between gap-3">
                 <span className="flex items-center gap-2 font-semibold text-zinc-200">
                   v{v.version}
+                  {v.is_active && (
+                    <span className="badge-success font-normal">Activa</span>
+                  )}
                   {v.orientation && (
                     <span className="badge-neutral font-normal">
                       {v.orientation === "vertical"
@@ -1327,13 +1762,28 @@ export default function ProfileEditorPage() {
                   )}
                   {v.logo_mode && v.logo_mode !== "none" && v.active_logo_id && (
                     <span className="badge-info font-normal">
-                      Logo {v.logo_mode === "generated" ? "generado" : "subido"}
+                      Logo {v.logo_mode === "generated" ? "generado" : "subido"} ·{" "}
+                      {v.logo_background_mode === "transparent"
+                        ? "transparente"
+                        : "opaco"}{" "}
+                      · {v.logo_placement}
                     </span>
                   )}
                 </span>
-                <span className="text-xs text-zinc-500">
-                  {new Date(v.created_at).toLocaleString("es")}
-                </span>
+                <div className="flex shrink-0 items-center gap-3">
+                  <span className="text-xs text-zinc-500">
+                    {new Date(v.created_at).toLocaleString("es")}
+                  </span>
+                  {!v.is_active && (
+                    <button
+                      type="button"
+                      className="btn-secondary btn-sm"
+                      onClick={() => setVersionToActivate(v)}
+                    >
+                      Usar esta versión
+                    </button>
+                  )}
+                </div>
               </div>
               {v.note && (
                 <p className="mt-1 text-sm leading-relaxed text-zinc-400">
@@ -1344,6 +1794,34 @@ export default function ProfileEditorPage() {
           ))}
         </ul>
       </section>
+      <ConfirmDialog
+        open={confirmTransparentLogo}
+        title="Crear variante transparente"
+        description="Se procesará una copia del logo seleccionado para eliminar el fondo. El original se conservará intacto y podrás revisar ambos antes de guardar la nueva versión del perfil."
+        confirmLabel="Procesar copia"
+        busyLabel="Procesando…"
+        busy={logoBusy}
+        onCancel={() => setConfirmTransparentLogo(false)}
+        onConfirm={prepareTransparentLogo}
+      />
+      <ConfirmDialog
+        open={versionToActivate !== null}
+        title={
+          versionToActivate
+            ? `Usar la versión ${versionToActivate.version}`
+            : "Usar versión histórica"
+        }
+        description={
+          versionToActivate
+            ? `${activationSummary(versionToActivate)} Las nuevas ejecuciones usarán este snapshot; los runs existentes no cambiarán y no se creará otra versión.`
+            : ""
+        }
+        confirmLabel="Usar esta versión"
+        busyLabel="Activando…"
+        busy={activatingVersion}
+        onCancel={() => setVersionToActivate(null)}
+        onConfirm={activateVersion}
+      />
       <ConfirmDialog
         open={confirmDelete}
         title="Eliminar perfil"

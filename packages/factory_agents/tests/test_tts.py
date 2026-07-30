@@ -7,6 +7,7 @@ from factory_agents.tools.tts import (
     OpenRouterTTSProvider,
     TTSError,
     build_tts_provider,
+    load_tts_catalog,
     resolve_tts_config,
     synthesize_cached_with_status,
 )
@@ -130,7 +131,7 @@ def test_tts_catalog_rejects_arbitrary_combinations_and_cache_key_is_complete():
         voice=config["tts_voice"],
         language=config["tts_language_effective"],
     )
-    assert provider.cache_key == (
+    assert provider.cache_key.startswith(
         "openrouter:microsoft/mai-voice-2:"
         "es-ES:es-ES-Marta:MAI-Voice-2:mp3:mp3:-:-:2"
     )
@@ -141,6 +142,127 @@ def test_tts_catalog_rejects_arbitrary_combinations_and_cache_key_is_complete():
                 "tts_model": "microsoft/mai-voice-2",
                 "tts_language": "es-ES",
                 "tts_voice": "ef_dora",
+            }
+        )
+
+
+def test_tts_catalog_persists_live_voices_and_falls_back_to_snapshot(
+    monkeypatch, tmp_path
+):
+    live_payload = {
+        "data": [
+            {
+                "id": "x-ai/grok-voice-tts-1.0",
+                "name": "xAI: Grok Voice TTS 1.0",
+                "architecture": {"output_modalities": ["speech"]},
+                "supported_voices": ["eve", "ara"],
+                "pricing": {"prompt": "0.000015"},
+                "context_length": 15000,
+            }
+        ]
+    }
+
+    class CatalogResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return live_payload
+
+    monkeypatch.setattr(httpx, "get", lambda *args, **kwargs: CatalogResponse())
+    path = tmp_path / "tts-catalog.json"
+    first = load_tts_catalog(path, refresh=True)
+    grok = next(item for item in first["models"] if item["model"].startswith("x-ai/"))
+    assert grok["voices_by_language"]["*"][:2] == ["eve", "ara"]
+    assert "leo" in grok["voices_by_language"]["*"]
+    assert grok["price_per_million_characters_usd"] == 15
+    assert first["source"] == "openrouter_models_api"
+    assert path.is_file()
+    frozen = resolve_tts_config(
+        {
+            "tts_provider": "openrouter",
+            "tts_model": grok["model"],
+            "tts_language": "inherit",
+            "tts_voice": "eve",
+        },
+        catalog=first["models"],
+    )
+    assert resolve_tts_config(frozen)["tts_voice"] == "eve"
+    with pytest.raises(ValueError, match="ya no está disponible"):
+        resolve_tts_config(
+            {
+                "tts_provider": "openrouter",
+                "tts_model": grok["model"],
+                "tts_language": "inherit",
+                "tts_voice": "eve",
+            },
+            catalog=[],
+        )
+
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        lambda *args, **kwargs: (_ for _ in ()).throw(httpx.ConnectError("offline")),
+    )
+    fallback = load_tts_catalog(path, refresh=True)
+    assert fallback["stale"] is True
+    assert fallback["updated_at"] == first["updated_at"]
+    assert fallback["models"] == first["models"]
+
+
+def test_expressive_options_are_validated_sent_and_part_of_cache_key(monkeypatch):
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append(kwargs["json"])
+        return _response(
+            200,
+            content=b"ID3expressive",
+            headers={"content-type": "audio/mpeg"},
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    resolved = resolve_tts_config(
+        {
+            "tts_provider": "openrouter",
+            "tts_model": "microsoft/mai-voice-2",
+            "tts_language": "es-ES",
+            "tts_voice": "es-ES-Marta:MAI-Voice-2",
+            "tts_speed": 1.2,
+            "tts_style": "cheerful",
+            "tts_style_degree": 1.4,
+        }
+    )
+    provider = build_tts_provider(
+        resolved,
+        openai_api_key="",
+        openrouter_api_key="secret",
+    )
+    provider.synthesize("Hola")
+    assert calls[0]["speed"] == 1.2
+    assert calls[0]["provider"]["options"] == {
+        "azure": {"style": "cheerful", "styledegree": 1.4},
+    }
+    default_provider = build_tts_provider(
+        {
+            **resolved,
+            "tts_speed": 1.0,
+            "tts_style": None,
+            "tts_style_degree": None,
+        },
+        openai_api_key="",
+        openrouter_api_key="secret",
+    )
+    assert provider.cache_key != default_provider.cache_key
+
+    with pytest.raises(ValueError, match="instrucciones"):
+        resolve_tts_config(
+            {
+                "tts_provider": "openrouter",
+                "tts_model": "hexgrad/kokoro-82m",
+                "tts_language": "es-ES",
+                "tts_voice": "ef_dora",
+                "tts_instructions": "Habla con alegría",
             }
         )
 

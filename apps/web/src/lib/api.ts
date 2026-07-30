@@ -242,6 +242,17 @@ export interface LogoCandidate {
   created_at: string;
   status: "available" | "error";
   error?: string | null;
+  transparent_variant?: LogoTransparentVariant | null;
+}
+
+export interface LogoTransparentVariant {
+  path: string;
+  media_type: "image/png";
+  width: number;
+  height: number;
+  sha256: string;
+  source_sha256: string;
+  method: string;
 }
 
 export interface LogoVisibility {
@@ -270,6 +281,11 @@ export interface AgentProfile {
   tts_language: string | null;
   tts_voice: string | null;
   tts_available: boolean | null;
+  tts_speed: number | null;
+  tts_instructions: string | null;
+  tts_style: string | null;
+  tts_style_degree: number | null;
+  tts_advanced_options: Record<string, string | number | boolean> | null;
   subtitles_mode: "none" | "srt" | "burned_and_srt" | null;
   slide_palette: SlidePalette | null;
   logo_mode: "none" | "uploaded" | "generated" | null;
@@ -278,9 +294,11 @@ export interface AgentProfile {
   logo_size: "small" | "medium" | "large" | null;
   logo_margin_px: number | null;
   logo_opacity: number | null;
+  logo_background_mode: "opaque" | "transparent" | null;
   logo_visibility: LogoVisibility | null;
   logo_candidates: LogoCandidate[] | null;
   version: number;
+  active_version: number;
   is_default: boolean;
   created_at: string;
   updated_at: string;
@@ -288,6 +306,7 @@ export interface AgentProfile {
 
 export interface ProfileVersion {
   version: number;
+  is_active: boolean;
   soul_md: string;
   agents_md: string;
   model: string | null;
@@ -304,6 +323,11 @@ export interface ProfileVersion {
   tts_language: string | null;
   tts_voice: string | null;
   tts_available: boolean | null;
+  tts_speed: number | null;
+  tts_instructions: string | null;
+  tts_style: string | null;
+  tts_style_degree: number | null;
+  tts_advanced_options: Record<string, string | number | boolean> | null;
   subtitles_mode: "none" | "srt" | "burned_and_srt" | null;
   slide_palette: SlidePalette | null;
   logo_mode: "none" | "uploaded" | "generated" | null;
@@ -312,6 +336,7 @@ export interface ProfileVersion {
   logo_size: "small" | "medium" | "large" | null;
   logo_margin_px: number | null;
   logo_opacity: number | null;
+  logo_background_mode: "opaque" | "transparent" | null;
   logo_visibility: LogoVisibility | null;
   logo_candidates: LogoCandidate[] | null;
   note: string;
@@ -345,6 +370,19 @@ export interface TTSModelOption {
   provider_options: string[];
   price_per_million_characters_usd: number | null;
   price_hint: string;
+  available: boolean;
+  catalog_source: string;
+  catalog_updated_at: string | null;
+  status: "stable" | "preview";
+  max_characters: number | null;
+  capabilities: {
+    speed: { min: number; max: number; step: number } | null;
+    instructions: boolean;
+    styles: string[];
+    style_degree: { min: number; max: number; step: number } | null;
+    inline_tags: string[];
+    pronunciation: boolean;
+  };
 }
 
 export interface TTSOptions {
@@ -353,8 +391,17 @@ export interface TTSOptions {
     tts_model: string;
     tts_language: string;
     tts_voice: string;
+    tts_speed: number;
+    tts_instructions: string;
+    tts_style: string | null;
+    tts_style_degree: number | null;
+    tts_advanced_options: Record<string, string | number | boolean>;
   };
   models: TTSModelOption[];
+  source: string;
+  updated_at: string | null;
+  stale: boolean;
+  error: string | null;
 }
 
 export interface JobEvent {
@@ -682,7 +729,8 @@ export const api = {
   listAgents: () => request<AgentSpec[]>("/api/agents"),
   getImageOptions: () => request<ImageOptions>("/api/agents/image-options"),
   getPaletteOptions: () => request<PaletteOptions>("/api/agents/palette-options"),
-  getTTSOptions: () => request<TTSOptions>("/api/agents/tts-options"),
+  getTTSOptions: (refresh = false) =>
+    request<TTSOptions>(`/api/agents/tts-options${refresh ? "?refresh=true" : ""}`),
   listProfiles: (agentType: string) =>
     request<AgentProfile[]>(`/api/agents/${agentType}/profiles`),
   createProfile: (
@@ -704,6 +752,11 @@ export const api = {
       tts_model?: string;
       tts_language?: string;
       tts_voice?: string;
+      tts_speed?: number;
+      tts_instructions?: string;
+      tts_style?: string | null;
+      tts_style_degree?: number | null;
+      tts_advanced_options?: Record<string, string | number | boolean>;
       subtitles_mode?: "none" | "srt" | "burned_and_srt";
       slide_palette?: SlidePalette;
       logo_mode?: "none" | "uploaded" | "generated";
@@ -712,6 +765,7 @@ export const api = {
       logo_size?: "small" | "medium" | "large";
       logo_margin_px?: number;
       logo_opacity?: number;
+      logo_background_mode?: "opaque" | "transparent";
       logo_visibility?: LogoVisibility;
     },
   ) =>
@@ -722,6 +776,10 @@ export const api = {
   getProfile: (id: string) => request<AgentProfile>(`/api/agents/profiles/${id}`),
   getProfileVersions: (id: string) =>
     request<ProfileVersion[]>(`/api/agents/profiles/${id}/versions`),
+  activateProfileVersion: (id: string, version: number) =>
+    request<AgentProfile>(`/api/agents/profiles/${id}/versions/${version}/activate`, {
+      method: "POST",
+    }),
   updateProfile: (
     id: string,
     input: Partial<
@@ -743,6 +801,11 @@ export const api = {
         | "tts_model"
         | "tts_language"
         | "tts_voice"
+        | "tts_speed"
+        | "tts_instructions"
+        | "tts_style"
+        | "tts_style_degree"
+        | "tts_advanced_options"
         | "subtitles_mode"
         | "slide_palette"
         | "logo_mode"
@@ -751,6 +814,7 @@ export const api = {
         | "logo_size"
         | "logo_margin_px"
         | "logo_opacity"
+        | "logo_background_mode"
         | "logo_visibility"
       >
     > & { model?: string; note?: string },
@@ -767,6 +831,11 @@ export const api = {
       tts_model: string;
       tts_language: string;
       tts_voice: string;
+      tts_speed: number;
+      tts_instructions: string;
+      tts_style: string | null;
+      tts_style_degree: number | null;
+      tts_advanced_options: Record<string, string | number | boolean>;
     },
   ) => {
     const response = await fetch(`/api/agents/profiles/${id}/tts-preview`, {
@@ -806,12 +875,43 @@ export const api = {
       `/api/agents/profiles/${id}/logos/${encodeURIComponent(logoId)}`,
       { method: "DELETE" },
     ),
-  profileLogoUrl: (id: string, logoId: string, thumbnail = false) =>
-    `/api/agents/profiles/${id}/logos/${encodeURIComponent(logoId)}${thumbnail ? "?thumbnail=true" : ""}`,
-  createAgentRun: (projectId: string, agent: string, profileId?: string) =>
+  prepareTransparentProfileLogo: (id: string, logoId: string) =>
+    request<LogoTransparentVariant>(
+      `/api/agents/profiles/${id}/logos/${encodeURIComponent(logoId)}/transparent-preview`,
+      { method: "POST" },
+    ),
+  profileLogoUrl: (
+    id: string,
+    logoId: string,
+    options: boolean | { thumbnail?: boolean; variant?: "original" | "transparent" } = false,
+  ) => {
+    const normalized =
+      typeof options === "boolean" ? { thumbnail: options } : options;
+    const params = new URLSearchParams();
+    if (normalized.thumbnail) params.set("thumbnail", "true");
+    if (normalized.variant && normalized.variant !== "original") {
+      params.set("variant", normalized.variant);
+    }
+    const query = params.size > 0 ? `?${params.toString()}` : "";
+    return `/api/agents/profiles/${id}/logos/${encodeURIComponent(logoId)}${query}`;
+  },
+  createAgentRun: (
+    projectId: string,
+    agent: string,
+    profileId?: string,
+    options?: {
+      expected_input_artifact_ids?: Record<string, string[]>;
+      request_id?: string;
+      trigger?: "stage_card" | "artifact_card";
+    },
+  ) =>
     request<Job>(`/api/projects/${projectId}/agent-runs`, {
       method: "POST",
-      body: JSON.stringify({ agent, profile_id: profileId ?? null }),
+      body: JSON.stringify({
+        agent,
+        profile_id: profileId ?? null,
+        ...options,
+      }),
     }),
   getCourseVideoPreflight: (
     projectId: string,
@@ -840,6 +940,7 @@ export const api = {
       include_subtitles: boolean;
       include_chapters: boolean;
       transition: CourseVideoTransition;
+      request_id?: string;
     },
   ) =>
     request<Job>(`/api/projects/${projectId}/course-video`, {

@@ -1,12 +1,16 @@
 import json
+import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from factory_agents.agents.voice import run_voice
 from factory_agents.contracts import VoiceScript
+from factory_agents.tools import video as video_tools
 from factory_agents.tools.tts import synthesize_cached
 from factory_agents.tools.video import (
+    FFmpegPolicy,
     _concat_file_entry,
     _format_srt_time,
     _run,
@@ -28,7 +32,10 @@ class FakeClient:
 
     def _create(self, **kwargs):
         self.requests.append(kwargs)
-        message = SimpleNamespace(content=self._responses.pop(0), tool_calls=None)
+        result = self._responses.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        message = SimpleNamespace(content=result, tool_calls=None)
         return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
 
@@ -56,6 +63,27 @@ def test_voice_adapter_retries_then_fails():
     client = FakeClient(["no json", "tampoco", "nada"])
     with pytest.raises(RuntimeError, match="voz"):
         run_voice("guion", client=client, model="m")
+
+
+def test_voice_adapter_retries_malformed_provider_response():
+    error = json.JSONDecodeError("Expecting value", "", 0)
+    client = FakeClient([error, VALID_VOICE])
+
+    result = run_voice("guion", client=client, model="m")
+
+    assert isinstance(result, VoiceScript)
+    assert len(client.requests) == 2
+    assert client.requests[0]["messages"] == client.requests[1]["messages"]
+
+
+def test_voice_adapter_reports_repeated_malformed_provider_responses():
+    errors = [json.JSONDecodeError("Expecting value", "", 0) for _ in range(3)]
+    client = FakeClient(errors)
+
+    with pytest.raises(RuntimeError, match="respuesta válida del proveedor"):
+        run_voice("guion", client=client, model="m")
+
+    assert len(client.requests) == 3
 
 
 class CountingProvider:
@@ -139,9 +167,14 @@ def test_course_video_transitions_build_controlled_filter_graphs(
 
     def fake_run(command, timeout=600):
         commands.append(command)
+        Path(command[-1]).write_bytes(b"video")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr("factory_agents.tools.video._run", fake_run)
+    monkeypatch.setattr(
+        "factory_agents.tools.video._validated_video",
+        lambda _path, **_kwargs: {"video_codec": "h264", "audio_codec": "aac"},
+    )
     concat_course_videos(
         [tmp_path / "one.mp4", tmp_path / "two.mp4"],
         tmp_path / "course.mp4",
@@ -161,9 +194,14 @@ def test_course_video_without_transition_prefers_stream_copy_and_chapters(
 
     def fake_run(command, timeout=600):
         commands.append(command)
+        Path(command[-1]).write_bytes(b"video")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr("factory_agents.tools.video._run", fake_run)
+    monkeypatch.setattr(
+        "factory_agents.tools.video._validated_video",
+        lambda _path, **_kwargs: {"video_codec": "h264", "audio_codec": "aac"},
+    )
     concat_course_videos(
         [tmp_path / "one.mp4", tmp_path / "two.mp4"],
         tmp_path / "course.mp4",
@@ -261,14 +299,32 @@ def test_vertical_video_uses_blurred_background_without_cropping_foreground(
 ):
     commands = []
     monkeypatch.setattr("factory_agents.tools.video.ffmpeg_available", lambda: True)
+    image = tmp_path / "slide.png"
+    audio = tmp_path / "audio.mp3"
+    image.write_bytes(b"slide")
+    audio.write_bytes(b"audio")
+
+    def fake_probe_image(path):
+        return (1920, 1080) if Path(path) == image else (1080, 1920)
 
     def fake_run(command, timeout=600):
         commands.append(command)
+        Path(command[-1]).write_bytes(b"media")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr("factory_agents.tools.video._run", fake_run)
+    monkeypatch.setattr("factory_agents.tools.video.probe_image_size", fake_probe_image)
+    monkeypatch.setattr(
+        "factory_agents.tools.video._validated_video",
+        lambda _path, **_kwargs: {
+            "video_codec": "h264",
+            "audio_codec": "aac",
+            "width": 1080,
+            "height": 1920,
+        },
+    )
     compose_video(
-        [(tmp_path / "slide.png", tmp_path / "audio.mp3")],
+        [(image, audio)],
         tmp_path / "video.mp4",
         tmp_path / "segments",
         orientation="vertical",
@@ -278,6 +334,314 @@ def test_vertical_video_uses_blurred_background_without_cropping_foreground(
     assert "scale=1080:1920:force_original_aspect_ratio=decrease" in filter_graph
     assert "boxblur" in filter_graph
     assert "overlay=(W-w)/2:(H-h)/2" in filter_graph
+    segment_command = next(command for command in commands if "-loop" in command)
+    assert "-filter_complex" not in segment_command
+    assert all("boxblur" not in value for value in segment_command)
+
+
+def test_ffmpeg_policy_defaults_overrides_and_validation():
+    assert FFmpegPolicy() == FFmpegPolicy(
+        threads=1,
+        filter_threads=1,
+        filter_complex_threads=1,
+        preset="veryfast",
+        crf=23,
+    )
+    assert FFmpegPolicy.from_mapping(
+        {
+            "threads": 2,
+            "filter_threads": 3,
+            "filter_complex_threads": 4,
+            "preset": "fast",
+            "crf": 18,
+        }
+    ).threads == 2
+    with pytest.raises(ValueError, match="entero positivo"):
+        FFmpegPolicy(threads=0)
+    with pytest.raises(ValueError, match="entre 0 y 51"):
+        FFmpegPolicy(crf=52)
+    with pytest.raises(ValueError, match="preset"):
+        FFmpegPolicy(preset="turbo")
+
+
+def test_reencoding_commands_receive_policy_but_stream_copy_does_not(monkeypatch, tmp_path):
+    commands = []
+    monkeypatch.setattr("factory_agents.tools.video.ffmpeg_available", lambda: True)
+    monkeypatch.setattr(
+        "factory_agents.tools.video._validated_video",
+        lambda _path, **_kwargs: {"video_codec": "h264", "audio_codec": "aac"},
+    )
+
+    def fake_run(command, timeout=600):
+        commands.append(command)
+        Path(command[-1]).write_bytes(b"video")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("factory_agents.tools.video._run", fake_run)
+    policy = FFmpegPolicy(
+        threads=2,
+        filter_threads=3,
+        filter_complex_threads=4,
+        preset="fast",
+        crf=19,
+    )
+    concat_course_videos(
+        [tmp_path / "one.mp4", tmp_path / "two.mp4"],
+        tmp_path / "reencoded.mp4",
+        tmp_path / "reencoded-work",
+        transition="fade_500ms",
+        durations=[2.0, 3.0],
+        policy=policy,
+    )
+    reencode = commands[-1]
+    for option, value in (
+        ("-threads", "2"),
+        ("-filter_threads", "3"),
+        ("-filter_complex_threads", "4"),
+        ("-preset", "fast"),
+        ("-crf", "19"),
+    ):
+        assert reencode[reencode.index(option) + 1] == value
+
+    commands.clear()
+    concat_course_videos(
+        [tmp_path / "one.mp4", tmp_path / "two.mp4"],
+        tmp_path / "copied.mp4",
+        tmp_path / "copied-work",
+        policy=policy,
+    )
+    stream_copy = commands[-1]
+    assert stream_copy[stream_copy.index("-c") + 1] == "copy"
+    assert "-threads" not in stream_copy
+    assert "-preset" not in stream_copy
+    assert "-crf" not in stream_copy
+
+
+def test_matching_canvas_skips_blur_and_segment_cache_is_reused(monkeypatch, tmp_path):
+    commands = []
+    completed = []
+    image = tmp_path / "slide.png"
+    audio = tmp_path / "audio.wav"
+    image.write_bytes(b"slide")
+    audio.write_bytes(b"audio")
+    monkeypatch.setattr("factory_agents.tools.video.ffmpeg_available", lambda: True)
+    monkeypatch.setattr(
+        "factory_agents.tools.video.probe_image_size",
+        lambda _path: (1920, 1080),
+    )
+    monkeypatch.setattr(
+        "factory_agents.tools.video._validated_video",
+        lambda _path, **_kwargs: {
+            "video_codec": "h264",
+            "audio_codec": "aac",
+            "width": 1920,
+            "height": 1080,
+        },
+    )
+
+    def fake_run(command, timeout=600):
+        commands.append(command)
+        Path(command[-1]).write_bytes(b"video")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("factory_agents.tools.video._run", fake_run)
+    kwargs = {
+        "pairs": [(image, audio)],
+        "out_path": tmp_path / "lesson.mp4",
+        "workdir": tmp_path / "segments",
+        "on_segment_complete": lambda index, evidence: completed.append((index, evidence)),
+    }
+    compose_video(**kwargs)
+    compose_video(**kwargs)
+
+    segment_commands = [command for command in commands if "-loop" in command]
+    assert len(segment_commands) == 1
+    assert all("boxblur" not in value for command in commands for value in command)
+    assert completed[0][1]["reused"] is False
+    assert completed[1][1]["reused"] is True
+    manifest = json.loads((tmp_path / "segments" / "segment-000.json").read_text())
+    assert manifest["signature_inputs"]["width"] == 1920
+    assert manifest["signature_inputs"]["ffmpeg_policy"]["threads"] == 1
+
+    compose_video(**kwargs, policy=FFmpegPolicy(threads=2))
+    assert len([command for command in commands if "-loop" in command]) == 2
+    audio.write_bytes(b"changed-audio")
+    compose_video(**kwargs, policy=FFmpegPolicy(threads=2))
+    assert len([command for command in commands if "-loop" in command]) == 3
+
+
+def test_corrupt_cached_segment_is_regenerated_in_isolation(monkeypatch, tmp_path):
+    commands = []
+    image = tmp_path / "slide.png"
+    audio = tmp_path / "audio.wav"
+    image.write_bytes(b"slide")
+    audio.write_bytes(b"audio")
+    monkeypatch.setattr("factory_agents.tools.video.ffmpeg_available", lambda: True)
+    monkeypatch.setattr(
+        "factory_agents.tools.video.probe_image_size",
+        lambda _path: (1920, 1080),
+    )
+    monkeypatch.setattr(
+        "factory_agents.tools.video._validated_video",
+        lambda _path, **_kwargs: {
+            "video_codec": "h264",
+            "audio_codec": "aac",
+            "width": 1920,
+            "height": 1080,
+        },
+    )
+
+    def fake_run(command, timeout=600):
+        commands.append(command)
+        Path(command[-1]).write_bytes(b"video")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("factory_agents.tools.video._run", fake_run)
+    workdir = tmp_path / "segments"
+    compose_video([(image, audio)], tmp_path / "lesson.mp4", workdir)
+    (workdir / "segment-000.mp4").write_bytes(b"corrupt")
+    compose_video([(image, audio)], tmp_path / "lesson.mp4", workdir)
+    assert len([command for command in commands if "-loop" in command]) == 2
+
+
+def test_pause_after_segment_keeps_atomic_cache_and_resumes(monkeypatch, tmp_path):
+    image = tmp_path / "slide.png"
+    audio = tmp_path / "audio.wav"
+    image.write_bytes(b"slide")
+    audio.write_bytes(b"audio")
+    monkeypatch.setattr("factory_agents.tools.video.ffmpeg_available", lambda: True)
+    monkeypatch.setattr(
+        "factory_agents.tools.video.probe_image_size",
+        lambda _path: (1920, 1080),
+    )
+    monkeypatch.setattr(
+        "factory_agents.tools.video._validated_video",
+        lambda _path, **_kwargs: {
+            "video_codec": "h264",
+            "audio_codec": "aac",
+            "width": 1920,
+            "height": 1080,
+        },
+    )
+    commands = []
+
+    def fake_run(command, timeout=600):
+        commands.append(command)
+        Path(command[-1]).write_bytes(b"video")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("factory_agents.tools.video._run", fake_run)
+    workdir = tmp_path / "segments"
+
+    def pause_after_first(_index, _evidence):
+        raise RuntimeError("paused")
+
+    with pytest.raises(RuntimeError, match="paused"):
+        compose_video(
+            [(image, audio)],
+            tmp_path / "lesson.mp4",
+            workdir,
+            on_segment_complete=pause_after_first,
+        )
+    assert (workdir / "segment-000.mp4").is_file()
+    assert (workdir / "segment-000.json").is_file()
+    assert not (tmp_path / "lesson.mp4").exists()
+    assert not list(workdir.glob("*.tmp.mp4"))
+
+    completed = []
+    compose_video(
+        [(image, audio)],
+        tmp_path / "lesson.mp4",
+        workdir,
+        on_segment_complete=lambda index, evidence: completed.append((index, evidence)),
+    )
+    assert completed[0][1]["reused"] is True
+    assert len([command for command in commands if "-loop" in command]) == 1
+
+
+def test_real_multisegment_compose_reuses_valid_segments(monkeypatch, tmp_path):
+    if not ffmpeg_available():
+        pytest.skip("ffmpeg/ffprobe no están disponibles")
+    monkeypatch.setitem(video_tools.VIDEO_SIZES, "horizontal", (320, 180))
+    images = []
+    audios = []
+    for index, size in enumerate(("320x180", "180x320")):
+        image = tmp_path / f"slide-{index}.png"
+        audio = tmp_path / f"audio-{index}.wav"
+        _run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                f"color=c={'blue' if index == 0 else 'green'}:s={size}",
+                "-frames:v",
+                "1",
+                str(image),
+            ],
+            timeout=60,
+        )
+        _run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                f"sine=frequency={440 + index * 100}:sample_rate=44100:duration=0.4",
+                str(audio),
+            ],
+            timeout=60,
+        )
+        images.append(image)
+        audios.append(audio)
+
+    completed = []
+    pairs = list(zip(images, audios, strict=True))
+    workdir = tmp_path / "segments"
+    output = compose_video(
+        pairs,
+        tmp_path / "lesson.mp4",
+        workdir,
+        on_segment_complete=lambda index, evidence: completed.append((index, evidence)),
+    )
+    media = probe_media(output)
+    assert (media["width"], media["height"]) == (320, 180)
+    assert media["video_codec"] == "h264"
+    assert media["audio_codec"] == "aac"
+    assert media["frame_rate"] == "25/1"
+    assert all(evidence["reused"] is False for _index, evidence in completed)
+    assert json.loads((workdir / "segment-000.json").read_text())["composition"] == "direct"
+    assert (
+        json.loads((workdir / "segment-001.json").read_text())["composition"]
+        == "precomposed"
+    )
+
+    completed.clear()
+    compose_video(
+        pairs,
+        tmp_path / "lesson.mp4",
+        workdir,
+        on_segment_complete=lambda index, evidence: completed.append((index, evidence)),
+    )
+    assert len(completed) == 2
+    assert all(evidence["reused"] is True for _index, evidence in completed)
+
+
+def test_control_check_terminates_active_process_group():
+    started = time.monotonic()
+
+    def stop() -> None:
+        raise RuntimeError("stop requested")
+
+    with pytest.raises(RuntimeError, match="stop requested"):
+        _run(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            timeout=30,
+            control_check=stop,
+        )
+    assert time.monotonic() - started < 10
 
 
 def test_burned_subtitles_raise_safe_area_for_bottom_logo(monkeypatch, tmp_path):
@@ -286,9 +650,14 @@ def test_burned_subtitles_raise_safe_area_for_bottom_logo(monkeypatch, tmp_path)
 
     def fake_run(command, timeout=600):
         commands.append(command)
+        Path(command[-1]).write_bytes(b"video")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr("factory_agents.tools.video._run", fake_run)
+    monkeypatch.setattr(
+        "factory_agents.tools.video._validated_video",
+        lambda _path, **_kwargs: {"video_codec": "h264", "audio_codec": "aac"},
+    )
     output, style = burn_subtitles(
         tmp_path / "video.mp4",
         tmp_path / "lesson.srt",

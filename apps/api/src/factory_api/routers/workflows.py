@@ -16,7 +16,11 @@ from factory_api.run_control import (
     request_pause,
     resume_job,
 )
-from factory_api.runner import append_event, runner
+from factory_api.runner import (
+    _restore_previous_output_selections,
+    append_event,
+    runner,
+)
 from factory_api.schemas import (
     ApprovalRequest,
     JobRead,
@@ -338,6 +342,8 @@ def pause_run(
         raise _transition_error(exc) from exc
     db.commit()
     db.refresh(job)
+    if job.status == "canceled":
+        _restore_previous_output_selections(job.id)
     if changed:
         append_event(
             job_id,

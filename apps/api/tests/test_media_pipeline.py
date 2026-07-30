@@ -135,7 +135,11 @@ def test_slides_profile_copies_frozen_logo_into_every_deck(auth_client, monkeypa
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected image call")),
     )
     buffer = io.BytesIO()
-    Image.new("RGBA", (80, 60), (178, 58, 38, 255)).save(buffer, format="PNG")
+    logo_image = Image.new("RGB", (80, 60), "white")
+    for x in range(16, 64):
+        for y in range(12, 48):
+            logo_image.putpixel((x, y), (178, 58, 38))
+    logo_image.save(buffer, format="PNG")
 
     project = _create_project(auth_client)
     for agent in ("curator", "planner", "lessons"):
@@ -149,6 +153,10 @@ def test_slides_profile_copies_frozen_logo_into_every_deck(auth_client, monkeypa
         files={"file": ("marca.png", buffer.getvalue(), "image/png")},
     ).json()
     logo = profile["logo_candidates"][0]
+    preview = auth_client.post(
+        f"/api/agents/profiles/{profile['id']}/logos/{logo['id']}/transparent-preview"
+    )
+    assert preview.status_code == 200, preview.text
     profile = auth_client.patch(
         f"/api/agents/profiles/{profile['id']}",
         json={
@@ -156,6 +164,7 @@ def test_slides_profile_copies_frozen_logo_into_every_deck(auth_client, monkeypa
             "active_logo_id": logo["id"],
             "logo_placement": "bottom-right",
             "logo_size": "medium",
+            "logo_background_mode": "transparent",
         },
     ).json()
 
@@ -170,6 +179,11 @@ def test_slides_profile_copies_frozen_logo_into_every_deck(auth_client, monkeypa
         assert logo_metadata["source_logo_id"] == logo["id"]
         assert logo_metadata["profile_version"] == profile["version"]
         assert logo_metadata["placement"] == "bottom-right"
+        assert logo_metadata["background_mode"] == "transparent"
+        assert logo_metadata["effective_media_type"] == "image/png"
+        assert logo_metadata["original_sha256"] == logo["sha256"]
+        assert logo_metadata["effective_sha256"] != logo["sha256"]
+        assert logo_metadata["background_removal"]["source_sha256"] == logo["sha256"]
         deck = auth_client.get(f"/api/artifacts/{slide['id']}").json()
         assert "factory-logo:start" in deck["content"]
         assert "brand-logo.png" in deck["content"]
@@ -192,7 +206,7 @@ def test_slides_profile_generates_selected_images_without_blocking_pipeline(
         lambda *args, **kwargs: (
             "---\nmarp: true\n---\n\n# Portada\n---\n# Concepto\n"
             '<!-- factory-image {"prompt":"A learning network",'
-            '"layout":"right","alt":"Network"} -->\n'
+            '"layout":"background","alt":"Network"} -->\n'
         ),
     )
     monkeypatch.setattr(
@@ -220,6 +234,10 @@ def test_slides_profile_generates_selected_images_without_blocking_pipeline(
     assert all(item["metadata"]["image_generation"]["generated"] == 1 for item in slides)
     first = auth_client.get(f"/api/artifacts/{slides[0]['id']}").json()
     assert "factory-image-id: slide-2" in first["content"]
+    assert "![bg right:42%]" in first["content"]
+    assert "brightness:0.42" not in first["content"]
+    assert first["metadata"]["images"][0]["requested_layout"] == "background"
+    assert first["metadata"]["images"][0]["effective_layout"] == "right"
     image = auth_client.get(f"/api/artifacts/{slides[0]['id']}/images/slide-2")
     assert image.content == b"generated"
 
@@ -247,7 +265,7 @@ def test_video_job_with_mocked_media_tools(auth_client, monkeypatch, tmp_path):
             paths.append(p)
         return paths
 
-    def fake_compose(pairs, out_path, workdir, orientation="horizontal"):
+    def fake_compose(pairs, out_path, workdir, orientation="horizontal", **_kwargs):
         composed_orientations.append(orientation)
         out = Path(out_path)
         out.parent.mkdir(parents=True, exist_ok=True)

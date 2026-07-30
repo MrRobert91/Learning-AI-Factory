@@ -208,6 +208,13 @@ def completed_unit(job_id: str, unit: str) -> dict[str, Any] | None:
         return value if isinstance(value, dict) else None
 
 
+def is_cancel_requested(job_id: str) -> bool:
+    """Lightweight polling hook for bounded external subprocesses."""
+    with SessionLocal() as db:
+        job = db.get(Job, job_id)
+        return job is None or job.status in {"canceling", "canceled"}
+
+
 def load_scope_state(job_id: str, scope: str) -> dict[str, Any]:
     with SessionLocal() as db:
         job = db.get(Job, job_id)

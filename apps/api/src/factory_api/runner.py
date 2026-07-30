@@ -7,6 +7,7 @@ by appending JobEvents, which the SSE endpoint streams to the UI.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import shutil
@@ -30,7 +31,6 @@ from factory_api.artifact_versions import (
     artifact_logical_key,
     artifact_metadata,
     select_artifact_version,
-    selected_artifact,
 )
 from factory_api.config import get_settings
 from factory_api.db import SessionLocal
@@ -40,6 +40,7 @@ from factory_api.run_control import (
     RunPaused,
     checkpoint,
     completed_unit,
+    is_cancel_requested,
     load_scope_state,
     recover_jobs,
     save_scope_state,
@@ -188,6 +189,8 @@ class JobRunner:
             self._queued_ids.add(job_id)
             self._queue.put_nowait(job_id)
         for job_id, summary, point in recovery_events:
+            if summary.startswith("Cancel"):
+                _restore_previous_output_selections(job_id)
             append_event(
                 job_id,
                 "control",
@@ -419,6 +422,7 @@ class JobRunner:
         except RunCanceled as exc:
             _cleanup_job_workdir(kind, job_id)
             _finish_open_unit_logs(job_id, "CANCEL")
+            _restore_previous_output_selections(job_id)
             append_event(
                 job_id,
                 "control",
@@ -479,6 +483,8 @@ class JobRunner:
         *,
         include_traceback: bool = False,
     ) -> None:
+        if error:
+            _restore_previous_output_selections(job_id)
         if not error:
             checkpoint(
                 job_id,
@@ -916,11 +922,28 @@ def _save_artifact(
         return artifact.id
 
 
-def _latest_artifact_content(project_id: str, type_: str) -> tuple[str | None, str | None]:
-    """Return (artifact_id, content) of the newest artifact of a type."""
+def _input_artifact_filter(payload: dict, type_: str):
+    snapshot = payload.get("input_artifact_ids")
+    if isinstance(snapshot, dict) and type_ in snapshot:
+        ids = [value for value in snapshot[type_] if isinstance(value, str)]
+        return Artifact.id.in_(ids)
+    return Artifact.is_selected.is_(True)
+
+
+def _latest_artifact_content(payload: dict, type_: str) -> tuple[str | None, str | None]:
+    """Return the frozen input artifact and its content for a singleton type."""
     settings = get_settings()
     with SessionLocal() as db:
-        artifact = selected_artifact(db, project_id, type_)
+        artifact = db.scalars(
+            select(Artifact)
+            .where(
+                Artifact.project_id == payload["project_id"],
+                Artifact.type == type_,
+                _input_artifact_filter(payload, type_),
+            )
+            .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+            .limit(1)
+        ).first()
         if artifact is None:
             return None, None
         path = settings.data_dir / artifact.path
@@ -963,11 +986,55 @@ def _save_artifact_if_changed(
     )
 
 
-def _require_artifact(project_id: str, type_: str, hint: str) -> str:
-    _id, content = _latest_artifact_content(project_id, type_)
+def _require_artifact(payload: dict, type_: str, hint: str) -> str:
+    _id, content = _latest_artifact_content(payload, type_)
     if not content:
         raise RuntimeError(f"Falta el artefacto '{type_}': {hint}")
     return content
+
+
+def _restore_previous_output_selections(job_id: str) -> None:
+    """Keep pre-run selections active when a contextual regeneration does not finish."""
+    with SessionLocal() as db:
+        job = db.get(Job, job_id)
+        if job is None:
+            return
+        try:
+            payload = json.loads(job.payload_json or "{}")
+        except (TypeError, json.JSONDecodeError):
+            return
+        previous = payload.get("previous_output_artifact_ids")
+        if not isinstance(previous, dict) or not previous:
+            return
+        output_types = [type_ for type_ in previous if isinstance(type_, str)]
+        if not output_types:
+            return
+        db.execute(
+            update(Artifact)
+            .where(
+                Artifact.project_id == job.project_id,
+                Artifact.type.in_(output_types),
+                Artifact.created_by_job_id == job_id,
+            )
+            .values(is_selected=False)
+        )
+        previous_ids = [
+            artifact_id
+            for ids in previous.values()
+            if isinstance(ids, list)
+            for artifact_id in ids
+            if isinstance(artifact_id, str)
+        ]
+        if previous_ids:
+            db.execute(
+                update(Artifact)
+                .where(
+                    Artifact.project_id == job.project_id,
+                    Artifact.id.in_(previous_ids),
+                )
+                .values(is_selected=True)
+            )
+        db.commit()
 
 
 def _duration_spec(payload: dict) -> DurationSpec | None:
@@ -1148,7 +1215,7 @@ def run_planner_job(job_id: str, payload: dict) -> dict:
     if cached and cached.get("artifact_id"):
         return {"artifact_id": cached["artifact_id"]}
     brief_md = _require_artifact(
-        payload["project_id"], "research_brief", "ejecuta antes el Curador"
+        payload, "research_brief", "ejecuta antes el Curador"
     )
     _emit_duration_event(job_id, payload, "planner")
     spec = _duration_spec(payload)
@@ -1206,10 +1273,10 @@ def run_lessons_job(job_id: str, payload: dict) -> dict:
 
     settings = get_settings()
     plan_json = _require_artifact(
-        payload["project_id"], "course_plan", "ejecuta antes el Diseñador de curso"
+        payload, "course_plan", "ejecuta antes el Diseñador de curso"
     )
     brief_md = _require_artifact(
-        payload["project_id"], "research_brief", "ejecuta antes el Curador"
+        payload, "research_brief", "ejecuta antes el Curador"
     )
     plan = CoursePlan.model_validate_json(plan_json)
     _emit_duration_event(job_id, payload, "lessons")
@@ -1252,6 +1319,7 @@ def run_lessons_job(job_id: str, payload: dict) -> dict:
                 work_unit_key=f"lesson:{mi}.{li}",
                 workflow_step=payload.get("_workflow_step"),
             ),
+            sandbox_cancel_requested=lambda: is_cancel_requested(job_id),
         ):
             if event.type == "result":
                 final_text = event.summary
@@ -1314,7 +1382,7 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
 
     settings = get_settings()
     plan_json = _require_artifact(
-        payload["project_id"], "course_plan", "ejecuta antes el Diseñador de curso"
+        payload, "course_plan", "ejecuta antes el Diseñador de curso"
     )
     plan = CoursePlan.model_validate_json(plan_json)
     _emit_duration_event(job_id, payload, "slides")
@@ -1338,7 +1406,7 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
             .where(
                 Artifact.project_id == payload["project_id"],
                 Artifact.type == "lesson_content",
-                Artifact.is_selected.is_(True),
+                _input_artifact_filter(payload, "lesson_content"),
             )
             .order_by(Artifact.created_at)
         ).all()
@@ -1367,7 +1435,9 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
     if isinstance(slide_logo, dict):
         from factory_api.logo_assets import stored_logo_path
 
-        logo_source = stored_logo_path(str(slide_logo.get("path", "")))
+        logo_source = stored_logo_path(
+            str(slide_logo.get("effective_path") or slide_logo.get("path", ""))
+        )
         if logo_source is None:
             raise RuntimeError(
                 "El logo congelado del perfil ya no est\u00e1 disponible; "
@@ -1540,6 +1610,28 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
                 "width": slide_logo.get("width"),
                 "height": slide_logo.get("height"),
                 "sha256": slide_logo.get("sha256"),
+                "original_path": slide_logo.get("original_path")
+                or slide_logo.get("path"),
+                "original_media_type": slide_logo.get("original_media_type")
+                or slide_logo.get("media_type"),
+                "original_width": slide_logo.get("original_width")
+                or slide_logo.get("width"),
+                "original_height": slide_logo.get("original_height")
+                or slide_logo.get("height"),
+                "original_sha256": slide_logo.get("original_sha256")
+                or slide_logo.get("sha256"),
+                "effective_media_type": slide_logo.get("effective_media_type")
+                or slide_logo.get("media_type"),
+                "effective_width": slide_logo.get("effective_width")
+                or slide_logo.get("width"),
+                "effective_height": slide_logo.get("effective_height")
+                or slide_logo.get("height"),
+                "effective_sha256": slide_logo.get("effective_sha256")
+                or slide_logo.get("sha256"),
+                "background_mode": slide_logo.get("background_mode", "opaque"),
+                "background_removal": slide_logo.get("transparent_variant")
+                if slide_logo.get("background_mode") == "transparent"
+                else None,
                 "prompt": slide_logo.get("prompt"),
                 "model": slide_logo.get("model"),
                 "seed": slide_logo.get("seed"),
@@ -1719,18 +1811,18 @@ PREFIXES = {
 }
 
 
-def _latest_by_base(project_id: str, type_: str) -> dict[str, "Artifact"]:
-    """Latest artifact of a type per base lesson label (prefix stripped)."""
+def _latest_by_base(payload: dict, type_: str) -> dict[str, "Artifact"]:
+    """Frozen input artifacts of a type, keyed by the lesson label."""
     prefix = PREFIXES.get(type_, "")
     with SessionLocal() as db:
         artifacts = db.scalars(
             select(Artifact)
             .where(
-                Artifact.project_id == project_id,
+                Artifact.project_id == payload["project_id"],
                 Artifact.type == type_,
-                Artifact.is_selected.is_(True),
+                _input_artifact_filter(payload, type_),
             )
-            .order_by(Artifact.created_at)
+            .order_by(Artifact.created_at, Artifact.id)
         ).all()
         db.expunge_all()
     result: dict[str, Artifact] = {}
@@ -1744,10 +1836,10 @@ def run_script_job(job_id: str, payload: dict) -> dict:
     from factory_agents.agents.script import render_script_input, run_script
 
     settings = get_settings()
-    decks = _latest_by_base(payload["project_id"], "slide_deck")
+    decks = _latest_by_base(payload, "slide_deck")
     if not decks:
         raise RuntimeError("Falta el artefacto 'slide_deck': genera o sube slides primero")
-    lessons = _latest_by_base(payload["project_id"], "lesson_content")
+    lessons = _latest_by_base(payload, "lesson_content")
     client = _client(
         job_id,
         agent="script",
@@ -1819,7 +1911,7 @@ def run_voice_job(job_id: str, payload: dict) -> dict:
     from factory_agents.tools.tts import default_tts_config, resolve_tts_config
 
     settings = get_settings()
-    scripts = _latest_by_base(payload["project_id"], "teaching_script")
+    scripts = _latest_by_base(payload, "teaching_script")
     if not scripts:
         raise RuntimeError(
             "Falta el artefacto 'teaching_script': ejecuta antes el Guionista docente"
@@ -1923,6 +2015,7 @@ def run_video_job(job_id: str, payload: dict) -> dict:
         synthesize_cached_with_status,
     )
     from factory_agents.tools.video import (
+        FFmpegPolicy,
         build_srt,
         burn_subtitles,
         compose_video,
@@ -1931,8 +2024,15 @@ def run_video_job(job_id: str, payload: dict) -> dict:
     )
 
     settings = get_settings()
-    voices = _latest_by_base(payload["project_id"], "voice_script")
-    decks = _latest_by_base(payload["project_id"], "slide_deck")
+    ffmpeg_policy = FFmpegPolicy(
+        threads=settings.ffmpeg_threads,
+        filter_threads=settings.ffmpeg_filter_threads,
+        filter_complex_threads=settings.ffmpeg_filter_complex_threads,
+        preset=settings.ffmpeg_preset,
+        crf=settings.ffmpeg_crf,
+    )
+    voices = _latest_by_base(payload, "voice_script")
+    decks = _latest_by_base(payload, "slide_deck")
     if not voices:
         raise RuntimeError("Falta el artefacto 'voice_script': ejecuta antes el Adaptador de voz")
 
@@ -2071,6 +2171,15 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                     "request_format": tts_config["tts_format"],
                     "output_format": tts_config["tts_output_format"],
                     "mime_type": tts_config["tts_mime_type"],
+                    "speed": tts_config["tts_speed"],
+                    "instructions_sha256": hashlib.sha256(
+                        tts_config["tts_instructions"].encode()
+                    ).hexdigest()
+                    if tts_config["tts_instructions"]
+                    else None,
+                    "style": tts_config["tts_style"],
+                    "style_degree": tts_config["tts_style_degree"],
+                    "catalog_updated_at": tts_config["tts_catalog_updated_at"],
                     "cache_hit": cache_hit,
                     "segment": segment_index,
                 },
@@ -2117,7 +2226,44 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                 f"Montando vídeo {orientation} de {base} (ffmpeg)…",
             )
             out_mp4 = workdir / "lesson.mp4"
-            compose_video(pairs, out_mp4, workdir / "segments", orientation=orientation)
+
+            def check_ffmpeg_control(
+                compose_unit: str = compose_unit,
+                base: str = base,
+            ) -> None:
+                checkpoint(
+                    job_id,
+                    "video-compose",
+                    current_unit=compose_unit,
+                    next_unit=compose_unit,
+                    message=f"FFmpeg activo para {base}",
+                )
+
+            def complete_ffmpeg_segment(
+                index: int,
+                evidence: dict,
+                compose_unit: str = compose_unit,
+                base: str = base,
+            ) -> None:
+                segment_unit = f"{compose_unit}:segment:{index + 1:03d}"
+                _complete_unit(
+                    job_id,
+                    "video-compose",
+                    segment_unit,
+                    evidence,
+                    next_unit=compose_unit,
+                    message=f"Segmento MP4 {index + 1} de {base} validado",
+                )
+
+            compose_video(
+                pairs,
+                out_mp4,
+                workdir / "segments",
+                orientation=orientation,
+                policy=ffmpeg_policy,
+                control_check=check_ffmpeg_control,
+                on_segment_complete=complete_ffmpeg_segment,
+            )
             if subtitles_mode == "burned_and_srt":
                 append_event(job_id, "stage", f"Incrustando subtítulos de {base}…")
                 out_mp4, subtitle_style = burn_subtitles(
@@ -2126,6 +2272,8 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                     workdir / "lesson-subtitled.mp4",
                     orientation=orientation,
                     logo_metadata=(artifact_metadata(deck).get("logo") or {}),
+                    policy=ffmpeg_policy,
+                    control_check=check_ffmpeg_control,
                 )
             record_usage(
                 job_id=job_id,
@@ -2138,7 +2286,10 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                 cost_source="provider_actual",
                 work_unit_key=f"video:{base}:ffmpeg",
                 idempotency_key=f"{job_id}:video:{base}:ffmpeg",
-                metadata={"local_operation": True},
+                metadata={
+                    "local_operation": True,
+                    "ffmpeg_policy": ffmpeg_policy.as_dict(),
+                },
             )
             _complete_unit(
                 job_id,
@@ -2181,6 +2332,7 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                 "orientation": orientation,
                 "width": width,
                 "height": height,
+                "ffmpeg_policy": ffmpeg_policy.as_dict(),
                 "slide_orientation": artifact_metadata(deck).get("orientation", "horizontal"),
                 "slide_deck_id": deck.id,
                 "voice_script_id": voice_artifact.id,
@@ -2341,6 +2493,8 @@ def _publish_course_video_artifacts(
 
 def run_course_video_job(job_id: str, payload: dict) -> dict:
     """Build one verified, versioned course video from selected lesson videos."""
+    from factory_agents.tools.video import FFmpegPolicy
+
     from factory_api.course_video import (
         build_chapter_manifest,
         build_preflight,
@@ -2356,6 +2510,13 @@ def run_course_video_job(job_id: str, payload: dict) -> dict:
     from factory_api.models import Project
 
     settings = get_settings()
+    ffmpeg_policy = FFmpegPolicy(
+        threads=settings.ffmpeg_threads,
+        filter_threads=settings.ffmpeg_filter_threads,
+        filter_complex_threads=settings.ffmpeg_filter_complex_threads,
+        preset=settings.ffmpeg_preset,
+        crf=settings.ffmpeg_crf,
+    )
     project_id = payload["project_id"]
     include_subtitles = bool(payload.get("include_subtitles", True))
     include_chapters = bool(payload.get("include_chapters", True))
@@ -2499,6 +2660,16 @@ def run_course_video_job(job_id: str, payload: dict) -> dict:
             "stage",
             f"Concatenando {len(preflight.inputs)} vídeos con transición {transition}…",
         )
+
+        def check_ffmpeg_control() -> None:
+            checkpoint(
+                job_id,
+                "course-video-concat",
+                current_unit=compose_unit,
+                next_unit=compose_unit,
+                message="FFmpeg activo para el vídeo completo",
+            )
+
         concat_course_videos(
             [item.video_path for item in preflight.inputs],
             out_path,
@@ -2506,6 +2677,8 @@ def run_course_video_job(job_id: str, payload: dict) -> dict:
             transition=transition,
             durations=durations,
             chapters=manifest["embedded_chapters"] if include_chapters else None,
+            policy=ffmpeg_policy,
+            control_check=check_ffmpeg_control,
         )
         record_usage(
             job_id=job_id,
@@ -2517,7 +2690,11 @@ def run_course_video_job(job_id: str, payload: dict) -> dict:
             cost_source="provider_actual",
             work_unit_key="course-video:concat",
             idempotency_key=f"{job_id}:course-video:concat",
-            metadata={"local_operation": True, "transition": transition},
+            metadata={
+                "local_operation": True,
+                "transition": transition,
+                "ffmpeg_policy": ffmpeg_policy.as_dict(),
+            },
         )
         _complete_unit(
             job_id,
@@ -2622,6 +2799,7 @@ def run_course_video_job(job_id: str, payload: dict) -> dict:
             "orientation": public["orientation"],
             "width": public["width"],
             "height": public["height"],
+            "ffmpeg_policy": ffmpeg_policy.as_dict(),
             "duration_seconds": float(output_media["duration_seconds"]),
             "video_codec": output_media.get("video_codec"),
             "audio_codec": output_media.get("audio_codec"),
@@ -2811,11 +2989,11 @@ def run_publisher_job(job_id: str, payload: dict) -> dict:
     from factory_agents.tools.thumbnail import render_thumbnail
 
     settings = get_settings()
-    videos = _latest_by_base(payload["project_id"], "video")
+    videos = _latest_by_base(payload, "video")
     if not videos:
         raise RuntimeError("Falta el artefacto 'video': ejecuta antes el montaje de vídeo")
-    subtitles = _latest_by_base(payload["project_id"], "subtitles")
-    scripts = _latest_by_base(payload["project_id"], "teaching_script")
+    subtitles = _latest_by_base(payload, "subtitles")
+    scripts = _latest_by_base(payload, "teaching_script")
     client = _client(
         job_id,
         agent="publisher",
@@ -2935,7 +3113,7 @@ def run_youtube_upload_job(job_id: str, payload: dict) -> dict:
         package = _json.loads(
             (settings.data_dir / package_artifact.path).read_text(encoding="utf-8")
         )
-        thumbnails = _latest_by_base(payload["project_id"], "thumbnail")
+        thumbnails = _latest_by_base(payload, "thumbnail")
         base = video.title.removeprefix(PREFIXES["video"])
         thumb = thumbnails.get(base)
         thumb_path = settings.data_dir / thumb.path if thumb else None

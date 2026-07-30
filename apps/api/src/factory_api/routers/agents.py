@@ -1,3 +1,4 @@
+import hashlib
 import json
 import secrets
 import time
@@ -27,9 +28,6 @@ from factory_agents.tools.tts import (
     build_tts_provider,
     default_tts_config,
     estimated_tts_cost,
-    normalize_tts_selection,
-    resolve_tts_config,
-    tts_options,
 )
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, Response
@@ -42,21 +40,29 @@ from factory_api.db import get_db
 from factory_api.logo_assets import (
     MAX_LOGO_BYTES,
     LogoValidationError,
+    prepare_transparent_logo,
     remove_logo_files,
     remove_profile_logo_files,
     store_logo,
     stored_logo_path,
+    transparent_logo_path,
     validate_logo,
 )
 from factory_api.models import AgentProfile, AgentProfileVersion, Artifact
 from factory_api.schemas import (
     AgentSpecRead,
     LogoGenerateRequest,
+    LogoTransparentVariantRead,
     ProfileCreate,
     ProfileRead,
     ProfileUpdate,
     ProfileVersionRead,
     TTSPreviewRequest,
+)
+from factory_api.tts_catalog import (
+    catalog_state,
+    normalize_current_tts_selection,
+    resolve_current_tts_config,
 )
 from factory_api.usage import record_usage
 
@@ -77,9 +83,17 @@ LOGO_CONFIG_KEYS = {
     "logo_size",
     "logo_margin_px",
     "logo_opacity",
+    "logo_background_mode",
     "logo_visibility",
 }
-TTS_CONFIG_KEYS = {"tts_provider", "tts_model", "tts_language", "tts_voice"}
+TTS_BASE_CONFIG_KEYS = {"tts_provider", "tts_model", "tts_language", "tts_voice"}
+TTS_CONFIG_KEYS = TTS_BASE_CONFIG_KEYS | {
+    "tts_speed",
+    "tts_instructions",
+    "tts_style",
+    "tts_style_degree",
+    "tts_advanced_options",
+}
 DEFAULT_LOGO_VISIBILITY = {"cover": True, "content": True, "summary": True}
 _TTS_PREVIEW_CALLS: dict[str, list[float]] = {}
 
@@ -103,11 +117,17 @@ def _profile_config(
     logo_size: str | None = None,
     logo_margin_px: int | None = None,
     logo_opacity: float | None = None,
+    logo_background_mode: str | None = None,
     logo_visibility: dict[str, bool] | None = None,
     tts_provider: str | None = None,
     tts_model: str | None = None,
     tts_language: str | None = None,
     tts_voice: str | None = None,
+    tts_speed: float | None = None,
+    tts_instructions: str | None = None,
+    tts_style: str | None = None,
+    tts_style_degree: float | None = None,
+    tts_advanced_options: dict | None = None,
     subtitles_mode: str | None = None,
 ) -> dict:
     config = {
@@ -133,6 +153,7 @@ def _profile_config(
                 "logo_size": logo_size or "small",
                 "logo_margin_px": 32 if logo_margin_px is None else logo_margin_px,
                 "logo_opacity": 1.0 if logo_opacity is None else logo_opacity,
+                "logo_background_mode": logo_background_mode or "opaque",
                 "logo_visibility": logo_visibility or dict(DEFAULT_LOGO_VISIBILITY),
                 "logo_candidates": [],
             }
@@ -147,8 +168,17 @@ def _profile_config(
         )
         if tts_language:
             config["tts_language"] = tts_language
+        for key, value in {
+            "tts_speed": tts_speed,
+            "tts_instructions": tts_instructions,
+            "tts_style": tts_style,
+            "tts_style_degree": tts_style_degree,
+            "tts_advanced_options": tts_advanced_options,
+        }.items():
+            if value is not None:
+                config[key] = value
         try:
-            normalize_tts_selection(config, changed_fields=TTS_CONFIG_KEYS)
+            normalize_current_tts_selection(config, changed_fields=TTS_CONFIG_KEYS)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
     if agent_type == "video":
@@ -189,6 +219,7 @@ def _slide_logo_fields(config: dict, agent_type: str) -> dict:
             "logo_size": None,
             "logo_margin_px": None,
             "logo_opacity": None,
+            "logo_background_mode": None,
             "logo_visibility": None,
             "logo_candidates": None,
         }
@@ -199,6 +230,7 @@ def _slide_logo_fields(config: dict, agent_type: str) -> dict:
         "logo_size": config.get("logo_size") or "small",
         "logo_margin_px": int(config.get("logo_margin_px", 32)),
         "logo_opacity": float(config.get("logo_opacity", 1.0)),
+        "logo_background_mode": config.get("logo_background_mode") or "opaque",
         "logo_visibility": config.get("logo_visibility") or dict(DEFAULT_LOGO_VISIBILITY),
         "logo_candidates": config.get("logo_candidates") or [],
     }
@@ -212,17 +244,21 @@ def _voice_tts_fields(config: dict, agent_type: str) -> dict:
             "tts_language": None,
             "tts_voice": None,
             "tts_available": None,
+            "tts_speed": None,
+            "tts_instructions": None,
+            "tts_style": None,
+            "tts_style_degree": None,
+            "tts_advanced_options": None,
         }
     effective = dict(config)
-    if not TTS_CONFIG_KEYS.issubset(effective):
-        effective.update(
-            default_tts_config(
-                model=get_settings().tts_model,
-                voice=get_settings().tts_voice,
-            )
-        )
+    defaults = default_tts_config(
+        model=get_settings().tts_model,
+        voice=get_settings().tts_voice,
+    )
+    for key, value in defaults.items():
+        effective.setdefault(key, value)
     try:
-        resolved = resolve_tts_config(effective)
+        resolved = resolve_current_tts_config(effective)
         available = True
     except ValueError:
         resolved = {
@@ -230,6 +266,11 @@ def _voice_tts_fields(config: dict, agent_type: str) -> dict:
             "tts_model": effective.get("tts_model"),
             "tts_language": effective.get("tts_language") or "inherit",
             "tts_voice": effective.get("tts_voice"),
+            "tts_speed": effective.get("tts_speed", 1.0),
+            "tts_instructions": effective.get("tts_instructions", ""),
+            "tts_style": effective.get("tts_style"),
+            "tts_style_degree": effective.get("tts_style_degree"),
+            "tts_advanced_options": effective.get("tts_advanced_options") or {},
         }
         available = False
     return {
@@ -238,6 +279,11 @@ def _voice_tts_fields(config: dict, agent_type: str) -> dict:
         "tts_language": resolved.get("tts_language"),
         "tts_voice": resolved.get("tts_voice"),
         "tts_available": available,
+        "tts_speed": resolved.get("tts_speed", 1.0),
+        "tts_instructions": resolved.get("tts_instructions", ""),
+        "tts_style": resolved.get("tts_style"),
+        "tts_style_degree": resolved.get("tts_style_degree"),
+        "tts_advanced_options": resolved.get("tts_advanced_options") or {},
     }
 
 
@@ -253,7 +299,11 @@ def _supplied_tts_config(body: ProfileCreate | ProfileUpdate) -> dict:
     return {
         key: getattr(body, key)
         for key in TTS_CONFIG_KEYS
-        if key in body.model_fields_set and getattr(body, key) is not None
+        if key in body.model_fields_set
+        and (
+            getattr(body, key) is not None
+            or key in {"tts_style", "tts_style_degree"}
+        )
     }
 
 
@@ -270,7 +320,7 @@ def _validate_media_profile_config(
         )
     if agent_type == "voice":
         try:
-            normalize_tts_selection(
+            normalize_current_tts_selection(
                 config,
                 changed_fields=changed_tts_fields or set(),
             )
@@ -363,6 +413,54 @@ def _validate_slide_logo_config(agent_type: str, config: dict) -> None:
             status_code=422,
             detail="El modo del logo no coincide con el origen del candidato activo",
         )
+    if config.get("logo_background_mode", "opaque") == "transparent":
+        variant = candidate.get("transparent_variant")
+        if not isinstance(variant, dict) or not variant.get("path"):
+            raise HTTPException(
+                status_code=422,
+                detail="Prepara la variante transparente antes de guardar el perfil",
+            )
+
+
+def _prepare_active_transparent_variant(config: dict) -> None:
+    active_logo_id = config.get("active_logo_id")
+    candidates = config.get("logo_candidates") or []
+    candidate = next(
+        (item for item in candidates if item.get("id") == active_logo_id),
+        None,
+    )
+    if candidate is None:
+        raise HTTPException(status_code=422, detail="Selecciona un logo disponible")
+    original = stored_logo_path(str(candidate.get("path") or ""))
+    if original is None:
+        raise HTTPException(
+            status_code=409,
+            detail="El archivo original del logo ya no est\u00e1 disponible",
+        )
+    try:
+        variant = prepare_transparent_logo(
+            original,
+            source_sha256=str(candidate.get("sha256") or ""),
+            width=int(candidate.get("width") or 0),
+            height=int(candidate.get("height") or 0),
+        )
+    except LogoValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    variant_data = {
+        "path": variant.path,
+        "media_type": variant.media_type,
+        "width": variant.width,
+        "height": variant.height,
+        "sha256": variant.sha256,
+        "source_sha256": variant.source_sha256,
+        "method": variant.method,
+    }
+    config["logo_candidates"] = [
+        {**item, "transparent_variant": variant_data}
+        if item.get("id") == active_logo_id
+        else item
+        for item in candidates
+    ]
 
 
 def _normalize_supplied_palette(
@@ -394,6 +492,7 @@ def seed_default_profiles(db: Session) -> None:
                 soul_md=spec.default_soul_md,
                 agents_md=spec.default_agents_md,
                 config_json=json.dumps(_profile_config(spec.name, None, None)),
+                active_version=1,
                 is_default=True,
             )
             db.add(profile)
@@ -430,6 +529,7 @@ def _profile_read(p: AgentProfile) -> ProfileRead:
         **_slide_palette_field(config, p.agent_type),
         **_slide_logo_fields(config, p.agent_type),
         version=p.version,
+        active_version=p.active_version,
         is_default=p.is_default,
         created_at=p.created_at,
         updated_at=p.updated_at,
@@ -476,8 +576,8 @@ def get_palette_options(user: CurrentUser):
 
 
 @router.get("/tts-options")
-def get_tts_options(user: CurrentUser):
-    return tts_options()
+def get_tts_options(user: CurrentUser, refresh: bool = False):
+    return catalog_state(refresh=refresh)
 
 
 @router.get("/{agent_type}/profiles", response_model=list[ProfileRead])
@@ -532,11 +632,17 @@ def create_profile(agent_type: str, body: ProfileCreate, user: CurrentUser, db: 
         logo_size=body.logo_size,
         logo_margin_px=body.logo_margin_px,
         logo_opacity=body.logo_opacity,
+        logo_background_mode=body.logo_background_mode,
         logo_visibility=body.logo_visibility.model_dump() if body.logo_visibility else None,
         tts_provider=body.tts_provider,
         tts_model=body.tts_model,
         tts_language=body.tts_language,
         tts_voice=body.tts_voice,
+        tts_speed=body.tts_speed,
+        tts_instructions=body.tts_instructions,
+        tts_style=body.tts_style,
+        tts_style_degree=body.tts_style_degree,
+        tts_advanced_options=body.tts_advanced_options,
         subtitles_mode=body.subtitles_mode,
     )
     _validate_media_profile_config(
@@ -550,6 +656,7 @@ def create_profile(agent_type: str, body: ProfileCreate, user: CurrentUser, db: 
         soul_md=body.soul_md,
         agents_md=body.agents_md,
         config_json=json.dumps(config, ensure_ascii=False),
+        active_version=1,
     )
     db.add(profile)
     db.flush()
@@ -600,25 +707,24 @@ def preview_profile_tts(
     _TTS_PREVIEW_CALLS[user.id] = calls
 
     config = json.loads(profile.config_json or "{}")
-    if not TTS_CONFIG_KEYS.issubset(config):
-        config.update(
-            default_tts_config(
-                model=get_settings().tts_model,
-                voice=get_settings().tts_voice,
-            )
-        )
+    defaults = default_tts_config(
+        model=get_settings().tts_model,
+        voice=get_settings().tts_voice,
+    )
+    for key, value in defaults.items():
+        config.setdefault(key, value)
     for key in TTS_CONFIG_KEYS:
         value = getattr(body, key)
-        if value is not None:
+        if value is not None or (
+            key in {"tts_style", "tts_style_degree"} and key in body.model_fields_set
+        ):
             config[key] = value
     try:
-        normalize_tts_selection(
+        normalize_current_tts_selection(
             config,
-            changed_fields={
-                key for key in TTS_CONFIG_KEYS if getattr(body, key) is not None
-            },
+            changed_fields=TTS_CONFIG_KEYS.intersection(body.model_fields_set),
         )
-        resolved = resolve_tts_config(config)
+        resolved = resolve_current_tts_config(config)
         provider = build_tts_provider(
             resolved,
             openai_api_key=get_settings().openai_api_key,
@@ -658,12 +764,21 @@ def preview_profile_tts(
         metadata={
             "preview": True,
             "profile_id": profile.id,
-            "profile_version": profile.version,
+            "profile_version": profile.active_version,
             "language": resolved["tts_language_effective"],
             "voice": resolved["tts_voice"],
             "request_format": resolved["tts_format"],
             "output_format": resolved["tts_output_format"],
             "mime_type": resolved["tts_mime_type"],
+            "speed": resolved["tts_speed"],
+            "instructions_sha256": hashlib.sha256(
+                resolved["tts_instructions"].encode()
+            ).hexdigest()
+            if resolved["tts_instructions"]
+            else None,
+            "style": resolved["tts_style"],
+            "style_degree": resolved["tts_style_degree"],
+            "catalog_updated_at": resolved["tts_catalog_updated_at"],
         },
     )
     media_type = getattr(provider, "mime_type", resolved["tts_mime_type"])
@@ -691,6 +806,7 @@ def list_profile_versions(profile_id: str, user: CurrentUser, db: DB):
         result.append(
             ProfileVersionRead(
                 version=item.version,
+                is_active=item.version == profile.active_version,
                 soul_md=item.soul_md,
                 agents_md=item.agents_md,
                 model=config.get("model"),
@@ -710,6 +826,73 @@ def list_profile_versions(profile_id: str, user: CurrentUser, db: DB):
     return result
 
 
+def _validate_profile_version_assets(profile: AgentProfile, config: dict) -> None:
+    if profile.agent_type != "slides" or config.get("logo_mode", "none") == "none":
+        return
+    _validate_slide_logo_config(profile.agent_type, config)
+    active_logo_id = config.get("active_logo_id")
+    candidate = next(
+        (
+            item
+            for item in config.get("logo_candidates", [])
+            if item.get("id") == active_logo_id
+        ),
+        None,
+    )
+    asset_paths = []
+    if candidate is not None:
+        asset_paths.extend([candidate.get("path"), candidate.get("thumbnail_path")])
+        if config.get("logo_background_mode", "opaque") == "transparent":
+            variant = candidate.get("transparent_variant") or {}
+            asset_paths.append(variant.get("path"))
+    if not asset_paths or any(
+        stored_logo_path(str(relative_path or "")) is None
+        for relative_path in asset_paths
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "La versi\u00f3n no se puede activar porque el archivo de su logo "
+                "ya no est\u00e1 disponible"
+            ),
+        )
+
+
+@router.post(
+    "/profiles/{profile_id}/versions/{version}/activate",
+    response_model=ProfileRead,
+)
+def activate_profile_version(
+    profile_id: str,
+    version: int,
+    user: CurrentUser,
+    db: DB,
+):
+    profile = db.get(AgentProfile, profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Perfil no encontrado")
+    snapshot = db.scalars(
+        select(AgentProfileVersion).where(
+            AgentProfileVersion.profile_id == profile.id,
+            AgentProfileVersion.version == version,
+        )
+    ).first()
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Versi\u00f3n no encontrada")
+    config = json.loads(snapshot.config_json or "{}")
+    _validate_profile_version_assets(profile, config)
+    if profile.active_version == snapshot.version:
+        return _profile_read(profile)
+
+    profile.soul_md = snapshot.soul_md
+    profile.agents_md = snapshot.agents_md
+    profile.config_json = snapshot.config_json
+    profile.active_version = snapshot.version
+    db.commit()
+    db.refresh(profile)
+    return _profile_read(profile)
+
+
 @router.patch("/profiles/{profile_id}", response_model=ProfileRead)
 def update_profile(profile_id: str, body: ProfileUpdate, user: CurrentUser, db: DB):
     profile = db.get(AgentProfile, profile_id)
@@ -718,13 +901,12 @@ def update_profile(profile_id: str, body: ProfileUpdate, user: CurrentUser, db: 
 
     current_config = json.loads(profile.config_json or "{}")
     proposed_config = dict(current_config)
-    if profile.agent_type == "voice" and not TTS_CONFIG_KEYS.issubset(proposed_config):
-        proposed_config.update(
-            default_tts_config(
-                model=get_settings().tts_model,
-                voice=get_settings().tts_voice,
-            )
-        )
+    if profile.agent_type == "voice":
+        for key, value in default_tts_config(
+            model=get_settings().tts_model,
+            voice=get_settings().tts_voice,
+        ).items():
+            proposed_config.setdefault(key, value)
     supplied_images = _supplied_image_config(body)
     if supplied_images:
         _validate_slide_image_config(profile.agent_type, supplied_images)
@@ -742,6 +924,9 @@ def update_profile(profile_id: str, body: ProfileUpdate, user: CurrentUser, db: 
         proposed_config.update(supplied_logo)
         if proposed_config.get("logo_mode") == "none":
             proposed_config["active_logo_id"] = None
+            proposed_config["logo_background_mode"] = "opaque"
+        elif proposed_config.get("logo_background_mode", "opaque") == "transparent":
+            _prepare_active_transparent_variant(proposed_config)
     if body.model is not None:
         if body.model:
             proposed_config["model"] = body.model
@@ -803,6 +988,7 @@ def update_profile(profile_id: str, body: ProfileUpdate, user: CurrentUser, db: 
             other.is_default = other.id == profile.id
     if content_changed:
         profile.version += 1
+        profile.active_version = profile.version
         db.add(
             AgentProfileVersion(
                 profile_id=profile.id,
@@ -834,6 +1020,7 @@ def _save_logo_candidate(
     config.setdefault("logo_candidates", []).append(candidate)
     profile.config_json = json.dumps(config, ensure_ascii=False)
     profile.version += 1
+    profile.active_version = profile.version
     db.add(
         AgentProfileVersion(
             profile_id=profile.id,
@@ -970,22 +1157,70 @@ def get_profile_logo(
     user: CurrentUser,
     db: DB,
     thumbnail: bool = False,
+    variant: str = "original",
 ):
     profile = _slides_profile(db, profile_id)
     config = json.loads(profile.config_json or "{}")
     candidate = _candidate(config, logo_id)
     if candidate is None:
         raise HTTPException(status_code=404, detail="Logo no encontrado")
+    if variant not in {"original", "transparent"}:
+        raise HTTPException(status_code=422, detail="Variante de logo desconocida")
     relative_path = candidate.get("thumbnail_path" if thumbnail else "path", "")
     path = stored_logo_path(str(relative_path))
+    if variant == "transparent" and path is not None:
+        prepared_path = transparent_logo_path(path)
+        path = prepared_path if prepared_path.is_file() else None
     if path is None:
         raise HTTPException(status_code=404, detail="El archivo del logo no est\u00e1 disponible")
     media_type = (
-        candidate.get("media_type")
+        "image/png"
+        if variant == "transparent"
+        else candidate.get("media_type")
         if not thumbnail or candidate.get("media_type") == "image/svg+xml"
         else "image/png"
     )
     return FileResponse(path, media_type=media_type)
+
+
+@router.post(
+    "/profiles/{profile_id}/logos/{logo_id}/transparent-preview",
+    response_model=LogoTransparentVariantRead,
+)
+def prepare_profile_logo_transparent_preview(
+    profile_id: str,
+    logo_id: str,
+    user: CurrentUser,
+    db: DB,
+):
+    profile = _slides_profile(db, profile_id)
+    config = json.loads(profile.config_json or "{}")
+    candidate = _candidate(config, logo_id)
+    if candidate is None or candidate.get("status") != "available":
+        raise HTTPException(status_code=404, detail="Logo no encontrado")
+    original = stored_logo_path(str(candidate.get("path") or ""))
+    if original is None:
+        raise HTTPException(
+            status_code=404, detail="El archivo original del logo no est\u00e1 disponible"
+        )
+    try:
+        variant = prepare_transparent_logo(
+            original,
+            source_sha256=str(candidate.get("sha256") or ""),
+            width=int(candidate.get("width") or 0),
+            height=int(candidate.get("height") or 0),
+        )
+    except LogoValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return LogoTransparentVariantRead(
+        path=variant.path,
+        media_type="image/png",
+        width=variant.width,
+        height=variant.height,
+        sha256=variant.sha256,
+        source_sha256=variant.source_sha256,
+        method=variant.method,
+    )
 
 
 @router.delete(
@@ -1022,6 +1257,7 @@ def delete_profile_logo(profile_id: str, logo_id: str, user: CurrentUser, db: DB
     ]
     profile.config_json = json.dumps(config, ensure_ascii=False)
     profile.version += 1
+    profile.active_version = profile.version
     db.add(
         AgentProfileVersion(
             profile_id=profile.id,
