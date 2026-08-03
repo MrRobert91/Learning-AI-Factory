@@ -8,14 +8,15 @@ import logging
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from factory_api.artifact_versions import artifact_metadata
 from factory_api.config import get_settings
 from factory_api.db import SessionLocal
-from factory_api.models import Artifact, Job, JobEvent, UsageRecord
+from factory_api.events import event_broker, event_repository
+from factory_api.models import Artifact, Job, UsageRecord
 
 logger = logging.getLogger(__name__)
 
@@ -168,37 +169,31 @@ def record_usage(
             )
             db.add(record)
             db.flush()
+            event_added = False
             if emit_event and job_id:
-                seq = db.scalars(
-                    select(JobEvent.seq)
-                    .where(JobEvent.job_id == job_id)
-                    .order_by(JobEvent.seq.desc())
-                ).first()
-                db.add(
-                    JobEvent(
-                        job_id=job_id,
-                        seq=(seq + 1) if seq is not None else 0,
-                        type="usage",
-                        summary=(
-                            f"Uso registrado: {agent or operation} · "
-                            f"{model or provider} · {total_count} tokens"
-                        ),
-                        data_json=json.dumps(
-                            {
-                                "usage_record_id": record.id,
-                                "agent": agent,
-                                "operation": operation,
-                                "model": model,
-                                "total_tokens": total_count,
-                                "image_count": images,
-                                "cost_usd": str(cost) if cost is not None else None,
-                                "cost_source": source,
-                            },
-                            ensure_ascii=False,
-                        ),
-                    )
+                event_repository.append(
+                    db,
+                    job_id,
+                    "usage",
+                    (
+                        f"Uso registrado: {agent or operation} · "
+                        f"{model or provider} · {total_count} tokens"
+                    ),
+                    {
+                        "usage_record_id": record.id,
+                        "agent": agent,
+                        "operation": operation,
+                        "model": model,
+                        "total_tokens": total_count,
+                        "image_count": images,
+                        "cost_usd": str(cost) if cost is not None else None,
+                        "cost_source": source,
+                    },
                 )
+                event_added = True
             db.commit()
+            if event_added and job_id:
+                event_broker.notify(job_id)
             return record.id
     except IntegrityError:
         with SessionLocal() as db:
@@ -259,27 +254,48 @@ def usage_record_by_work_unit(work_unit_key: str) -> str | None:
 
 
 def job_usage_summary(db: Session, job_id: str) -> dict[str, Any]:
-    records = list(
-        db.scalars(
-            select(UsageRecord)
-            .where(UsageRecord.job_id == job_id)
-            .order_by(UsageRecord.created_at, UsageRecord.id)
-        ).all()
+    return job_usage_summaries(db, [job_id]).get(
+        job_id, {"has_data": False, "records": 0}
     )
-    if not records:
-        return {"has_data": False, "records": 0}
-    costs = [record.cost_usd for record in records if record.cost_usd is not None]
-    return {
-        "has_data": True,
-        "records": len(records),
-        "input_tokens": sum(record.input_tokens for record in records),
-        "output_tokens": sum(record.output_tokens for record in records),
-        "total_tokens": sum(record.total_tokens for record in records),
-        "input_characters": sum(record.input_characters for record in records),
-        "image_count": sum(record.image_count for record in records),
-        "cost_usd": str(sum(costs, Decimal("0"))) if costs else None,
-        "unknown_cost_records": sum(record.cost_usd is None for record in records),
-    }
+
+
+def job_usage_summaries(
+    db: Session, job_ids: list[str]
+) -> dict[str, dict[str, Any]]:
+    """Aggregate a page of jobs with one SQL GROUP BY query."""
+
+    if not job_ids:
+        return {}
+    rows = db.execute(
+        select(
+            UsageRecord.job_id,
+            func.count(UsageRecord.id),
+            func.sum(UsageRecord.input_tokens),
+            func.sum(UsageRecord.output_tokens),
+            func.sum(UsageRecord.total_tokens),
+            func.sum(UsageRecord.input_characters),
+            func.sum(UsageRecord.image_count),
+            func.sum(UsageRecord.cost_usd),
+            func.sum(case((UsageRecord.cost_usd.is_(None), 1), else_=0)),
+        )
+        .where(UsageRecord.job_id.in_(job_ids))
+        .group_by(UsageRecord.job_id)
+    ).all()
+    summaries: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        row_job_id = str(row[0])
+        summaries[row_job_id] = {
+            "has_data": True,
+            "records": int(row[1] or 0),
+            "input_tokens": int(row[2] or 0),
+            "output_tokens": int(row[3] or 0),
+            "total_tokens": int(row[4] or 0),
+            "input_characters": int(row[5] or 0),
+            "image_count": int(row[6] or 0),
+            "cost_usd": str(row[7]) if row[7] is not None else None,
+            "unknown_cost_records": int(row[8] or 0),
+        }
+    return summaries
 
 
 def serialize_usage_record(record: UsageRecord) -> dict[str, Any]:

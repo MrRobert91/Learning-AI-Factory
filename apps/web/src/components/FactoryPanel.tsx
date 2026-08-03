@@ -346,6 +346,8 @@ export default function FactoryPanel({
     {},
   );
   const [runs, setRuns] = useState<Job[]>([]);
+  const [runsCursor, setRunsCursor] = useState<string | null>(null);
+  const [loadingMoreRuns, setLoadingMoreRuns] = useState(false);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [activeRun, setActiveRun] = useState<Job | null>(null);
   const [events, setEvents] = useState<JobEvent[]>([]);
@@ -393,14 +395,34 @@ export default function FactoryPanel({
   const launchLocksRef = useRef(new Set<string>());
 
   const refresh = useCallback(async () => {
-    const [runList, artifactList] = await Promise.all([
+    const [runPage, artifactList] = await Promise.all([
       api.listProjectRuns(projectId),
       api.listProjectArtifacts(projectId),
     ]);
+    const runList = [...runPage.items];
+    if (runPage.active && !runList.some((run) => run.id === runPage.active?.id)) {
+      runList.unshift(runPage.active);
+    }
     setRuns(runList);
+    setRunsCursor(runPage.next_cursor);
     setArtifacts(artifactList);
     return runList;
   }, [projectId]);
+
+  const loadMoreRuns = useCallback(async () => {
+    if (!runsCursor || loadingMoreRuns) return;
+    setLoadingMoreRuns(true);
+    try {
+      const page = await api.listProjectRuns(projectId, runsCursor);
+      setRuns((current) => {
+        const known = new Set(current.map((run) => run.id));
+        return [...current, ...page.items.filter((run) => !known.has(run.id))];
+      });
+      setRunsCursor(page.next_cursor);
+    } finally {
+      setLoadingMoreRuns(false);
+    }
+  }, [loadingMoreRuns, projectId, runsCursor]);
 
   const follow = useCallback(
     (job: Job) => {
@@ -434,7 +456,13 @@ export default function FactoryPanel({
         setEvents(full.events);
         await refresh();
       });
-      source.onerror = () => source.close();
+      source.onerror = () => {
+        // Native EventSource reconnects with Last-Event-ID. Closing here would
+        // discard that cursor and replay the complete persisted history.
+        if (source.readyState === EventSource.CLOSED) {
+          sourceRef.current = null;
+        }
+      };
     },
     [refresh],
   );
@@ -1389,10 +1417,16 @@ export default function FactoryPanel({
       {runs.length > 0 && (
         <div className="mb-8">
           <button
-            onClick={() => setShowHistory((v) => !v)}
+            onClick={() => {
+              const opening = !showHistory;
+              setShowHistory(opening);
+              if (opening && runsCursor) void loadMoreRuns();
+            }}
             className="btn-ghost btn-sm -ml-2"
           >
-            {showHistory ? "Ocultar historial" : `Historial de ejecuciones (${runs.length})`}
+            {showHistory
+              ? "Ocultar historial"
+              : `Historial de ejecuciones (${runs.length}${runsCursor ? "+" : ""})`}
           </button>
           {showHistory && (
             <ul className="animate-in mt-2 space-y-1.5">
@@ -1421,6 +1455,18 @@ export default function FactoryPanel({
                   </li>
                 );
               })}
+              {runsCursor && (
+                <li className="pt-2 text-center">
+                  <button
+                    type="button"
+                    onClick={() => void loadMoreRuns()}
+                    disabled={loadingMoreRuns}
+                    className="btn-ghost btn-sm"
+                  >
+                    {loadingMoreRuns ? "Cargando…" : "Cargar ejecuciones anteriores"}
+                  </button>
+                </li>
+              )}
             </ul>
           )}
         </div>

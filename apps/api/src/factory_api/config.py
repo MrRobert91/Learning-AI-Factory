@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     # 0 = only on demand)
     analytics_interval_days: int = 0
 
+    # Incremental persisted-event delivery. Idle SSE clients wait on the local
+    # broker; this timeout only emits a comment to keep proxies from closing.
+    job_event_batch_size: int = Field(default=200, ge=1, le=1000)
+    job_event_keepalive_seconds: int = Field(default=20, ge=5, le=60)
+
     # YouTube publishing (Google OAuth; see docs/YOUTUBE.md)
     google_client_id: str = ""
     google_client_secret: str = ""

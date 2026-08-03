@@ -24,6 +24,13 @@ docker compose up --build                # stack completo (2 contenedores)
 - **Todo corre en un solo proceso backend**: los jobs largos (agentes, TTS,
   vídeo) van por `factory_api/runner.py` — cola persistida en tabla `jobs`,
   worker asyncio, progreso como `JobEvent`s que la UI consume por SSE.
+- **Eventos de jobs**: `factory_api.events.EventRepository` es el único escritor.
+  Reserva `jobs.next_event_seq` e inserta el evento en la misma transacción;
+  nunca recuperes `max(seq)` ni hagas commit dentro de un helper anidado. El
+  SSE consulta `(job_id, seq)` por lotes, reanuda con `Last-Event-ID` y espera
+  el broker local entre commits; SQLite sigue siendo la fuente persistente.
+  Todo endpoint por `job_id` debe usar `get_owned_job`, y los jobs globales sin
+  proyecto no se exponen al propietario por defecto.
 - **Pausa/cancelación de jobs**: son cooperativas y persistidas en
   `jobs.control_json`. Cada handler debe consultar `run_control.checkpoint()`
   antes/después de sus unidades caras y registrar unidades completas para que

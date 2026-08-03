@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from factory_api.auth import CurrentUser
 from factory_api.db import get_db
+from factory_api.job_access import get_owned_job
 from factory_api.models import Artifact, Job, Project, Workflow
 from factory_api.routers.agents import get_default_profile
 from factory_api.routers.runs import _base_payload, _job_read, _profile_fields
@@ -99,17 +100,6 @@ TEMPLATES = [
         "steps": [{"agent": "voice"}, {"agent": "video"}],
     },
 ]
-
-
-def _owned_job(job_id: str, user: CurrentUser, db: Session) -> Job:
-    job = db.get(Job, job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Ejecución no encontrada")
-    if job.project_id is not None:
-        project = db.get(Project, job.project_id)
-        if project is None or project.owner_id != user.id:
-            raise HTTPException(status_code=404, detail="Ejecución no encontrada")
-    return job
 
 
 def _transition_error(exc: InvalidControlTransition) -> HTTPException:
@@ -304,7 +294,7 @@ def create_workflow_run(
 
 @router.post("/runs/{job_id}/approve", response_model=JobRead)
 def approve_run(job_id: str, body: ApprovalRequest, user: CurrentUser, db: DB):
-    job = _owned_job(job_id, user, db)
+    job = get_owned_job(db, user.id, job_id)
     if job.status != "waiting_approval":
         raise HTTPException(status_code=409, detail="La ejecución no espera aprobación")
     if not body.approved and not body.feedback.strip():
@@ -335,7 +325,7 @@ def pause_run(
     db: DB,
     body: RunControlRequest | None = None,
 ):
-    job = _owned_job(job_id, user, db)
+    job = get_owned_job(db, user.id, job_id)
     try:
         changed = request_pause(job, body.reason if body else "")
     except InvalidControlTransition as exc:
@@ -366,7 +356,7 @@ def pause_run(
 
 @router.post("/runs/{job_id}/resume", response_model=JobRead)
 def resume_run(job_id: str, user: CurrentUser, db: DB):
-    job = _owned_job(job_id, user, db)
+    job = get_owned_job(db, user.id, job_id)
     try:
         changed, should_enqueue = resume_job(job)
     except InvalidControlTransition as exc:
@@ -401,7 +391,7 @@ def cancel_run(
     db: DB,
     body: RunControlRequest | None = None,
 ):
-    job = _owned_job(job_id, user, db)
+    job = get_owned_job(db, user.id, job_id)
     try:
         changed = request_cancel(job, body.reason if body else "")
     except InvalidControlTransition as exc:

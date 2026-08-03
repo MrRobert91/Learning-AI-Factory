@@ -65,7 +65,7 @@ def test_curator_run_produces_artifact(auth_client, monkeypatch):
     assert any(a["id"] == artifact["id"] for a in listed)
 
     runs = auth_client.get(f"/api/projects/{project['id']}/runs").json()
-    assert runs[0]["id"] == job_id
+    assert runs["items"][0]["id"] == job_id
 
     download = auth_client.get(f"/api/artifacts/{artifact['id']}/download")
     assert download.status_code == 200
@@ -157,4 +157,5 @@ def test_run_events_sse(auth_client, monkeypatch):
             if "event: done" in body:
                 break
     assert "search_web" in body
+    assert "id: 0" in body
     assert "event: done" in body

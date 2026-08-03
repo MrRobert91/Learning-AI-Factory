@@ -33,7 +33,8 @@ from factory_api.artifact_versions import (
 )
 from factory_api.config import get_settings
 from factory_api.db import SessionLocal
-from factory_api.models import Artifact, Job, JobEvent, UsageRecord
+from factory_api.events import event_broker, event_repository
+from factory_api.models import Artifact, Job, UsageRecord
 from factory_api.run_control import (
     RunCanceled,
     RunPaused,
@@ -346,6 +347,7 @@ class JobRunner:
                 if result is not None:
                     job.result_json = json.dumps(result, ensure_ascii=False)
                 db.commit()
+                event_broker.notify(job_id)
                 logger.info(
                     "Job waiting for approval",
                     extra={"job_id": job_id, "job_kind": job.kind},
@@ -373,6 +375,7 @@ class JobRunner:
             job.result_json = json.dumps(result, ensure_ascii=False) if result else None
             job.finished_at = datetime.now(UTC)
             db.commit()
+            event_broker.notify(job_id)
             duration_ms = None
             if job.started_at is not None:
                 started_at = job.started_at
@@ -617,20 +620,7 @@ def _budget_callbacks(
 
 
 def append_event(job_id: str, type_: str, summary: str, data: dict | None = None) -> None:
-    with SessionLocal() as db:
-        seq = db.scalars(
-            select(JobEvent.seq).where(JobEvent.job_id == job_id).order_by(JobEvent.seq.desc())
-        ).first()
-        db.add(
-            JobEvent(
-                job_id=job_id,
-                seq=(seq + 1) if seq is not None else 0,
-                type=type_,
-                summary=summary,
-                data_json=json.dumps(data, ensure_ascii=False) if data else None,
-            )
-        )
-        db.commit()
+    event_repository.append_committed(job_id, type_, summary, data)
     logger.info(
         "Job event",
         extra={

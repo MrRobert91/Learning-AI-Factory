@@ -1,5 +1,8 @@
 import asyncio
+import base64
+import binascii
 import json
+from datetime import datetime
 from typing import Annotated
 
 from factory_agents.agents.curator import render_curator_input
@@ -7,20 +10,30 @@ from factory_agents.contracts.agent_io import AGENT_OUTPUTS
 from factory_agents.tools.images import DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_STYLE
 from factory_agents.tools.palette import DEFAULT_SLIDE_PALETTE, normalize_palette
 from factory_agents.tools.tts import default_tts_config
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select, text
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.orm import Session
 
 from factory_api.auth import CurrentUser
+from factory_api.config import get_settings
 from factory_api.db import SessionLocal, get_db
+from factory_api.events import event_broker, event_repository
+from factory_api.job_access import get_owned_job
 from factory_api.models import AgentProfile, Artifact, IdeationSession, Job, JobEvent, Project
 from factory_api.routers.agents import get_default_profile
 from factory_api.run_control import SSE_STOP_STATUSES, load_control
 from factory_api.runner import runner
-from factory_api.schemas import AgentRunCreate, JobEventRead, JobRead
+from factory_api.schemas import (
+    AgentRunCreate,
+    JobEventPage,
+    JobEventRead,
+    JobPage,
+    JobRead,
+    JobSummary,
+)
 from factory_api.tts_catalog import resolve_current_tts_config
-from factory_api.usage import job_usage_summary
+from factory_api.usage import job_usage_summaries, job_usage_summary
 from factory_api.workflow_engine import missing_agent_inputs
 
 router = APIRouter(prefix="/api", tags=["runs"])
@@ -38,8 +51,7 @@ def _event_read(e: JobEvent) -> JobEventRead:
     )
 
 
-def _job_read(job: Job, include_events: bool = True) -> JobRead:
-    payload = json.loads(job.payload_json or "{}")
+def _review_policies(job: Job, payload: dict) -> dict[str, dict]:
     review_policies: dict[str, dict] = {}
     if job.kind == "workflow_run":
         for step in payload.get("definition", {}).get("steps", []):
@@ -80,6 +92,11 @@ def _job_read(job: Job, include_events: bool = True) -> JobRead:
             "evaluator_model": payload.get("evaluator_model"),
             "human_review_enabled": bool(payload.get("human_review_enabled", False)),
         }
+    return review_policies
+
+
+def _job_read(job: Job, include_events: bool = True) -> JobRead:
+    payload = json.loads(job.payload_json or "{}")
     with SessionLocal() as usage_db:
         usage_summary = job_usage_summary(usage_db, job.id)
     return JobRead(
@@ -93,11 +110,30 @@ def _job_read(job: Job, include_events: bool = True) -> JobRead:
         result=json.loads(job.result_json) if job.result_json else None,
         control=load_control(job),
         usage_summary=usage_summary,
-        review_policies=review_policies,
+        review_policies=_review_policies(job, payload),
         created_at=job.created_at,
         started_at=job.started_at,
         finished_at=job.finished_at,
         events=[_event_read(e) for e in job.events] if include_events else [],
+    )
+
+
+def _job_summary_read(job: Job, usage_summary: dict) -> JobSummary:
+    payload = json.loads(job.payload_json or "{}")
+    return JobSummary(
+        id=job.id,
+        kind=job.kind,
+        status=job.status,
+        error=job.error,
+        project_id=job.project_id,
+        workflow_id=payload.get("workflow_id"),
+        workflow_name=payload.get("workflow_name"),
+        control=load_control(job),
+        usage_summary=usage_summary,
+        review_policies=_review_policies(job, payload),
+        created_at=job.created_at,
+        started_at=job.started_at,
+        finished_at=job.finished_at,
     )
 
 
@@ -435,58 +471,173 @@ def create_agent_run(project_id: str, body: AgentRunCreate, user: CurrentUser, d
     return _job_read(job)
 
 
-@router.get("/projects/{project_id}/runs", response_model=list[JobRead])
-def list_project_runs(project_id: str, user: CurrentUser, db: DB):
+def _encode_run_cursor(job: Job) -> str:
+    raw = json.dumps([job.created_at.isoformat(), job.id], separators=(",", ":"))
+    return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
+
+
+def _decode_run_cursor(cursor: str) -> tuple[datetime, str]:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        created_at, job_id = json.loads(base64.urlsafe_b64decode(padded).decode())
+        if not isinstance(created_at, str) or not isinstance(job_id, str) or not job_id:
+            raise ValueError
+        return datetime.fromisoformat(created_at), job_id
+    except (ValueError, TypeError, json.JSONDecodeError, binascii.Error) as exc:
+        raise HTTPException(status_code=400, detail="Cursor de ejecuciones no válido") from exc
+
+
+@router.get("/projects/{project_id}/runs", response_model=JobPage)
+def list_project_runs(
+    project_id: str,
+    user: CurrentUser,
+    db: DB,
+    cursor: str | None = None,
+    limit: int = Query(default=25, ge=1, le=100),
+):
     project = db.get(Project, project_id)
     if project is None or project.owner_id != user.id:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
-    jobs = db.scalars(
-        select(Job).where(Job.project_id == project_id).order_by(Job.created_at.desc())
-    ).all()
-    return [_job_read(j, include_events=False) for j in jobs]
+    stmt = select(Job).where(Job.project_id == project_id)
+    if cursor:
+        cursor_created_at, cursor_id = _decode_run_cursor(cursor)
+        stmt = stmt.where(
+            or_(
+                Job.created_at < cursor_created_at,
+                and_(Job.created_at == cursor_created_at, Job.id < cursor_id),
+            )
+        )
+    jobs = list(
+        db.scalars(
+            stmt.order_by(Job.created_at.desc(), Job.id.desc()).limit(limit + 1)
+        ).all()
+    )
+    has_more = len(jobs) > limit
+    page_jobs = jobs[:limit]
+    active_job = db.scalars(
+        select(Job)
+        .where(
+            Job.project_id == project_id,
+            Job.status.in_(ACTIVE_PROJECT_JOB_STATUSES),
+        )
+        .order_by(Job.created_at.desc(), Job.id.desc())
+        .limit(1)
+    ).first()
+    summary_jobs = list(page_jobs)
+    if active_job is not None and all(job.id != active_job.id for job in summary_jobs):
+        summary_jobs.append(active_job)
+    usage = job_usage_summaries(db, [job.id for job in summary_jobs])
+    empty_usage = {"has_data": False, "records": 0}
+    items = [
+        _job_summary_read(job, usage.get(job.id, empty_usage)) for job in page_jobs
+    ]
+    active = (
+        _job_summary_read(active_job, usage.get(active_job.id, empty_usage))
+        if active_job is not None
+        else None
+    )
+    return JobPage(
+        items=items,
+        active=active,
+        next_cursor=_encode_run_cursor(page_jobs[-1]) if has_more and page_jobs else None,
+    )
 
 
 @router.get("/runs/{job_id}", response_model=JobRead)
 def get_run(job_id: str, user: CurrentUser, db: DB):
-    job = db.get(Job, job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Ejecución no encontrada")
+    job = get_owned_job(db, user.id, job_id)
     return _job_read(job)
 
 
+@router.get("/runs/{job_id}/event-history", response_model=JobEventPage)
+def get_run_event_history(
+    job_id: str,
+    user: CurrentUser,
+    db: DB,
+    after_seq: int = Query(default=-1, ge=-1),
+    limit: int = Query(default=200, ge=1, le=1000),
+):
+    get_owned_job(db, user.id, job_id)
+    events = event_repository.page(
+        db, job_id, after_seq=after_seq, limit=limit + 1
+    )
+    has_more = len(events) > limit
+    page = events[:limit]
+    return JobEventPage(
+        items=[_event_read(event) for event in page],
+        next_after_seq=page[-1].seq if has_more and page else None,
+    )
+
+
 @router.get("/runs/{job_id}/events")
-async def stream_run_events(job_id: str, user: CurrentUser):
-    """Server-Sent Events: replays stored events, then follows until done."""
+async def stream_run_events(
+    request: Request,
+    job_id: str,
+    user: CurrentUser,
+    db: DB,
+    after_seq: str | None = None,
+):
+    """Replay after Last-Event-ID (preferred) or after_seq, then follow commits."""
+
+    get_owned_job(db, user.id, job_id)
+    db.close()
+    raw_cursor = request.headers.get("last-event-id")
+    if raw_cursor in (None, ""):
+        raw_cursor = after_seq
+    try:
+        initial_seq = int(raw_cursor) if raw_cursor not in (None, "") else -1
+        if initial_seq < -1:
+            raise ValueError
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Cursor SSE no válido") from exc
+
+    settings = get_settings()
+    batch_size = settings.job_event_batch_size
+    keepalive_seconds = settings.job_event_keepalive_seconds
 
     def _snapshot(after_seq: int):
-        with SessionLocal() as db:
-            job = db.get(Job, job_id)
-            if job is None:
-                return None, [], True
-            events = [
-                _event_read(e).model_dump(mode="json")
-                for e in job.events
-                if e.seq > after_seq
-            ]
-            finished = job.status in SSE_STOP_STATUSES
-            return job.status, events, finished
+        with SessionLocal() as snapshot_db:
+            events = event_repository.page(
+                snapshot_db,
+                job_id,
+                after_seq=after_seq,
+                limit=batch_size,
+            )
+            status_ = (
+                snapshot_db.scalar(select(Job.status).where(Job.id == job_id))
+                if len(events) < batch_size
+                else None
+            )
+            return status_, events
 
     async def generator():
-        last_seq = -1
-        while True:
-            status_, events, finished = await asyncio.to_thread(_snapshot, last_seq)
-            if status_ is None:
-                yield 'event: error\ndata: {"detail": "Ejecución no encontrada"}\n\n'
-                return
-            for event in events:
-                last_seq = max(last_seq, event["seq"])
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-            if finished:
-                payload = json.dumps({"status": status_}, ensure_ascii=False)
-                yield f"event: done\ndata: {payload}\n\n"
-                return
-            yield ": keepalive\n\n"
-            await asyncio.sleep(1)
+        last_seq = initial_seq
+        async with event_broker.subscribe(job_id) as signal:
+            while True:
+                signal.clear()
+                status_, stored_events = await asyncio.to_thread(_snapshot, last_seq)
+                if status_ is None and len(stored_events) < batch_size:
+                    yield 'event: error\ndata: {"detail": "Ejecución no encontrada"}\n\n'
+                    return
+                for stored_event in stored_events:
+                    event = _event_read(stored_event).model_dump(mode="json")
+                    last_seq = stored_event.seq
+                    yield (
+                        f"id: {stored_event.seq}\n"
+                        f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    )
+                if len(stored_events) == batch_size:
+                    continue
+                if status_ in SSE_STOP_STATUSES:
+                    payload = json.dumps({"status": status_}, ensure_ascii=False)
+                    id_line = f"id: {last_seq}\n" if last_seq >= 0 else ""
+                    yield f"{id_line}event: done\ndata: {payload}\n\n"
+                    return
+                while not signal.is_set():
+                    try:
+                        await asyncio.wait_for(signal.wait(), timeout=keepalive_seconds)
+                    except TimeoutError:
+                        yield ": keepalive\n\n"
 
     return StreamingResponse(
         generator(),
