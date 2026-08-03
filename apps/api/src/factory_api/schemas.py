@@ -509,6 +509,37 @@ class JobRead(BaseModel):
     events: list[JobEventRead] = []
 
 
+class JobSummary(BaseModel):
+    """Lightweight list item; large result and event bodies stay on detail routes."""
+
+    id: str
+    kind: str
+    status: str
+    error: str
+    project_id: str | None
+    workflow_id: str | None = None
+    workflow_name: str | None = None
+    result: None = None
+    control: dict = Field(default_factory=dict)
+    usage_summary: dict = Field(default_factory=dict)
+    review_policies: dict[str, AutomaticReviewPolicyRead] = {}
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    events: list[JobEventRead] = []
+
+
+class JobPage(BaseModel):
+    items: list[JobSummary]
+    active: JobSummary | None = None
+    next_cursor: str | None = None
+
+
+class JobEventPage(BaseModel):
+    items: list[JobEventRead]
+    next_after_seq: int | None = None
+
+
 class ArtifactVersionRead(BaseModel):
     id: str
     version: int

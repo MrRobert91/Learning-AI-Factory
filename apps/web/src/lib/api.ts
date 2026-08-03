@@ -532,6 +532,12 @@ export interface Job {
   events: JobEvent[];
 }
 
+export interface JobPage {
+  items: Job[];
+  active: Job | null;
+  next_cursor: string | null;
+}
+
 export interface Artifact {
   id: string;
   project_id: string;
@@ -967,8 +973,10 @@ export const api = {
     }
     return resp.json() as Promise<Artifact>;
   },
-  listProjectRuns: (projectId: string) =>
-    request<Job[]>(`/api/projects/${projectId}/runs`),
+  listProjectRuns: (projectId: string, cursor?: string | null) =>
+    request<JobPage>(
+      `/api/projects/${projectId}/runs${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+    ),
   getRun: (id: string) => request<Job>(`/api/runs/${id}`),
   listProjectArtifacts: (projectId: string) =>
     request<Artifact[]>(`/api/projects/${projectId}/artifacts`),

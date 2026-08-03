@@ -6,6 +6,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -289,6 +290,9 @@ class Job(Base):
     # canceling | canceled | done | failed
     payload_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
     control_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    next_event_seq: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
     result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str] = mapped_column(Text, default="", nullable=False)
     project_id: Mapped[str | None] = mapped_column(
@@ -305,6 +309,10 @@ class Job(Base):
 
 class JobEvent(Base):
     __tablename__ = "job_events"
+    __table_args__ = (
+        UniqueConstraint("job_id", "seq", name="uq_job_events_job_seq"),
+        Index("ix_job_events_job_id_seq", "job_id", "seq"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
     job_id: Mapped[str] = mapped_column(
