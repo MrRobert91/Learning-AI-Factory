@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from factory_api.config import get_settings
 from factory_api.db import SessionLocal
-from factory_api.logging_config import configure_file_logging, configure_logging
+from factory_api.logging_config import configure_logging
 from factory_api.models import User
 from factory_api.routers import (
     agents,
@@ -112,8 +112,7 @@ async def lifespan(_app: FastAPI):
 
     settings = get_settings()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    log_path = configure_file_logging(settings.data_dir)
-    logger.info("Backend startup beginning", extra={"persistent_log_path": str(log_path)})
+    logger.info("START backend", extra={"category": "APP"})
     ensure_default_user()
     with SessionLocal() as db:
         seed_default_profiles(db)
@@ -123,15 +122,18 @@ async def lifespan(_app: FastAPI):
     if get_settings().analytics_interval_days > 0:
         scheduler_task = asyncio.create_task(_analytics_scheduler())
     logger.info(
-        "Backend ready",
-        extra={"analytics_enabled": get_settings().analytics_interval_days > 0},
+        "READY backend",
+        extra={
+            "category": "APP",
+            "analytics_enabled": get_settings().analytics_interval_days > 0,
+        },
     )
     yield
     if scheduler_task is not None:
         scheduler_task.cancel()
     await runner.stop()
 
-    logger.info("Backend shutdown complete")
+    logger.info("DONE backend shutdown", extra={"category": "APP"})
 
 
 app = FastAPI(title="AI Learning Factory API", lifespan=lifespan)
@@ -145,19 +147,22 @@ async def log_request(request: Request, call_next):
         response = await call_next(request)
     except Exception:
         logger.exception(
-            "HTTP request failed",
+            f"{request.method} {request.url.path} -> 500",
             extra={
+                "category": "HTTP",
                 "request_id": request_id,
                 "method": request.method,
                 "path": request.url.path,
+                "status_code": 500,
                 "duration_ms": round((time.perf_counter() - started) * 1000, 2),
             },
         )
         raise
     duration_ms = round((time.perf_counter() - started) * 1000, 2)
     logger.info(
-        "HTTP request completed",
+        f"{request.method} {request.url.path} -> {response.status_code}",
         extra={
+            "category": "HTTP",
             "request_id": request_id,
             "method": request.method,
             "path": request.url.path,

@@ -152,7 +152,10 @@ docker compose up --build                # stack completo (2 contenedores)
   mínimo documentado y después divide por límites Markdown válidos; tablas y
   código indivisibles fallan de forma accionable. Conserva `layout_validation`
   en metadatos y no uses LLM para corregir el layout.
-
+- **Logs del backend**: la consola es la única salida. Usa el formatter legible
+  canónico y categorías `HTTP`/`JOB`/`STEP`/`EVAL`/multimedia; no restaures
+  `backend.jsonl`, no dupliques `uvicorn.access` y nunca registres payloads,
+  prompts, respuestas, texto TTS, documentos, binarios ni secretos.
 - **Seguridad de dependencias**: CI bloquea vulnerabilidades `high`/`critical`
   con `npm run audit:prod`, `npm run audit:all` y `pip-audit==2.10.1` sobre el
   export congelado de uv. Mantén Next.js en la serie 15 y React en la 19 hasta

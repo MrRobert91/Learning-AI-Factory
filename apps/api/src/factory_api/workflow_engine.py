@@ -7,6 +7,7 @@ version before approval is requested again.
 """
 
 import sqlite3
+import time
 from contextlib import contextmanager
 from typing import Any, TypedDict
 
@@ -157,7 +158,16 @@ def build_workflow_graph(
                     "stage",
                     f"Paso {step_number}: {AGENT_LABELS.get(agent, agent)} — "
                     + ("regenerando con feedback" if feedback else "iniciando"),
-                    {"agent": agent, "step": step_number, "status": "running"},
+                    {
+                        "agent": agent,
+                        "step": step_number,
+                        "total_steps": len(definition["steps"]),
+                        "status": "running",
+                        "profile_id": step.get("overrides", {}).get("profile_id"),
+                        "profile_version": step.get("overrides", {}).get(
+                            "profile_version"
+                        ),
+                    },
                 )
                 stage_payload = {
                     **state["payload"],
@@ -177,7 +187,12 @@ def build_workflow_graph(
                     next_unit=f"{control_scope}:agent",
                     message=f"Preparando el paso {step_number}: {agent}",
                 )
+                stage_started = time.perf_counter()
                 result = handlers[f"{agent}_run"](job_id, stage_payload)
+                stage_duration_ms = round(
+                    (time.perf_counter() - stage_started) * 1000,
+                    2,
+                )
                 checkpoint(
                     job_id,
                     "workflow",
@@ -191,13 +206,36 @@ def build_workflow_graph(
                     ),
                     message=f"Paso {step_number}: {agent} completado",
                 )
+                append_event(
+                    job_id,
+                    "stage",
+                    f"Paso {step_number}: generación de {agent} completada",
+                    {
+                        "agent": agent,
+                        "step": step_number,
+                        "total_steps": len(definition["steps"]),
+                        "status": "generated",
+                        "duration_ms": stage_duration_ms,
+                        "profile_id": step.get("overrides", {}).get("profile_id"),
+                        "profile_version": step.get("overrides", {}).get(
+                            "profile_version"
+                        ),
+                        "artifact_ids": _artifact_ids(result),
+                    },
+                )
                 results = {**state.get("results", {}), agent: result}
                 if not automatic_enabled and not human_enabled:
                     append_event(
                         job_id,
                         "stage",
                         f"Paso {step_number}: {agent} completado",
-                        {"agent": agent, "step": step_number, "status": "done"},
+                        {
+                            "agent": agent,
+                            "step": step_number,
+                            "total_steps": len(definition["steps"]),
+                            "status": "done",
+                            "duration_ms": stage_duration_ms,
+                        },
                     )
                 return {"results": results}
 
