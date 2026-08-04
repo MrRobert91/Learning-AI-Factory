@@ -1713,7 +1713,7 @@ export default function FactoryPanel({
           No hay artefactos del tipo seleccionado.
         </div>
       ) : (
-        <ul className="grid gap-2 sm:grid-cols-2">
+        <ul className="grid auto-rows-fr gap-3 lg:grid-cols-2">
           {filteredArtifacts.map((artifact) => {
             const producerRun = artifact.created_by_job_id
               ? runs.find((run) => run.id === artifact.created_by_job_id)
@@ -1738,190 +1738,229 @@ export default function FactoryPanel({
               (action) => action !== primaryAction,
             );
             const hasCourseVideoAction = artifact.type === "video";
+            const artifactName = artifact.title || artifact.type;
+            const typeLabel = TYPE_LABELS[artifact.type] ?? artifact.type;
+            const createdAtLabel = new Date(artifact.created_at).toLocaleString(
+              "es",
+            );
+            const metadataParts = [
+              orientationLabel(artifact.metadata),
+              duration,
+              paletteLabel(artifact.metadata),
+            ].filter((value): value is string => Boolean(value));
+            const metadataLabel = metadataParts.join(" · ");
             return (
-              <li key={artifact.id}>
-                <div className="card card-hover flex flex-wrap items-center gap-2 px-3 py-3 text-sm">
+              <li key={artifact.id} className="min-w-0">
+                <div className="card card-hover group relative flex h-full min-h-48 flex-col overflow-visible p-4 text-sm">
                   <Link
                     href={"/artifacts/" + artifact.id}
-                    className="flex min-w-0 flex-1 items-center gap-3"
+                    className="absolute -inset-0.5 z-0 rounded-md outline-none focus-visible:ring-3 focus-visible:ring-[var(--rust)] focus-visible:ring-offset-2"
+                    aria-label={
+                      `Abrir ${typeLabel}: ${artifactName}, versión activa ${artifact.version}. ` +
+                      `Fecha y hora de creación: ${createdAtLabel}` +
+                      (metadataLabel ? `. Metadatos: ${metadataLabel}` : "")
+                    }
                   >
-                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-zinc-300 bg-[#f4ead7] text-indigo-500">
+                    <span className="sr-only">Abrir {artifactName}</span>
+                  </Link>
+
+                  <div className="pointer-events-none relative z-0 flex min-w-0 flex-1 items-start gap-3">
+                    <span className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-zinc-300 bg-[#f4ead7] text-indigo-500 transition-colors group-hover:bg-[#efe0c7]">
                       {artifactIcon(artifact.type)}
                     </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="mb-1 flex flex-wrap items-center gap-1.5">
-                        <span className="badge-neutral">
-                          {TYPE_LABELS[artifact.type] ?? artifact.type}
+                    <div className="min-w-0 flex-1">
+                      <div className="mb-2 flex min-w-0 items-center gap-1.5">
+                        <span
+                          className="badge-neutral min-w-0 overflow-hidden whitespace-nowrap"
+                          title={typeLabel}
+                        >
+                          <span className="truncate">{typeLabel}</span>
                         </span>
-                        <span className="badge-success">Activa · v{artifact.version}</span>
-                      </span>
-                      <span className="block truncate font-medium text-zinc-200">
-                        {artifact.title || artifact.type}
-                      </span>
-                      <span className="block text-xs text-zinc-500">
+                        <span className="badge-success whitespace-nowrap">
+                          Activa · v{artifact.version}
+                        </span>
+                      </div>
+                      <p
+                        className="truncate font-semibold text-zinc-200"
+                        title={artifactName}
+                      >
+                        {artifactName}
+                      </p>
+                      <p className="mt-1 truncate text-xs text-zinc-500">
                         <time
                           dateTime={artifact.created_at}
-                          title={new Date(artifact.created_at).toISOString()}
+                          title={`Creado el ${createdAtLabel}`}
+                          aria-label={`Fecha y hora de creación: ${createdAtLabel}`}
                         >
-                          {new Date(artifact.created_at).toLocaleString("es")}
+                          {createdAtLabel}
                         </time>
-                        {orientationLabel(artifact.metadata)
-                          ? ` · ${orientationLabel(artifact.metadata)}`
-                          : ""}
-                        {duration ? ` · ${duration}` : ""}
-                        {paletteLabel(artifact.metadata)
-                          ? ` · ${paletteLabel(artifact.metadata)}`
-                          : ""}
-                      </span>
-                      {producerLabel && artifact.created_by_job_id && (
-                        <span
-                          className="block truncate text-[11px] text-zinc-600"
-                          title={artifact.created_by_job_id}
+                      </p>
+                      {metadataLabel && (
+                        <p
+                          className="mt-0.5 truncate text-xs text-zinc-500"
+                          title={`Metadatos: ${metadataLabel}`}
+                          aria-label={`Metadatos del artefacto: ${metadataLabel}`}
                         >
-                          {producerLabel} · job {artifact.created_by_job_id.slice(0, 8)}
-                        </span>
+                          {metadataLabel}
+                        </p>
                       )}
-                    </span>
-                  </Link>
-                  {primaryAction && (
-                    <button
-                      type="button"
-                      className="btn-secondary btn-sm shrink-0"
-                      disabled={
-                        launchBlocked ||
-                        primaryAction.missing.length > 0 ||
-                        (!durationConfigured &&
-                          primaryAction.agent !== "curator")
-                      }
-                      title="Usará todas las versiones activas de los inputs"
-                      onClick={() =>
-                        setPendingArtifactAction({
-                          kind: "agent",
-                          action: primaryAction,
-                          sourceArtifactId: artifact.id,
-                          requestId: crypto.randomUUID(),
-                        })
-                      }
-                    >
-                      <IconPlay size={12} />
-                      {artifactActionLabel(primaryAction)}
-                    </button>
-                  )}
-                  {(secondaryActions.length > 0 || hasCourseVideoAction) && (
-                    <details className="relative shrink-0">
-                      <summary className="btn-ghost btn-sm cursor-pointer list-none">
-                        Acciones
-                      </summary>
-                      <div className="absolute right-0 z-20 mt-1 w-72 space-y-1 rounded-lg border border-zinc-700 bg-zinc-950 p-2 shadow-xl">
-                        {secondaryActions.map((action) => {
-                          const needsDuration =
-                            !durationConfigured && action.agent !== "curator";
-                          const disabled =
-                            launchBlocked ||
-                            action.missing.length > 0 ||
-                            needsDuration;
-                          return (
-                            <button
-                              key={action.agent}
-                              type="button"
-                              className="btn-ghost w-full justify-start text-left text-xs"
-                              disabled={disabled}
-                              title={
-                                needsDuration
-                                  ? "Configura antes la duración y estructura del proyecto"
-                                  : action.missing.length > 0
-                                    ? `Antes necesitas: ${action.missing
-                                        .map((type) => TYPE_LABELS[type] ?? type)
-                                        .join(", ")}`
-                                    : "Usará todas las versiones activas de los inputs"
-                              }
-                              onClick={() =>
-                                setPendingArtifactAction({
-                                  kind: "agent",
-                                  action,
-                                  sourceArtifactId: artifact.id,
-                                  requestId: crypto.randomUUID(),
-                                })
-                              }
-                            >
-                              {artifactActionLabel(action)}
-                              {action.missing.length > 0 && (
-                                <span className="ml-1 text-zinc-600">
-                                  · faltan{" "}
-                                  {action.missing
-                                    .map((type) => TYPE_LABELS[type] ?? type)
-                                    .join(", ")}
-                                </span>
-                              )}
-                            </button>
-                          );
-                        })}
-                        {hasCourseVideoAction && (
+                      {producerLabel && artifact.created_by_job_id && (
+                        <p
+                          className="mt-0.5 truncate text-[11px] text-zinc-600"
+                          title={`${producerLabel} · job ${artifact.created_by_job_id}`}
+                          aria-label={`Creado por ${producerLabel}, job ${artifact.created_by_job_id}`}
+                        >
+                          {producerLabel} · job{" "}
+                          {artifact.created_by_job_id.slice(0, 8)}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="relative z-10 mt-4 min-w-0 space-y-2 border-t border-zinc-300/70 pt-3">
+                    {(primaryAction ||
+                      secondaryActions.length > 0 ||
+                      hasCourseVideoAction) && (
+                      <div className="flex min-w-0 items-center gap-2">
+                        {primaryAction && (
                           <button
                             type="button"
-                            className="btn-ghost w-full justify-start text-left text-xs"
+                            className="btn-secondary btn-sm w-0 min-w-0 flex-1"
                             disabled={
                               launchBlocked ||
-                              loadingCourseVideoPreflight ||
-                              !courseVideoPreflight?.ready
+                              primaryAction.missing.length > 0 ||
+                              (!durationConfigured &&
+                                primaryAction.agent !== "curator")
                             }
-                            title={
-                              courseVideoPreflight?.ready
-                                ? "Usará los vídeos activos en orden pedagógico"
-                                : "Completa los vídeos requeridos por el plan del curso"
-                            }
+                            title="Usará todas las versiones activas de los inputs"
                             onClick={() =>
                               setPendingArtifactAction({
-                                kind: "course_video",
+                                kind: "agent",
+                                action: primaryAction,
                                 sourceArtifactId: artifact.id,
                                 requestId: crypto.randomUUID(),
                               })
                             }
                           >
-                            {artifactTypes.has("course_video")
-                              ? "Regenerar vídeo completo"
-                              : "Generar vídeo completo"}
+                            <IconPlay size={12} className="shrink-0" />
+                            <span className="truncate">
+                              {artifactActionLabel(primaryAction)}
+                            </span>
                           </button>
                         )}
+                        {(secondaryActions.length > 0 || hasCourseVideoAction) && (
+                          <details className="relative shrink-0">
+                            <summary className="btn-ghost btn-sm cursor-pointer list-none">
+                              Acciones
+                            </summary>
+                            <div className="absolute left-0 z-20 mt-1 w-72 max-w-[calc(100vw-2rem)] space-y-1 rounded-lg border border-zinc-700 bg-zinc-950 p-2 shadow-xl sm:left-auto sm:right-0">
+                              {secondaryActions.map((action) => {
+                                const needsDuration =
+                                  !durationConfigured && action.agent !== "curator";
+                                const disabled =
+                                  launchBlocked ||
+                                  action.missing.length > 0 ||
+                                  needsDuration;
+                                return (
+                                  <button
+                                    key={action.agent}
+                                    type="button"
+                                    className="btn-ghost w-full justify-start text-left text-xs"
+                                    disabled={disabled}
+                                    title={
+                                      needsDuration
+                                        ? "Configura antes la duración y estructura del proyecto"
+                                        : action.missing.length > 0
+                                          ? `Antes necesitas: ${action.missing
+                                              .map((type) => TYPE_LABELS[type] ?? type)
+                                              .join(", ")}`
+                                          : "Usará todas las versiones activas de los inputs"
+                                    }
+                                    onClick={() =>
+                                      setPendingArtifactAction({
+                                        kind: "agent",
+                                        action,
+                                        sourceArtifactId: artifact.id,
+                                        requestId: crypto.randomUUID(),
+                                      })
+                                    }
+                                  >
+                                    {artifactActionLabel(action)}
+                                    {action.missing.length > 0 && (
+                                      <span className="ml-1 text-zinc-600">
+                                        · faltan{" "}
+                                        {action.missing
+                                          .map((type) => TYPE_LABELS[type] ?? type)
+                                          .join(", ")}
+                                      </span>
+                                    )}
+                                  </button>
+                                );
+                              })}
+                              {hasCourseVideoAction && (
+                                <button
+                                  type="button"
+                                  className="btn-ghost w-full justify-start text-left text-xs"
+                                  disabled={
+                                    launchBlocked ||
+                                    loadingCourseVideoPreflight ||
+                                    !courseVideoPreflight?.ready
+                                  }
+                                  title={
+                                    courseVideoPreflight?.ready
+                                      ? "Usará los vídeos activos en orden pedagógico"
+                                      : "Completa los vídeos requeridos por el plan del curso"
+                                  }
+                                  onClick={() =>
+                                    setPendingArtifactAction({
+                                      kind: "course_video",
+                                      sourceArtifactId: artifact.id,
+                                      requestId: crypto.randomUUID(),
+                                    })
+                                  }
+                                >
+                                  {artifactTypes.has("course_video")
+                                    ? "Regenerar vídeo completo"
+                                    : "Generar vídeo completo"}
+                                </button>
+                              )}
+                            </div>
+                          </details>
+                        )}
                       </div>
-                    </details>
-                  )}
-                  <select
-                    value={artifact.id}
-                    onChange={(event) => chooseArtifact(event.target.value)}
-                    className="input max-w-32 shrink-0 px-2 py-1.5 text-xs"
-                    aria-label={
-                      "Versión activa de " + (artifact.title || artifact.type)
-                    }
-                    title="La versión elegida será la que consuman los siguientes agentes"
-                  >
-                    {artifact.versions.map((version) => (
-                      <option key={version.id} value={version.id}>
-                        v{version.version}
-                        {orientationLabel(version.metadata)
-                          ? ` · ${orientationLabel(version.metadata)}`
-                          : ""}
-                        {paletteLabel(version.metadata)
-                          ? ` · ${paletteLabel(version.metadata)}`
-                          : ""}
-                        {version.is_selected ? " · activa" : ""}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    onClick={() => setArtifactToDelete(artifact)}
-                    className="btn-ghost btn-sm shrink-0 text-red-300 hover:text-red-200"
-                    aria-label={
-                      "Eliminar versión " +
-                      artifact.version +
-                      " de " +
-                      (artifact.title || artifact.type)
-                    }
-                    title={"Eliminar la versión activa v" + artifact.version}
-                  >
-                    <IconTrash size={14} />
-                  </button>
+                    )}
+                    <div className="flex min-w-0 items-center gap-2">
+                      <select
+                        value={artifact.id}
+                        onChange={(event) => chooseArtifact(event.target.value)}
+                        className="input w-0 min-w-0 flex-1 px-2 py-1.5 text-xs"
+                        aria-label={"Versión activa de " + artifactName}
+                        title="La versión elegida será la que consuman los siguientes agentes"
+                      >
+                        {artifact.versions.map((version) => (
+                          <option key={version.id} value={version.id}>
+                            v{version.version}
+                            {orientationLabel(version.metadata)
+                              ? ` · ${orientationLabel(version.metadata)}`
+                              : ""}
+                            {paletteLabel(version.metadata)
+                              ? ` · ${paletteLabel(version.metadata)}`
+                              : ""}
+                            {version.is_selected ? " · activa" : ""}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => setArtifactToDelete(artifact)}
+                        className="btn-ghost btn-sm shrink-0 text-red-300 hover:text-red-200"
+                        aria-label={`Eliminar versión ${artifact.version} de ${artifactName}`}
+                        title={"Eliminar la versión activa v" + artifact.version}
+                      >
+                        <IconTrash size={14} />
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </li>
             );
