@@ -706,8 +706,43 @@ def _save_artifact(
     abs_path = settings.data_dir / rel_path
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     abs_path.write_text(content, encoding="utf-8")
+    artifact_metadata_value = dict(metadata or {})
+    if type_ == "slide_deck":
+        from factory_agents.tools.marp import marp_available, render_deck
+        from factory_agents.tools.slide_layout import prepare_slide_layout
+
+        orientation = str(artifact_metadata_value.get("orientation", "horizontal"))
+        try:
+            layout = prepare_slide_layout(
+                abs_path,
+                orientation=orientation,
+                on_event=lambda summary, data: append_event(
+                    job_id,
+                    "stage",
+                    summary,
+                    {"artifact_title": title, **data},
+                ),
+            )
+            artifact_metadata_value["layout_validation"] = layout.metadata
+            if marp_available():
+                rendered = render_deck(abs_path)
+                missing = {"html", "pdf", "pptx"} - set(rendered)
+                if missing:
+                    raise RuntimeError(
+                        "No se pudieron validar todos los renders de slides: "
+                        + ", ".join(sorted(missing))
+                    )
+        except Exception:
+            from factory_agents.tools.marp import available_renders, render_manifest_path
+
+            for candidate in [
+                abs_path,
+                render_manifest_path(abs_path),
+                *available_renders(abs_path).values(),
+            ]:
+                Path(candidate).unlink(missing_ok=True)
+            raise
     with SessionLocal() as db:
-        artifact_metadata_value = dict(metadata or {})
         artifact = add_artifact_version(
             db,
             project_id=project_id,
@@ -1191,7 +1226,7 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
     from factory_agents.contracts import CoursePlan
     from factory_agents.tools.images import generate_deck_images, parse_image_slots
     from factory_agents.tools.logos import apply_slide_logo
-    from factory_agents.tools.marp import marp_available, render_deck
+    from factory_agents.tools.marp import available_renders, marp_available, render_deck
     from factory_agents.tools.palette import (
         apply_slide_palette,
         normalize_palette,
@@ -1498,36 +1533,44 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
             logo_usage_id = usage_record_by_work_unit(
                 f"profile-logo:{payload.get('profile_id')}:{slide_logo.get('id')}"
             )
-        artifact_id = _save_artifact(
-            job_id,
-            payload["project_id"],
-            "slide_deck",
-            f"Slides — {title}",
-            deck,
-            metadata={
-                **_duration_metadata(payload, "slides"),
-                "orientation": orientation,
-                "width": width,
-                "height": height,
-                "slide_palette": slide_palette,
-                "palette_name": palette_name,
-                "palette_contrast": palette_contrast(slide_palette),
-                "palette_warnings": contrast_warnings,
-                "images": image_records,
-                "logo": logo_record,
-                "usage_record_ids": [logo_usage_id] if logo_usage_id else [],
-                "image_generation": {
-                    "enabled": images_enabled,
-                    "model": image_model if images_enabled else None,
-                    "style": image_style if images_enabled else None,
-                    "style_prompt": image_style_prompt if image_style == "custom" else "",
-                    "max_images": 6,
-                    "generated": sum(item.get("status") == "generated" for item in image_records),
-                    "attempted": len(image_records),
-                    "generation_cost_usd": generation_cost,
+        try:
+            artifact_id = _save_artifact(
+                job_id,
+                payload["project_id"],
+                "slide_deck",
+                f"Slides — {title}",
+                deck,
+                metadata={
+                    **_duration_metadata(payload, "slides"),
+                    "orientation": orientation,
+                    "width": width,
+                    "height": height,
+                    "slide_palette": slide_palette,
+                    "palette_name": palette_name,
+                    "palette_contrast": palette_contrast(slide_palette),
+                    "palette_warnings": contrast_warnings,
+                    "images": image_records,
+                    "logo": logo_record,
+                    "usage_record_ids": [logo_usage_id] if logo_usage_id else [],
+                    "image_generation": {
+                        "enabled": images_enabled,
+                        "model": image_model if images_enabled else None,
+                        "style": image_style if images_enabled else None,
+                        "style_prompt": (
+                            image_style_prompt if image_style == "custom" else ""
+                        ),
+                        "max_images": 6,
+                        "generated": sum(
+                            item.get("status") == "generated" for item in image_records
+                        ),
+                        "attempted": len(image_records),
+                        "generation_cost_usd": generation_cost,
+                    },
                 },
-            },
-        )
+            )
+        except Exception:
+            shutil.rmtree(output_dir, ignore_errors=True)
+            raise
         _complete_unit(
             job_id,
             "slides",
@@ -1546,7 +1589,7 @@ def run_slides_job(job_id: str, payload: dict) -> dict:
             next_unit=render_unit,
             message=f"Preparando el render de {title}",
         )
-        rendered = render_deck(deck_path)
+        rendered = available_renders(deck_path)
         _complete_unit(
             job_id,
             "slides",

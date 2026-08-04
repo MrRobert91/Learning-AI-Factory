@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from factory_agents.tools.images import GeneratedImage
+from factory_agents.tools.slide_layout import SlideOverflowError
 from factory_api.config import get_settings
 from factory_api.db import SessionLocal
 from factory_api.models import Artifact
@@ -445,3 +446,41 @@ def test_regenerating_one_slide_image_creates_self_contained_deck_version(
     old_image = auth_client.get(f"/api/artifacts/{artifact['id']}/images/slide-1")
     assert new_image.content == b"new-image"
     assert old_image.content == b"old-image"
+
+
+def test_invalid_slide_edit_does_not_publish_or_replace_selected_version(
+    auth_client, monkeypatch
+):
+    project = _create_project(auth_client)
+    original = _upload(
+        auth_client,
+        project["id"],
+        "slide_deck",
+        "Slides — 1.1 Validación",
+        "---\nmarp: true\n---\n\n# Versión válida\n",
+    )
+    full = auth_client.get(f"/api/artifacts/{original['id']}").json()
+    assert full["metadata"]["layout_validation"]["schema_version"] == 1
+    assert "factory-safe-area:start" in full["content"]
+
+    def fail_layout(*_args, **_kwargs):
+        raise SlideOverflowError(1, "tabla")
+
+    monkeypatch.setattr(
+        "factory_api.routers.artifacts.prepare_slide_layout", fail_layout
+    )
+    response = auth_client.patch(
+        f"/api/artifacts/{original['id']}",
+        json={
+            "content": (
+                "---\nmarp: true\n---\n\n# Versión inválida\n\n"
+                "| Columna | Valor |\n| --- | --- |\n| A | B |\n"
+            )
+        },
+    )
+
+    assert response.status_code == 422
+    assert "slide 1" in response.json()["detail"]
+    selected = auth_client.get(f"/api/projects/{project['id']}/artifacts").json()
+    assert [item["id"] for item in selected] == [original["id"]]
+    assert auth_client.get(f"/api/artifacts/{original['id']}").json()["version"] == 1

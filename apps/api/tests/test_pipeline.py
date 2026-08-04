@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from factory_agents.contracts import CoursePlan
 from factory_agents.contracts.agent_io import (
     AGENT_CONTRACTS,
@@ -8,12 +9,14 @@ from factory_agents.contracts.agent_io import (
     AGENT_OUTPUTS,
 )
 from factory_agents.runtime import RunEvent
+from factory_agents.tools.slide_layout import SlideOverflowError
 from factory_api.artifact_versions import add_artifact_version
 from factory_api.db import SessionLocal
 from factory_api.models import Artifact, Job
 from factory_api.runner import (
     _latest_artifact_content,
     _restore_previous_output_selections,
+    _save_artifact,
 )
 from test_runs import _create_project, _fake_curator, _wait_for_job
 
@@ -110,6 +113,8 @@ def test_stage_by_stage_chain(auth_client, monkeypatch):
     ).json()
     assert deck["type"] == "slide_deck"
     assert deck["content"].startswith("---\nmarp: true")
+    assert deck["metadata"]["layout_validation"]["schema_version"] == 1
+    assert "factory-safe-area:start" in deck["content"]
 
     artifacts = auth_client.get(f"/api/projects/{project['id']}/artifacts").json()
     types = sorted({a["type"] for a in artifacts})
@@ -143,6 +148,31 @@ def test_slide_decks_are_stored_in_distinct_files(auth_client, monkeypatch):
     assert downloads[0] != downloads[1]
     assert "# Deck 1" in downloads[0]
     assert "# Deck 2" in downloads[1]
+
+
+def test_slide_layout_failure_prevents_runner_artifact_publication(monkeypatch):
+    def fail_layout(*_args, **_kwargs):
+        raise SlideOverflowError(2, "código")
+
+    monkeypatch.setattr(
+        "factory_agents.tools.slide_layout.prepare_slide_layout", fail_layout
+    )
+    with pytest.raises(SlideOverflowError, match="slide 2.*código"):
+        _save_artifact(
+            "layout-failure-job",
+            "layout-failure-project",
+            "slide_deck",
+            "Slides — inválidas",
+            "---\nmarp: true\n---\n\n# No publicar\n",
+            metadata={"orientation": "horizontal"},
+        )
+    with SessionLocal() as db:
+        assert (
+            db.query(Artifact)
+            .filter(Artifact.project_id == "layout-failure-project")
+            .count()
+            == 0
+        )
 
 
 def test_full_pipeline_run(auth_client, monkeypatch):

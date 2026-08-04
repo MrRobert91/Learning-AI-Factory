@@ -146,6 +146,12 @@ docker compose up --build                # stack completo (2 contenedores)
   defecto o `transparent`: este último conserva el original, reutiliza un PNG
   RGBA derivado y validado, y congela ambos hashes/asset efectivo en el snapshot.
   Nunca elimines el fondo ni regeneres el logo durante la producción.
+- **Overflow de slides**: toda versión nueva de `slide_deck` recibe el bloque
+  canónico de safe area y, cuando Marp/Chromium están disponibles, se mide sobre
+  el DOM real antes de seleccionarse. El ajuste reduce tipografía solo hasta el
+  mínimo documentado y después divide por límites Markdown válidos; tablas y
+  código indivisibles fallan de forma accionable. Conserva `layout_validation`
+  en metadatos y no uses LLM para corregir el layout.
 
 - **Seguridad de dependencias**: CI bloquea vulnerabilidades `high`/`critical`
   con `npm run audit:prod`, `npm run audit:all` y `pip-audit==2.10.1` sobre el

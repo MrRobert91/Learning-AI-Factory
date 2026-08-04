@@ -37,6 +37,8 @@ def test_apply_slide_logo_respects_visibility_and_safe_configuration():
     assert "section.factory-has-logo > img.factory-logo" in result
     assert "inset: auto !important" in result
     assert result.count("factory-has-logo") >= 2
+    assert "factory-logo-bottom" in result
+    assert "--factory-logo-safe-bottom: calc(19% + 56px)" in result
     assert "slide-assets/logo.png" in result
 
 
@@ -94,6 +96,7 @@ def test_logo_remains_canvas_anchored_with_side_image_layout():
         "_class: factory-side-image factory-side-image-right factory-has-logo"
         in result
     )
+    assert "factory-logo-bottom" in result
     assert 'data-marpit-advanced-background="pseudo"' in result
 
 
