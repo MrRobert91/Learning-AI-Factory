@@ -30,13 +30,12 @@ jobs:
       - name: Build and verify backend sandbox container
         run: |
           docker build --file apps/api/Dockerfile --tag learning-ai-factory-backend:test .
-          uid="$(docker run --rm --entrypoint id learning-ai-factory-backend:test -u)"
+          uid="$(docker run --rm learning-ai-factory-backend:test id -u)"
           test "$uid" -ne 0
           docker run --rm \
             --env PYTHON_SANDBOX_MODE=isolated \
-            --entrypoint python \
             learning-ai-factory-backend:test \
-            scripts/verify_python_sandbox.py
+            python scripts/verify_python_sandbox.py
 
   web:
     runs-on: ubuntu-latest

@@ -14,7 +14,7 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 # seccomp runtime all live here to keep the promise of one backend container.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ffmpeg fonts-dejavu-core chromium libseccomp2 nodejs npm \
+        ffmpeg fonts-dejavu-core chromium gosu libseccomp2 nodejs npm \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g @marp-team/marp-cli \
     && npm cache clean --force
@@ -28,6 +28,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 COPY packages/factory_agents packages/factory_agents
 COPY apps/api apps/api
+COPY apps/api/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 RUN uv sync --frozen --no-dev
 ENV PATH="/app/.venv/bin:$PATH"
@@ -39,10 +40,11 @@ RUN groupadd --gid "${APP_GID}" factory \
     && useradd --uid "${APP_UID}" --gid "${APP_GID}" \
         --create-home --home-dir /home/factory --shell /usr/sbin/nologin factory \
     && mkdir -p /data/db /data/artifacts /data/tmp \
-    && chown -R "${APP_UID}:${APP_GID}" /data /home/factory
+    && chown -R "${APP_UID}:${APP_GID}" /data /home/factory \
+    && chmod 755 /usr/local/bin/docker-entrypoint.sh
 ENV HOME=/home/factory
 
 WORKDIR /app/apps/api
 EXPOSE 8000
-USER factory:factory
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["sh", "-c", "alembic upgrade head && uvicorn factory_api.main:app --host 0.0.0.0 --port 8000"]
