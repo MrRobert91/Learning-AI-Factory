@@ -16,6 +16,7 @@ LOCAL_CLASS_RE = re.compile(
     r"<!--\s*_class:\s*(?P<classes>[^>]*?)\s*-->", re.I
 )
 LOGO_SLIDE_CLASS = "factory-has-logo"
+LOGO_BOTTOM_SAFE_CLASS = "factory-logo-bottom"
 
 _SIZE_PERCENT = {
     "horizontal": {"small": 8, "medium": 12, "large": 16},
@@ -42,22 +43,27 @@ def remove_slide_logo(markdown: str) -> str:
         classes = [
             item
             for item in match.group("classes").split()
-            if item != LOGO_SLIDE_CLASS
+            if item not in {LOGO_SLIDE_CLASS, LOGO_BOTTOM_SAFE_CLASS}
         ]
         return f"<!-- _class: {' '.join(classes)} -->" if classes else ""
 
     return LOCAL_CLASS_RE.sub(remove_logo_class, clean).rstrip() + "\n"
 
 
-def _mark_logo_slide(slide: str) -> str:
+def _mark_logo_slide(slide: str, *, bottom_safe: bool) -> str:
     match = LOCAL_CLASS_RE.search(slide)
     if match is not None:
         classes = match.group("classes").split()
         if LOGO_SLIDE_CLASS not in classes:
             classes.append(LOGO_SLIDE_CLASS)
+        if bottom_safe and LOGO_BOTTOM_SAFE_CLASS not in classes:
+            classes.append(LOGO_BOTTOM_SAFE_CLASS)
         directive = f"<!-- _class: {' '.join(classes)} -->"
         return slide[: match.start()] + directive + slide[match.end() :]
-    return f"<!-- _class: {LOGO_SLIDE_CLASS} -->\n\n{slide.lstrip()}"
+    classes = [LOGO_SLIDE_CLASS]
+    if bottom_safe:
+        classes.append(LOGO_BOTTOM_SAFE_CLASS)
+    return f"<!-- _class: {' '.join(classes)} -->\n\n{slide.lstrip()}"
 
 
 def _css_url(path: str) -> str:
@@ -95,6 +101,12 @@ def apply_slide_logo(
     width = _SIZE_PERCENT[orientation][size]
     vertical, horizontal = placement.split("-")
     css_path = _css_url(markdown_path)
+    bottom_safe_css = (
+        f"section.{LOGO_BOTTOM_SAFE_CLASS} {{ --factory-logo-safe-bottom: "
+        f"calc({width}% + {margin_px + 16}px); }}\n"
+        if vertical == "bottom"
+        else ""
+    )
     css = (
         f"{LOGO_BLOCK_START}\n<style>\n"
         "section { position: relative; }\n"
@@ -116,7 +128,7 @@ def apply_slide_logo(
         f"opacity: {opacity:.3f}; inset: auto !important; "
         f"{vertical}: {margin_px}px !important; {horizontal}: {margin_px}px !important; "
         f'background: url("{css_path}") center / contain no-repeat !important; }}\n'
-        "</style>\n"
+        f"{bottom_safe_css}</style>\n"
         f"{LOGO_BLOCK_END}"
     )
     slides = re.split(r"(?m)^---\s*$", body)
@@ -131,7 +143,7 @@ def apply_slide_logo(
                 f'alt="{html.escape(alt, quote=True)}">'
             )
             slide = slide.rstrip() + "\n\n" + image + "\n"
-            slide = _mark_logo_slide(slide)
+            slide = _mark_logo_slide(slide, bottom_safe=vertical == "bottom")
         visible_slides.append(slide.strip())
     result = "\n\n".join(part for part in [frontmatter, css] if part)
     if visible_slides:

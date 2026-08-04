@@ -39,6 +39,7 @@ from factory_agents.tools.palette import (
     palette_preset_name,
     palette_warnings,
 )
+from factory_agents.tools.slide_layout import SlideLayoutError, prepare_slide_layout
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, Response
 from pypdf import PdfReader, PdfWriter
@@ -200,6 +201,35 @@ def _ensure_slide_renders(path: Path) -> dict[str, str]:
         render_deck(path)
         renders = available_renders(path)
     return renders
+
+
+def _prepare_slide_version(
+    path: Path,
+    markdown: str,
+    metadata: dict,
+) -> tuple[dict, dict[str, str]]:
+    """Validate one immutable deck before its DB row can become selected."""
+    prepared_metadata = deepcopy(metadata)
+    orientation = str(prepared_metadata.get("orientation", "horizontal"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(normalize_marp_canvas(markdown), encoding="utf-8")
+    try:
+        layout = prepare_slide_layout(path, orientation=orientation)
+    except SlideLayoutError as exc:
+        path.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    prepared_metadata["layout_validation"] = layout.metadata
+    rendered = render_deck(path) if marp_available() else {}
+    if marp_available():
+        missing = {"html", "pdf", "pptx"} - set(rendered)
+        if missing:
+            _cleanup_palette_files([path], [], path.parent.name)
+            raise HTTPException(
+                status_code=503,
+                detail="No se pudieron generar los renders: "
+                + ", ".join(sorted(missing)),
+            )
+    return prepared_metadata, rendered
 
 
 def _marp_parts(markdown: str) -> tuple[str, str]:
@@ -519,7 +549,15 @@ def regenerate_slide_image(
         f"artifacts/{original.project_id}/slide_deck-image-edit-{uuid.uuid4().hex[:10]}.md"
     )
     path = settings.data_dir / relative
-    path.write_text(normalize_marp_canvas(markdown), encoding="utf-8")
+    try:
+        cloned_metadata, _rendered = _prepare_slide_version(
+            path,
+            markdown,
+            cloned_metadata,
+        )
+    except Exception:
+        _remove_slide_assets(cloned_metadata, original.project_id)
+        raise
     artifact = add_artifact_version(
         db,
         project_id=original.project_id,
@@ -551,7 +589,6 @@ def regenerate_slide_image(
         )
         db.commit()
         db.refresh(artifact)
-    render_deck(path)
     logger.info(
         "Slide image regenerated as a new artifact version",
         extra={
@@ -598,12 +635,12 @@ def preview_slide_palette(
     if not source.is_file():
         raise HTTPException(status_code=404, detail="Fichero no encontrado")
     preview = source.with_name(f".palette-preview-{uuid.uuid4().hex[:8]}.md")
-    preview.write_text(
+    _preview_metadata, rendered = _prepare_slide_version(
+        preview,
         apply_slide_palette(source.read_text(encoding="utf-8"), palette),
-        encoding="utf-8",
+        artifact_metadata(artifact),
     )
     try:
-        rendered = render_deck(preview)
         html = rendered.get("html")
         if not html:
             raise HTTPException(status_code=503, detail="No se pudo generar la preview")
@@ -679,19 +716,14 @@ def apply_artifact_palette(
             )
             output = settings.data_dir / relative
             output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text(apply_slide_palette(markdown, palette), encoding="utf-8")
             created_paths.append(output)
             cloned_metadata.append(metadata)
-            rendered = render_deck(output)
-            missing = {"html", "pdf", "pptx"} - set(rendered)
-            if missing:
-                raise HTTPException(
-                    status_code=503,
-                    detail=(
-                        f"No se pudo renderizar «{target.title}»: "
-                        + ", ".join(sorted(missing))
-                    ),
-                )
+            metadata, _rendered = _prepare_slide_version(
+                output,
+                apply_slide_palette(markdown, palette),
+                metadata,
+            )
+            cloned_metadata[-1] = metadata
             prepared.append((target, relative, output, metadata))
 
         created: list[Artifact] = []
@@ -763,16 +795,26 @@ def edit_artifact(
     path.parent.mkdir(parents=True, exist_ok=True)
     content = body.content
     metadata = artifact_metadata(original)
-    if original.type == "slide_deck" and metadata.get("images"):
+    cloned_slide_assets = False
+    if original.type == "slide_deck" and (
+        metadata.get("images") or isinstance(metadata.get("logo"), dict)
+    ):
         content, metadata, _asset_dir, _storage_dir = _clone_slide_assets(
             content,
             metadata,
             original.project_id,
             suffix="edit",
         )
+        cloned_slide_assets = True
     if original.type == "slide_deck":
-        content = normalize_marp_canvas(content)
-    path.write_text(content, encoding="utf-8")
+        try:
+            metadata, _rendered = _prepare_slide_version(path, content, metadata)
+        except Exception:
+            if cloned_slide_assets:
+                _remove_slide_assets(metadata, original.project_id)
+            raise
+    else:
+        path.write_text(content, encoding="utf-8")
     edited = add_artifact_version(
         db,
         project_id=original.project_id,
@@ -784,8 +826,6 @@ def edit_artifact(
     )
     db.commit()
     db.refresh(edited)
-    if edited.type == "slide_deck":
-        render_deck(path)
     logger.info(
         "Artifact version created from web editor",
         extra={
@@ -1076,7 +1116,25 @@ async def upload_artifact(
             json.loads(data.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise HTTPException(status_code=422, detail="El fichero JSON no es valido") from exc
-    abs_path.write_bytes(data)
+    metadata = (
+        {
+            "orientation": "horizontal",
+            "width": 1920,
+            "height": 1080,
+        }
+        if type == "slide_deck"
+        else None
+    )
+    if type == "slide_deck":
+        try:
+            markdown = data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise HTTPException(
+                status_code=422, detail="Las slides deben usar texto UTF-8 válido"
+            ) from exc
+        metadata, _rendered = _prepare_slide_version(abs_path, markdown, metadata or {})
+    else:
+        abs_path.write_bytes(data)
     artifact = add_artifact_version(
         db,
         project_id=project_id,
@@ -1084,18 +1142,10 @@ async def upload_artifact(
         format_=format_,
         title=title or (file.filename or type),
         path=rel_path,
-        metadata={
-            "orientation": "horizontal",
-            "width": 1920,
-            "height": 1080,
-        }
-        if type == "slide_deck"
-        else None,
+        metadata=metadata,
     )
     db.commit()
     db.refresh(artifact)
-    if type == "slide_deck":
-        render_deck(abs_path)
     logger.info(
         "Artifact uploaded",
         extra={
