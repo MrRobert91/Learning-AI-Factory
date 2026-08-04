@@ -160,6 +160,13 @@ docker compose up --build                # stack completo (2 contenedores)
   `local-unsafe` debe elegirse explícitamente y nunca es fallback de un
   aislamiento fallido.
 
+- **Seguridad de despliegue**: `APP_ENV=production` valida antes de migrar que
+  contraseña, firma, origen HTTPS y key ring sean fuertes. Las sesiones viven
+  en `auth_sessions`, son revocables y usan cookie `__Host-`; toda mutación con
+  cookie valida Origin. Los estados OAuth son persistentes, de un solo uso y
+  PKCE; `CredentialStore` es la única vía para leer/escribir tokens Google
+  cifrados con AES-GCM y rotación. Nunca vuelvas a usar `token_json` directamente.
+
 ## Convenciones
 
 - UI en español; código, comentarios y commits en inglés.

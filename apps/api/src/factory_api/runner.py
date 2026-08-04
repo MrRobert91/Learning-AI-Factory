@@ -2911,17 +2911,14 @@ def run_youtube_upload_job(job_id: str, payload: dict) -> dict:
     """Upload a video to YouTube. Only reachable via explicit user action."""
     import json as _json
 
-    from factory_api.models import OAuthToken
+    from factory_api.credentials import CredentialStore
     from factory_api.youtube import upload_video
 
     settings = get_settings()
     with SessionLocal() as db:
-        token = db.scalars(
-            select(OAuthToken).where(OAuthToken.provider == "google").limit(1)
-        ).first()
-        if token is None:
+        token_data = CredentialStore().get(db, provider="google")
+        if token_data is None:
             raise RuntimeError("YouTube no está conectado: autoriza el acceso primero")
-        token_data = _json.loads(token.token_json)
         video = db.get(Artifact, payload["video_artifact_id"])
         package_artifact = db.get(Artifact, payload["package_artifact_id"])
         if video is None or package_artifact is None:
@@ -3245,7 +3242,8 @@ def run_analyst_job(job_id: str, payload: dict) -> dict:
 
     from factory_agents.agents.analyst import render_analyst_input, run_analyst
 
-    from factory_api.models import ImprovementProposal, OAuthToken, WikiPage
+    from factory_api.credentials import CredentialStore
+    from factory_api.models import ImprovementProposal, WikiPage
     from factory_api.youtube import fetch_videos_data
 
     settings = get_settings()
@@ -3265,10 +3263,7 @@ def run_analyst_job(job_id: str, payload: dict) -> dict:
             result = _json.loads(upload_job.result_json or "{}")
             if result.get("video_id"):
                 video_ids.append(result["video_id"])
-        token = db.scalars(
-            select(OAuthToken).where(OAuthToken.provider == "google").limit(1)
-        ).first()
-        token_data = _json.loads(token.token_json) if token else None
+        token_data = CredentialStore().get(db, provider="google")
 
     if not video_ids:
         raise RuntimeError(
