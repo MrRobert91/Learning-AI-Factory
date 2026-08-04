@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import shutil
+import time
 import uuid
 from contextvars import ContextVar
 from datetime import UTC, datetime
@@ -52,6 +53,118 @@ from factory_api.usage import (
 
 logger = logging.getLogger(__name__)
 _CURRENT_WORKFLOW_STEP: ContextVar[int | None] = ContextVar("current_workflow_step", default=None)
+_UNIT_LOG_STARTS: dict[tuple[str, str], tuple[float, str, str]] = {}
+
+_EVENT_LOG_FIELDS = {
+    "agent",
+    "artifact_count",
+    "artifact_id",
+    "attempt",
+    "attempts",
+    "cache_hit",
+    "duration_ms",
+    "error_code",
+    "error_field",
+    "evaluation",
+    "format",
+    "generation_id",
+    "max_regenerations",
+    "model",
+    "operation",
+    "profile_id",
+    "profile_version",
+    "provider",
+    "regeneration",
+    "score",
+    "skipped",
+    "status",
+    "step",
+    "total_steps",
+    "verdict",
+    "voice",
+    "workflow_step",
+}
+
+
+def _log_category(phase: str) -> str:
+    normalized = phase.lower()
+    if normalized in {"automatic_review", "evaluation"}:
+        return "EVAL"
+    if normalized in {"human_approval", "approval", "approval_required"}:
+        return "REVIEW"
+    if normalized in {"images", "image", "image_generation"}:
+        return "IMAGE"
+    if normalized in {"slides", "marp", "render"}:
+        return "SLIDE"
+    if normalized in {"voice", "tts"}:
+        return "TTS"
+    if normalized in {"video", "course_video", "course_video_export", "ffmpeg"}:
+        return "VIDEO"
+    if normalized in {"publisher", "publication"}:
+        return "PUBLISH"
+    if normalized == "memory":
+        return "MEMORY"
+    if normalized == "artifact":
+        return "ARTIFACT"
+    if normalized == "control":
+        return "JOB"
+    return "STEP"
+
+
+def _event_log_data(data: dict | None) -> dict:
+    if not isinstance(data, dict):
+        return {}
+    fields = {key: data[key] for key in _EVENT_LOG_FIELDS if key in data}
+    checkpoint_data = data.get("checkpoint")
+    if isinstance(checkpoint_data, dict):
+        for key in ("phase", "current_unit", "next_unit"):
+            if checkpoint_data.get(key) is not None:
+                fields[f"checkpoint_{key}"] = checkpoint_data[key]
+    artifact_ids = data.get("artifact_ids")
+    if isinstance(artifact_ids, list):
+        fields["artifact_count"] = len(artifact_ids)
+    error = data.get("error")
+    if error:
+        fields["error"] = str(error)[:300]
+    return fields
+
+
+def _event_log_summary(type_: str, summary: str, data: dict | None) -> str:
+    if type_ in {"assistant", "result", "tool_call", "tool_result"}:
+        return "Agent tool activity"
+    if type_ == "evaluation" and isinstance(data, dict):
+        agent = data.get("agent", "agent")
+        status = data.get("status", "event")
+        verdict = f" verdict={data['verdict']}" if data.get("verdict") else ""
+        return f"{str(status).upper()} evaluation {agent}{verdict}"
+    if type_ in {"approval", "approval_required"} and isinstance(data, dict):
+        agent = data.get("agent", "agent")
+        status = data.get("status", type_)
+        return f"{str(status).upper()} review {agent}"
+    return summary[:300]
+
+
+def _finish_open_unit_logs(job_id: str, action: str, error: str = "") -> None:
+    for key in [key for key in _UNIT_LOG_STARTS if key[0] == job_id]:
+        started, phase, message = _UNIT_LOG_STARTS.pop(key)
+        level = logging.ERROR if action == "FAIL" else logging.WARNING
+        logger.log(
+            level,
+            f"{action} {message or phase}",
+            extra={
+                "category": _log_category(phase),
+                "job_id": job_id,
+                "phase": phase,
+                "unit": key[1],
+                "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                "error": error or None,
+            },
+        )
+
+
+def _clear_unit_log_starts(job_id: str) -> None:
+    for key in [key for key in _UNIT_LOG_STARTS if key[0] == job_id]:
+        _UNIT_LOG_STARTS.pop(key, None)
 
 
 def _cleanup_job_workdir(kind: str, job_id: str) -> None:
@@ -95,8 +208,8 @@ class JobRunner:
             )
         self._task = asyncio.create_task(self._worker())
         logger.info(
-            "Job runner started",
-            extra={"recovered_jobs": len(pending)},
+            "START job runner",
+            extra={"category": "JOB", "recovered_jobs": len(pending)},
         )
 
     async def stop(self) -> None:
@@ -105,7 +218,7 @@ class JobRunner:
             self._task = None
         self._queue = None
         self._queued_ids.clear()
-        logger.info("Job runner stopped")
+        logger.info("DONE job runner", extra={"category": "JOB"})
 
     def enqueue(self, job_id: str) -> None:
         # If the runner is not started the job stays queued in the DB and is
@@ -113,7 +226,7 @@ class JobRunner:
         if self._queue is not None and job_id not in self._queued_ids:
             self._queued_ids.add(job_id)
             self._queue.put_nowait(job_id)
-            logger.info("Job enqueued", extra={"job_id": job_id})
+            logger.info("QUEUE job", extra={"category": "JOB", "job_id": job_id})
 
     async def _worker(self) -> None:
         while True:
@@ -122,7 +235,10 @@ class JobRunner:
             try:
                 await asyncio.to_thread(self._execute, job_id)
             except Exception:
-                logger.exception("Job %s crashed outside handler", job_id)
+                logger.exception(
+                    "CRASH worker dispatch",
+                    extra={"category": "JOB", "job_id": job_id},
+                )
             finally:
                 self._queue.task_done()
 
@@ -144,8 +260,9 @@ class JobRunner:
             db.commit()
             kind, payload = job.kind, json.loads(job.payload_json)
             logger.info(
-                "Job execution started",
+                f"START {kind}",
                 extra={
+                    "category": "JOB",
                     "job_id": job_id,
                     "job_kind": kind,
                     "project_id": job.project_id,
@@ -295,6 +412,7 @@ class JobRunner:
                         )
                 self._finish(job_id, result=result)
         except RunPaused as exc:
+            _finish_open_unit_logs(job_id, "PAUSE")
             append_event(
                 job_id,
                 "control",
@@ -303,6 +421,7 @@ class JobRunner:
             )
         except RunCanceled as exc:
             _cleanup_job_workdir(kind, job_id)
+            _finish_open_unit_logs(job_id, "CANCEL")
             _restore_previous_output_selections(job_id)
             append_event(
                 job_id,
@@ -312,8 +431,8 @@ class JobRunner:
             )
         except Exception as exc:
             _cleanup_job_workdir(kind, job_id)
-            logger.exception("Job %s failed", job_id)
-            self._finish(job_id, error=str(exc))
+            _finish_open_unit_logs(job_id, "FAIL", str(exc))
+            self._finish(job_id, error=str(exc), include_traceback=True)
 
     def _store_partial_result(self, job_id: str, result: dict | None) -> None:
         with SessionLocal() as db:
@@ -347,11 +466,23 @@ class JobRunner:
                     job.result_json = json.dumps(result, ensure_ascii=False)
                 db.commit()
                 logger.info(
-                    "Job waiting for approval",
-                    extra={"job_id": job_id, "job_kind": job.kind},
+                    f"WAIT {job.kind} for approval",
+                    extra={
+                        "category": "REVIEW",
+                        "job_id": job_id,
+                        "job_kind": job.kind,
+                        "job_status": job.status,
+                    },
                 )
 
-    def _finish(self, job_id: str, result: dict | None = None, error: str = "") -> None:
+    def _finish(
+        self,
+        job_id: str,
+        result: dict | None = None,
+        error: str = "",
+        *,
+        include_traceback: bool = False,
+    ) -> None:
         if error:
             _restore_previous_output_selections(job_id)
         if not error:
@@ -382,15 +513,22 @@ class JobRunner:
                     (job.finished_at - started_at).total_seconds() * 1000,
                     2,
                 )
-            logger.info(
-                "Job execution finished",
+            action = "FAIL" if error else "DONE"
+            level = logging.ERROR if error else logging.INFO
+            logger.log(
+                level,
+                f"{action} {job.kind}",
                 extra={
+                    "category": "JOB",
                     "job_id": job_id,
                     "job_kind": job.kind,
                     "job_status": job.status,
                     "duration_ms": duration_ms,
+                    "error": error or None,
                 },
+                exc_info=include_traceback,
             )
+            _clear_unit_log_starts(job_id)
 
 
 class BudgetExceeded(RuntimeError):
@@ -621,23 +759,28 @@ def append_event(job_id: str, type_: str, summary: str, data: dict | None = None
         seq = db.scalars(
             select(JobEvent.seq).where(JobEvent.job_id == job_id).order_by(JobEvent.seq.desc())
         ).first()
-        db.add(
-            JobEvent(
-                job_id=job_id,
-                seq=(seq + 1) if seq is not None else 0,
-                type=type_,
-                summary=summary,
-                data_json=json.dumps(data, ensure_ascii=False) if data else None,
-            )
+        event = JobEvent(
+            job_id=job_id,
+            seq=(seq + 1) if seq is not None else 0,
+            type=type_,
+            summary=summary,
+            data_json=json.dumps(data, ensure_ascii=False) if data else None,
         )
+        db.add(
+            event
+        )
+        job = db.get(Job, job_id)
         db.commit()
     logger.info(
-        "Job event",
+        _event_log_summary(type_, summary, data),
         extra={
+            "category": _log_category(type_),
             "job_id": job_id,
+            "job_kind": job.kind if job is not None else None,
+            "project_id": job.project_id if job is not None else None,
             "event_type": type_,
-            "event_summary": summary,
-            **(data or {}),
+            "event_seq": event.seq,
+            **_event_log_data(data),
         },
     )
 
@@ -657,12 +800,33 @@ def _before_unit(
     unit = _control_unit(payload, phase, identity)
     cached = completed_unit(job_id, unit)
     if cached is None:
+        _UNIT_LOG_STARTS[(job_id, unit)] = (time.perf_counter(), phase, message)
+        logger.info(
+            f"START {message or phase}",
+            extra={
+                "category": _log_category(phase),
+                "job_id": job_id,
+                "phase": phase,
+                "unit": unit,
+            },
+        )
         checkpoint(
             job_id,
             phase,
             current_unit=None,
             next_unit=unit,
             message=message,
+        )
+    else:
+        logger.info(
+            f"REUSE {message or phase}",
+            extra={
+                "category": _log_category(phase),
+                "job_id": job_id,
+                "phase": phase,
+                "unit": unit,
+                "cache_hit": True,
+            },
         )
     return unit, cached
 
@@ -684,6 +848,22 @@ def _complete_unit(
         message=message,
         completed_unit=unit,
         result=result,
+    )
+    started_record = _UNIT_LOG_STARTS.pop((job_id, unit), None)
+    started = started_record[0] if started_record is not None else None
+    logger.info(
+        f"DONE {message or phase}",
+        extra={
+            "category": _log_category(phase),
+            "job_id": job_id,
+            "phase": phase,
+            "unit": unit,
+            "duration_ms": (
+                round((time.perf_counter() - started) * 1000, 2)
+                if started is not None
+                else None
+            ),
+        },
     )
 
 
@@ -2787,7 +2967,10 @@ def consolidate_memory(job_id: str) -> None:
             "Memoria del proyecto actualizada: " + ", ".join(u.slug for u in updates),
         )
     except Exception:
-        logger.exception("Memory consolidation failed for job %s", job_id)
+        logger.exception(
+            "FAIL memory consolidation",
+            extra={"category": "MEMORY", "job_id": job_id},
+        )
 
 
 def extract_srt_timestamps(srt_content: str) -> list[str]:
@@ -3198,6 +3381,7 @@ def evaluate_stage(job_id: str, agent: str, result: dict | None) -> tuple[str, s
             },
         )
         return "pass", ""
+    evaluation_started = time.perf_counter()
     evaluation = run_evaluator(
         _client(
             job_id,
@@ -3222,6 +3406,7 @@ def evaluate_stage(job_id: str, agent: str, result: dict | None) -> tuple[str, s
             "verdict": evaluation.verdict,
             "score": evaluation.score,
             "model": settings.openrouter_model,
+            "duration_ms": round((time.perf_counter() - evaluation_started) * 1000, 2),
         },
     )
     if ids:

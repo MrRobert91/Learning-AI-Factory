@@ -146,7 +146,10 @@ docker compose up --build                # stack completo (2 contenedores)
   defecto o `transparent`: este último conserva el original, reutiliza un PNG
   RGBA derivado y validado, y congela ambos hashes/asset efectivo en el snapshot.
   Nunca elimines el fondo ni regeneres el logo durante la producción.
-
+- **Logs del backend**: la consola es la única salida. Usa el formatter legible
+  canónico y categorías `HTTP`/`JOB`/`STEP`/`EVAL`/multimedia; no restaures
+  `backend.jsonl`, no dupliques `uvicorn.access` y nunca registres payloads,
+  prompts, respuestas, texto TTS, documentos, binarios ni secretos.
 - **Seguridad de dependencias**: CI bloquea vulnerabilidades `high`/`critical`
   con `npm run audit:prod`, `npm run audit:all` y `pip-audit==2.10.1` sobre el
   export congelado de uv. Mantén Next.js en la serie 15 y React en la 19 hasta
