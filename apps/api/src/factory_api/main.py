@@ -4,9 +4,12 @@ import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
+from factory_api.auth import csrf_origin_allowed
 from factory_api.config import get_settings
+from factory_api.credentials import migrate_legacy_credentials
 from factory_api.db import SessionLocal
 from factory_api.logging_config import configure_file_logging, configure_logging
 from factory_api.models import User
@@ -114,6 +117,16 @@ async def lifespan(_app: FastAPI):
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     log_path = configure_file_logging(settings.data_dir)
     logger.info("Backend startup beginning", extra={"persistent_log_path": str(log_path)})
+    logger.info(
+        "Deployment security policy validated",
+        extra={
+            "app_env": settings.app_env,
+            "allowed_origin_count": len(settings.allowed_origins),
+            "secure_session_cookie": settings.app_env == "production",
+        },
+    )
+    with SessionLocal() as db:
+        migrate_legacy_credentials(db)
     ensure_default_user()
     with SessionLocal() as db:
         seed_default_profiles(db)
@@ -141,6 +154,12 @@ app = FastAPI(title="AI Learning Factory API", lifespan=lifespan)
 async def log_request(request: Request, call_next):
     request_id = request.headers.get("x-request-id") or uuid.uuid4().hex
     started = time.perf_counter()
+    if not csrf_origin_allowed(request):
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Origen no permitido para esta operación"},
+            headers={"x-request-id": request_id},
+        )
     try:
         response = await call_next(request)
     except Exception:

@@ -10,6 +10,7 @@ dependencies = [
     "alembic>=1.13",
     "pydantic-settings>=2.2",
     "itsdangerous>=2.1",
+    "cryptography>=50.0.0",
     "factory-agents",
     "python-multipart>=0.0.32",
     "langgraph-checkpoint-sqlite>=3.1.0",

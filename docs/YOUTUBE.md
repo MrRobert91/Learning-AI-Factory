@@ -31,9 +31,15 @@ descargas para publicar a mano.
 ```bash
 GOOGLE_CLIENT_ID=xxxx.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=GOCSPX-xxxx
+CREDENTIAL_ENCRYPTION_KEYS=2026-08:<clave-base64-de-32-bytes>
 ```
 
 5. Reinicia el backend (`docker compose up` de nuevo o `make dev-api`).
+
+Los tokens se guardan cifrados con AES-GCM. En producción, registra como URI
+de redirección el callback HTTPS exacto del despliegue y configura
+`GOOGLE_REDIRECT_URI`; conserva la clave anterior en segundo lugar durante una
+rotación. Consulta `SECURITY_DEPLOYMENT.md` para la migración y el rollback.
 
 ## 4. Conectar y publicar
 

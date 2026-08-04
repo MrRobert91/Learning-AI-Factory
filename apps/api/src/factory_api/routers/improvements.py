@@ -6,12 +6,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from factory_api.auth import CurrentUser
+from factory_api.credentials import CredentialStore
 from factory_api.db import get_db
 from factory_api.models import (
     AgentProfileVersion,
     ImprovementProposal,
     Job,
-    OAuthToken,
     Project,
     WikiPage,
 )
@@ -50,10 +50,7 @@ def create_analytics_run(project_id: str, user: CurrentUser, db: DB):
     project = db.get(Project, project_id)
     if project is None or project.owner_id != user.id:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
-    token = db.scalars(
-        select(OAuthToken).where(OAuthToken.provider == "google").limit(1)
-    ).first()
-    if token is None:
+    if CredentialStore().get(db, provider="google", user_id=user.id) is None:
         raise HTTPException(
             status_code=409, detail="YouTube no está conectado: autoriza el acceso primero"
         )

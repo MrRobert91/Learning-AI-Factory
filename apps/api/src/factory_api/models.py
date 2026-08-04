@@ -36,6 +36,57 @@ class User(Base):
     projects: Mapped[list["Project"]] = relationship(back_populates="owner")
 
 
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    secret_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_reason: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+
+class LoginAttempt(Base):
+    __tablename__ = "login_attempts"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    client_ip: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
+
+
+class OAuthAuthorizationState(Base):
+    __tablename__ = "oauth_authorization_states"
+    __table_args__ = (
+        UniqueConstraint("state_hash", name="uq_oauth_authorization_states_state_hash"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    state_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    auth_session_id: Mapped[str] = mapped_column(
+        ForeignKey("auth_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    provider: Mapped[str] = mapped_column(String(30), nullable=False)
+    code_verifier_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    redirect_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Project(Base):
     __tablename__ = "projects"
 

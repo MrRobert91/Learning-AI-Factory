@@ -26,6 +26,12 @@ si falla el aislamiento.
 - Frontend: http://localhost:3000
 - API (docs OpenAPI): http://localhost:8000/docs
 
+El puerto del backend se publica solo en `127.0.0.1`. Para un despliegue
+público usa `docker compose -f docker-compose.yml -f docker-compose.production.yml up --build`;
+ese override deja el backend únicamente en la red interna y exige credenciales,
+origen HTTPS y claves de cifrado fuertes. Consulta `docs/SECURITY_DEPLOYMENT.md`
+antes de migrar una instalación existente.
+
 Los datos persisten en `./data` (SQLite, artefactos y memoria de agentes).
 
 ## Desarrollo sin Docker

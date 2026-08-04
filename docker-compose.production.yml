@@ -1,0 +1,12 @@
+# Production override: expose only the frontend; backend stays on the internal network.
+services:
+  backend:
+    environment:
+      APP_ENV: production
+      APP_ORIGINS: ${PUBLIC_APP_ORIGIN:?Set PUBLIC_APP_ORIGIN to the public HTTPS origin}
+      APP_PASSWORD: ${APP_PASSWORD:?Set a strong APP_PASSWORD}
+      SECRET_KEY: ${SECRET_KEY:?Set a random SECRET_KEY of at least 32 characters}
+      CREDENTIAL_ENCRYPTION_KEYS: ${CREDENTIAL_ENCRYPTION_KEYS:?Set the credential key ring}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
+      TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-}
+    ports: !reset []
