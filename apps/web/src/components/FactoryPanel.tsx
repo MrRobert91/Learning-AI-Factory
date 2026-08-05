@@ -19,6 +19,7 @@ import {
   IconCheck,
   IconFileText,
   IconCaptions,
+  IconDownload,
   IconFlask,
   IconHand,
   IconImage,
@@ -160,6 +161,22 @@ const TYPE_LABELS: Record<string, string> = {
   publication_package: "Publicación",
   thumbnail: "Miniatura",
 };
+
+const ARTIFACT_TYPE_ORDER = [
+  "publication_package",
+  "course_video",
+  "course_subtitles",
+  "course_video_manifest",
+  "performance_report",
+  "video",
+  "subtitles",
+  "voice_script",
+  "teaching_script",
+  "slide_deck",
+  "lesson_content",
+  "course_plan",
+  "research_brief",
+];
 
 const UPLOAD_TYPES = [
   "research_brief",
@@ -323,6 +340,9 @@ function selectedArtifactIdsByType(
 }
 
 function artifactActionLabel(action: ContextualArtifactAction): string {
+  if (action.agent === "publisher") {
+    return action.regenerates ? "Regenerar publicación" : "Preparar publicación";
+  }
   return `${action.regenerates ? "Regenerar" : "Continuar con"} ${
     AGENT_NAMES[action.agent]
   }`;
@@ -363,7 +383,9 @@ export default function FactoryPanel({
   const [cancelling, setCancelling] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [exportingSlidesPptx, setExportingSlidesPptx] = useState(false);
+  const [generatingExport, setGeneratingExport] = useState<
+    "slides_pdf" | "slides_pptx" | "lessons_pdf" | null
+  >(null);
   const [uploadType, setUploadType] = useState("slide_deck");
   const [showUpload, setShowUpload] = useState(false);
   const [artifactToDelete, setArtifactToDelete] = useState<Artifact | null>(
@@ -784,19 +806,21 @@ export default function FactoryPanel({
     }
   }
 
-  async function downloadSlidesPptx() {
-    setExportingSlidesPptx(true);
+  async function downloadGeneratedExport(
+    kind: "slides_pdf" | "slides_pptx" | "lessons_pdf",
+    path: string,
+    fallbackName: string,
+  ) {
+    setGeneratingExport(kind);
     setError(null);
     try {
-      const response = await fetch(
-        `/api/projects/${projectId}/exports/slides.pptx`,
-      );
+      const response = await fetch(`/api/projects/${projectId}/exports/${path}`);
       if (!response.ok) {
         const payload = (await response.json().catch(() => null)) as
           | { detail?: string }
           | null;
         throw new Error(
-          payload?.detail ?? "No se pudo generar el PPTX de las slides",
+          payload?.detail ?? "No se pudo generar el archivo",
         );
       }
       const url = URL.createObjectURL(await response.blob());
@@ -807,7 +831,7 @@ export default function FactoryPanel({
       link.href = url;
       link.download = encodedName
         ? decodeURIComponent(encodedName)
-        : (plainName ?? "slides.pptx");
+        : (plainName ?? fallbackName);
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -816,10 +840,10 @@ export default function FactoryPanel({
       setError(
         err instanceof Error
           ? err.message
-          : "No se pudo generar el PPTX de las slides",
+          : "No se pudo generar el archivo",
       );
     } finally {
-      setExportingSlidesPptx(false);
+      setGeneratingExport(null);
     }
   }
 
@@ -886,6 +910,28 @@ export default function FactoryPanel({
     artifactFilter === "all"
       ? artifacts
       : artifacts.filter((artifact) => artifact.type === artifactFilter);
+  const artifactGroups = Array.from(
+    filteredArtifacts.reduce((groups, artifact) => {
+      const items = groups.get(artifact.type) ?? [];
+      items.push(artifact);
+      groups.set(artifact.type, items);
+      return groups;
+    }, new Map<string, Artifact[]>()),
+  )
+    .sort(([left], [right]) => {
+      const leftIndex = ARTIFACT_TYPE_ORDER.indexOf(left);
+      const rightIndex = ARTIFACT_TYPE_ORDER.indexOf(right);
+      if (leftIndex === -1 && rightIndex === -1) {
+        return (TYPE_LABELS[left] ?? left).localeCompare(
+          TYPE_LABELS[right] ?? right,
+          "es",
+        );
+      }
+      if (leftIndex === -1) return 1;
+      if (rightIndex === -1) return -1;
+      return leftIndex - rightIndex;
+    })
+    .map(([type, items]) => ({ type, items }));
   const pendingAgent =
     pendingArtifactAction?.kind === "agent"
       ? pendingArtifactAction.action.agent
@@ -1612,19 +1658,35 @@ export default function FactoryPanel({
               >
                 ZIP
               </a>
-              <a
-                href={"/api/projects/" + projectId + "/exports/slides.pdf"}
-                className="btn-secondary btn-sm"
-              >
-                PDF único
-              </a>
               <button
                 type="button"
-                onClick={() => void downloadSlidesPptx()}
-                disabled={exportingSlidesPptx}
+                onClick={() =>
+                  void downloadGeneratedExport(
+                    "slides_pdf",
+                    "slides.pdf",
+                    "slides.pdf",
+                  )
+                }
+                disabled={generatingExport !== null}
                 className="btn-secondary btn-sm"
               >
-                {exportingSlidesPptx ? "Generando PPTX…" : "PPTX único"}
+                {generatingExport === "slides_pdf" ? <Spinner /> : <IconDownload size={12} />}
+                {generatingExport === "slides_pdf" ? "Generando PDF…" : "PDF único"}
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  void downloadGeneratedExport(
+                    "slides_pptx",
+                    "slides.pptx",
+                    "slides.pptx",
+                  )
+                }
+                disabled={generatingExport !== null}
+                className="btn-secondary btn-sm"
+              >
+                {generatingExport === "slides_pptx" ? <Spinner /> : <IconDownload size={12} />}
+                {generatingExport === "slides_pptx" ? "Generando PPTX…" : "PPTX único"}
               </button>
             </div>
           )}
@@ -1639,16 +1701,31 @@ export default function FactoryPanel({
               >
                 ZIP de PDFs
               </a>
-              <a
-                href={"/api/projects/" + projectId + "/exports/lessons.pdf"}
+              <button
+                type="button"
+                onClick={() =>
+                  void downloadGeneratedExport(
+                    "lessons_pdf",
+                    "lessons.pdf",
+                    "lecciones.pdf",
+                  )
+                }
+                disabled={generatingExport !== null}
                 className="btn-secondary btn-sm"
               >
-                PDF único
-              </a>
+                {generatingExport === "lessons_pdf" ? <Spinner /> : <IconDownload size={12} />}
+                {generatingExport === "lessons_pdf"
+                  ? "Generando PDF…"
+                  : "PDF único"}
+              </button>
             </div>
           )}
           <span className="ml-auto text-[11px] text-zinc-500">
-            Se incluyen únicamente las versiones activas.
+            <span aria-live="polite">
+              {generatingExport
+                ? "Generando el archivo; la descarga comenzará automáticamente."
+                : "Se incluyen únicamente las versiones activas."}
+            </span>
           </span>
         </div>
       )}
@@ -1713,8 +1790,23 @@ export default function FactoryPanel({
           No hay artefactos del tipo seleccionado.
         </div>
       ) : (
-        <ul className="grid auto-rows-fr gap-3 lg:grid-cols-2">
-          {filteredArtifacts.map((artifact) => {
+        <div className="space-y-6">
+          {artifactGroups.map((group) => (
+            <section key={group.type} aria-labelledby={`artifacts-${group.type}`}>
+              <div className="mb-2 flex items-center gap-2 border-b-2 border-zinc-300 pb-2">
+                <span className="flex h-7 w-7 items-center justify-center rounded border-2 border-zinc-300 bg-[#f4ead7] text-indigo-500">
+                  {artifactIcon(group.type)}
+                </span>
+                <h4
+                  id={`artifacts-${group.type}`}
+                  className="text-sm font-bold text-zinc-200"
+                >
+                  {TYPE_LABELS[group.type] ?? group.type}
+                </h4>
+                <span className="badge-neutral">{group.items.length}</span>
+              </div>
+              <ul className="grid auto-rows-fr gap-3 lg:grid-cols-2">
+          {group.items.map((artifact) => {
             const producerRun = artifact.created_by_job_id
               ? runs.find((run) => run.id === artifact.created_by_job_id)
               : undefined;
@@ -1818,9 +1910,7 @@ export default function FactoryPanel({
                   </div>
 
                   <div className="relative z-10 mt-4 min-w-0 space-y-2 border-t border-zinc-300/70 pt-3">
-                    {(primaryAction ||
-                      secondaryActions.length > 0 ||
-                      hasCourseVideoAction) && (
+                    {(primaryAction || secondaryActions.length > 0 || hasCourseVideoAction) && (
                       <div className="flex min-w-0 items-center gap-2">
                         {primaryAction && (
                           <button
@@ -1848,7 +1938,33 @@ export default function FactoryPanel({
                             </span>
                           </button>
                         )}
-                        {(secondaryActions.length > 0 || hasCourseVideoAction) && (
+                        {hasCourseVideoAction && (
+                          <button
+                            type="button"
+                            className="btn-primary btn-sm w-0 min-w-0 flex-1"
+                            disabled={
+                              launchBlocked ||
+                              loadingCourseVideoPreflight ||
+                              !courseVideoPreflight?.ready
+                            }
+                            title={
+                              courseVideoPreflight?.ready
+                                ? "Creará el vídeo completo usando todos los vídeos activos"
+                                : "Completa los vídeos requeridos por el plan del curso"
+                            }
+                            onClick={() =>
+                              setPendingArtifactAction({
+                                kind: "course_video",
+                                sourceArtifactId: artifact.id,
+                                requestId: crypto.randomUUID(),
+                              })
+                            }
+                          >
+                            <IconPackage size={12} className="shrink-0" />
+                            <span className="truncate">Preparar publicación</span>
+                          </button>
+                        )}
+                        {secondaryActions.length > 0 && (
                           <details className="relative shrink-0">
                             <summary className="btn-ghost btn-sm cursor-pointer list-none">
                               Acciones
@@ -1897,33 +2013,6 @@ export default function FactoryPanel({
                                   </button>
                                 );
                               })}
-                              {hasCourseVideoAction && (
-                                <button
-                                  type="button"
-                                  className="btn-ghost w-full justify-start text-left text-xs"
-                                  disabled={
-                                    launchBlocked ||
-                                    loadingCourseVideoPreflight ||
-                                    !courseVideoPreflight?.ready
-                                  }
-                                  title={
-                                    courseVideoPreflight?.ready
-                                      ? "Usará los vídeos activos en orden pedagógico"
-                                      : "Completa los vídeos requeridos por el plan del curso"
-                                  }
-                                  onClick={() =>
-                                    setPendingArtifactAction({
-                                      kind: "course_video",
-                                      sourceArtifactId: artifact.id,
-                                      requestId: crypto.randomUUID(),
-                                    })
-                                  }
-                                >
-                                  {artifactTypes.has("course_video")
-                                    ? "Regenerar vídeo completo"
-                                    : "Generar vídeo completo"}
-                                </button>
-                              )}
                             </div>
                           </details>
                         )}
@@ -1965,7 +2054,10 @@ export default function FactoryPanel({
               </li>
             );
           })}
-        </ul>
+              </ul>
+            </section>
+          ))}
+        </div>
       )}
       <ConfirmDialog
         open={pendingArtifactAction !== null}
@@ -1973,16 +2065,14 @@ export default function FactoryPanel({
         title={
           pendingArtifactAction?.kind === "agent"
             ? artifactActionLabel(pendingArtifactAction.action)
-            : artifactTypes.has("course_video")
-              ? "Regenerar vídeo completo"
-              : "Generar vídeo completo"
+            : "Preparar publicación del curso"
         }
         description={
           <div className="space-y-3">
             <p>
-              La fase volverá a validar y congelar las versiones activas al
-              iniciar. Si la selección cambia antes del POST, no se lanzará el
-              job.
+              {pendingArtifactAction?.kind === "course_video"
+                ? "Primero se generará el vídeo completo del curso usando el orden del plan y las versiones activas. Cuando termine podrás preparar el paquete de publicación desde ese único vídeo."
+                : "La fase volverá a validar y congelar las versiones activas al iniciar. Si la selección cambia antes del POST, no se lanzará el job."}
             </p>
             {pendingAgent && (
               <p className="rounded-md border border-white/[0.06] bg-white/[0.03] p-2 text-xs">
@@ -1994,7 +2084,13 @@ export default function FactoryPanel({
                 </strong>
               </p>
             )}
-            {pendingInputArtifacts.length > 0 ? (
+            {pendingArtifactAction?.kind === "course_video" ? (
+              <p className="rounded-md border-2 border-zinc-300 bg-[#f4ead7] p-2 text-xs text-zinc-400">
+                Se combinarán {courseVideoPreflight?.lessons.length ?? 0} vídeos
+                activos. Puedes revisar el orden pedagógico en el panel de vídeo
+                completo, sin abrir cada artefacto por separado.
+              </p>
+            ) : pendingInputArtifacts.length > 0 ? (
               <ul className="space-y-1 text-xs text-zinc-400">
                 {pendingInputArtifacts.map((input) => (
                   <li key={input.id}>

@@ -759,6 +759,45 @@ def test_video_subtitles_mode_defaults_to_none_and_is_versioned(auth_client):
     )
 
 
+def test_publisher_recurrent_content_is_visible_and_versioned(auth_client):
+    profile = auth_client.post(
+        "/api/agents/publisher/profiles",
+        json={
+            "name": "Publicador del canal",
+            "publisher_recurrent_text": "Suscríbete para más cursos.",
+            "publisher_recurrent_links": "Web: https://example.com",
+        },
+    )
+    assert profile.status_code == 201
+    created = profile.json()
+    assert created["publisher_recurrent_text"] == "Suscríbete para más cursos."
+    assert created["publisher_recurrent_links"] == "Web: https://example.com"
+
+    updated = auth_client.patch(
+        f"/api/agents/profiles/{created['id']}",
+        json={
+            "publisher_recurrent_text": "Nuevo cierre recurrente",
+            "note": "Actualizar cierre",
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["version"] == 2
+
+    versions = auth_client.get(
+        f"/api/agents/profiles/{created['id']}/versions"
+    ).json()
+    assert [item["publisher_recurrent_text"] for item in versions] == [
+        "Nuevo cierre recurrente",
+        "Suscríbete para más cursos.",
+    ]
+
+    invalid = auth_client.post(
+        "/api/agents/planner/profiles",
+        json={"name": "Planner inválido", "publisher_recurrent_text": "No"},
+    )
+    assert invalid.status_code == 422
+
+
 def test_tts_preview_returns_audio_without_creating_a_profile_version(
     auth_client, monkeypatch
 ):

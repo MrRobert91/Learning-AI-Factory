@@ -129,6 +129,8 @@ def _profile_config(
     tts_style_degree: float | None = None,
     tts_advanced_options: dict | None = None,
     subtitles_mode: str | None = None,
+    publisher_recurrent_text: str | None = None,
+    publisher_recurrent_links: str | None = None,
 ) -> dict:
     config = {
         "automatic_review_enabled": bool(automatic_review_enabled),
@@ -183,6 +185,9 @@ def _profile_config(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
     if agent_type == "video":
         config["subtitles_mode"] = subtitles_mode or "none"
+    if agent_type == "publisher":
+        config["publisher_recurrent_text"] = publisher_recurrent_text or ""
+        config["publisher_recurrent_links"] = publisher_recurrent_links or ""
     return config
 
 
@@ -292,6 +297,18 @@ def _video_subtitles_field(config: dict, agent_type: str) -> dict:
         "subtitles_mode": config.get("subtitles_mode", "none")
         if agent_type == "video"
         else None
+    }
+
+
+def _publisher_fields(config: dict, agent_type: str) -> dict:
+    if agent_type != "publisher":
+        return {
+            "publisher_recurrent_text": None,
+            "publisher_recurrent_links": None,
+        }
+    return {
+        "publisher_recurrent_text": config.get("publisher_recurrent_text") or "",
+        "publisher_recurrent_links": config.get("publisher_recurrent_links") or "",
     }
 
 
@@ -526,6 +543,7 @@ def _profile_read(p: AgentProfile) -> ProfileRead:
         **_review_fields(config),
         **_voice_tts_fields(config, p.agent_type),
         **_video_subtitles_field(config, p.agent_type),
+        **_publisher_fields(config, p.agent_type),
         **_slide_palette_field(config, p.agent_type),
         **_slide_logo_fields(config, p.agent_type),
         version=p.version,
@@ -614,6 +632,14 @@ def create_profile(agent_type: str, body: ProfileCreate, user: CurrentUser, db: 
             status_code=422,
             detail="Solo el agente Video admite configuración de subtítulos",
         )
+    if (
+        body.publisher_recurrent_text is not None
+        or body.publisher_recurrent_links is not None
+    ) and agent_type != "publisher":
+        raise HTTPException(
+            status_code=422,
+            detail="Solo el agente Publicador admite contenido recurrente",
+        )
     config = _profile_config(
         agent_type,
         body.model,
@@ -644,6 +670,8 @@ def create_profile(agent_type: str, body: ProfileCreate, user: CurrentUser, db: 
         tts_style_degree=body.tts_style_degree,
         tts_advanced_options=body.tts_advanced_options,
         subtitles_mode=body.subtitles_mode,
+        publisher_recurrent_text=body.publisher_recurrent_text,
+        publisher_recurrent_links=body.publisher_recurrent_links,
     )
     _validate_media_profile_config(
         agent_type,
@@ -817,6 +845,7 @@ def list_profile_versions(profile_id: str, user: CurrentUser, db: DB):
                 **_review_fields(config),
                 **_voice_tts_fields(config, profile.agent_type),
                 **_video_subtitles_field(config, profile.agent_type),
+                **_publisher_fields(config, profile.agent_type),
                 **_slide_palette_field(config, profile.agent_type),
                 **_slide_logo_fields(config, profile.agent_type),
                 note=item.note,
@@ -960,6 +989,14 @@ def update_profile(profile_id: str, body: ProfileUpdate, user: CurrentUser, db: 
                 detail="Solo el agente Video admite configuración de subtítulos",
             )
         proposed_config["subtitles_mode"] = body.subtitles_mode
+    for field in ("publisher_recurrent_text", "publisher_recurrent_links"):
+        if field in body.model_fields_set:
+            if profile.agent_type != "publisher":
+                raise HTTPException(
+                    status_code=422,
+                    detail="Solo el agente Publicador admite contenido recurrente",
+                )
+            proposed_config[field] = getattr(body, field) or ""
     _validate_slide_image_config(profile.agent_type, proposed_config)
     _validate_slide_logo_config(profile.agent_type, proposed_config)
     _validate_media_profile_config(

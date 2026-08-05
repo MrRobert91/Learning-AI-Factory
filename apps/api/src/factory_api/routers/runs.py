@@ -210,6 +210,8 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
             "slide_logo": None,
             "tts_config": None,
             "subtitles_mode": "none",
+            "publisher_recurrent_text": "",
+            "publisher_recurrent_links": "",
         }
     config = json.loads(profile.config_json or "{}")
     active_logo_id = config.get("active_logo_id")
@@ -297,6 +299,16 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
             config.get("subtitles_mode", "none")
             if profile.agent_type == "video"
             else "none"
+        ),
+        "publisher_recurrent_text": (
+            config.get("publisher_recurrent_text", "")
+            if profile.agent_type == "publisher"
+            else ""
+        ),
+        "publisher_recurrent_links": (
+            config.get("publisher_recurrent_links", "")
+            if profile.agent_type == "publisher"
+            else ""
         ),
     }
 

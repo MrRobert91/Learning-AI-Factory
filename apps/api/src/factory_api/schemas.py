@@ -219,6 +219,8 @@ class ProfileCreate(BaseModel):
     logo_opacity: float | None = Field(default=None, ge=0, le=1)
     logo_background_mode: Literal["opaque", "transparent"] | None = None
     logo_visibility: LogoVisibility | None = None
+    publisher_recurrent_text: str | None = Field(default=None, max_length=2000)
+    publisher_recurrent_links: str | None = Field(default=None, max_length=2000)
 
 
 class ProfileUpdate(BaseModel):
@@ -255,6 +257,8 @@ class ProfileUpdate(BaseModel):
     logo_opacity: float | None = Field(default=None, ge=0, le=1)
     logo_background_mode: Literal["opaque", "transparent"] | None = None
     logo_visibility: LogoVisibility | None = None
+    publisher_recurrent_text: str | None = Field(default=None, max_length=2000)
+    publisher_recurrent_links: str | None = Field(default=None, max_length=2000)
     is_default: bool | None = None
     note: str = ""
 
@@ -297,6 +301,8 @@ class ProfileRead(BaseModel):
     logo_background_mode: Literal["opaque", "transparent"] | None = None
     logo_visibility: LogoVisibility | None = None
     logo_candidates: list[LogoCandidateRead] | None = None
+    publisher_recurrent_text: str | None = None
+    publisher_recurrent_links: str | None = None
     version: int
     active_version: int
     is_default: bool
@@ -341,6 +347,8 @@ class ProfileVersionRead(BaseModel):
     logo_background_mode: Literal["opaque", "transparent"] | None = None
     logo_visibility: LogoVisibility | None = None
     logo_candidates: list[LogoCandidateRead] | None = None
+    publisher_recurrent_text: str | None = None
+    publisher_recurrent_links: str | None = None
     note: str
     created_at: datetime
 

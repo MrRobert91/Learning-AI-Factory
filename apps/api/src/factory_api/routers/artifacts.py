@@ -806,6 +806,21 @@ def edit_artifact(
             suffix="edit",
         )
         cloned_slide_assets = True
+    if original.type == "publication_package" and isinstance(
+        metadata.get("thumbnail"), dict
+    ):
+        thumbnail = dict(metadata["thumbnail"])
+        source_thumbnail = settings.data_dir / str(thumbnail.get("path") or "")
+        if source_thumbnail.is_file():
+            thumbnail_relative = (
+                f"artifacts/{original.project_id}/edit-publication-"
+                f"{uuid.uuid4().hex[:10]}-thumbnail{source_thumbnail.suffix or '.png'}"
+            )
+            thumbnail_target = settings.data_dir / thumbnail_relative
+            thumbnail_target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source_thumbnail, thumbnail_target)
+            thumbnail["path"] = thumbnail_relative
+            metadata["thumbnail"] = thumbnail
     if original.type == "slide_deck":
         try:
             metadata, _rendered = _prepare_slide_version(path, content, metadata)
@@ -865,6 +880,30 @@ def delete_artifact(artifact_id: str, user: CurrentUser, db: DB):
             pass
     if artifact.type == "slide_deck":
         _remove_slide_assets(metadata, artifact.project_id)
+    if artifact.type == "publication_package" and isinstance(
+        metadata.get("thumbnail"), dict
+    ):
+        thumbnail_relative = str(metadata["thumbnail"].get("path") or "")
+        if thumbnail_relative:
+            thumbnail_path = get_settings().data_dir / thumbnail_relative
+            thumbnail_path.unlink(missing_ok=True)
+
+
+@router.get("/artifacts/{artifact_id}/thumbnail")
+def get_publication_thumbnail(artifact_id: str, user: CurrentUser, db: DB):
+    artifact = _check_owner(db, user.id, db.get(Artifact, artifact_id))
+    if artifact.type != "publication_package":
+        raise HTTPException(status_code=404, detail="Miniatura no encontrada")
+    thumbnail = artifact_metadata(artifact).get("thumbnail") or {}
+    relative_path = thumbnail.get("path") if isinstance(thumbnail, dict) else None
+    path = get_settings().data_dir / relative_path if relative_path else None
+    if path is None or not path.is_file():
+        raise HTTPException(status_code=404, detail="Miniatura no encontrada")
+    return FileResponse(
+        path,
+        media_type=str(thumbnail.get("media_type") or "image/png"),
+        filename=f"{artifact.title}-miniatura{path.suffix or '.png'}",
+    )
 
 
 @router.get("/artifacts/{artifact_id}/download")

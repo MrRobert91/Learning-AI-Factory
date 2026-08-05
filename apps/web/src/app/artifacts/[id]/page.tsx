@@ -587,7 +587,22 @@ export default function ArtifactViewerPage() {
       ) : (
         <>
           {artifact.type === "publication_package" && (
-            <YouTubePublish packageArtifactId={artifact.id} />
+            <>
+              {artifact.metadata.thumbnail && (
+                <div className="card mb-6 overflow-hidden p-4">
+                  <p className="mb-3 text-sm font-semibold text-zinc-200">
+                    Miniatura de la publicación
+                  </p>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={`/api/artifacts/${artifact.id}/thumbnail`}
+                    alt="Miniatura preparada para la publicación"
+                    className="aspect-video w-full max-w-2xl rounded-md border-2 border-zinc-300 object-cover"
+                  />
+                </div>
+              )}
+              <YouTubePublish packageArtifactId={artifact.id} />
+            </>
           )}
           {artifact.type === "thumbnail" && (
             // eslint-disable-next-line @next/next/no-img-element

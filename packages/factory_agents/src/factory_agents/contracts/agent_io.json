@@ -35,8 +35,8 @@
     "name": "Vídeo"
   },
   "publisher": {
-    "inputs": ["video"],
-    "outputs": ["publication_package", "thumbnail"],
+    "inputs": ["course_video"],
+    "outputs": ["publication_package"],
     "name": "Publicación"
   }
 }

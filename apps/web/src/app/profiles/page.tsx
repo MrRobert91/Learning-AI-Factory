@@ -20,10 +20,10 @@ const TYPE_LABELS: Record<string, string> = {
   voice_script: "guion de voz",
   video: "vídeo",
   subtitles: "subtítulos",
+  course_video: "vídeo completo del curso",
   publication_package: "publicación",
   performance_report: "informe de rendimiento",
   improvement_proposal: "propuestas de mejora",
-  thumbnail: "miniatura",
 };
 
 const EXECUTION_ORDER = [
@@ -87,8 +87,9 @@ export default function ProfilesPage() {
             Cada perfil conserva la configuración de una etapa. Los agentes de
             IA incluyen personalidad (<code>soul.md</code>) y reglas operativas (
             <code>agents.md</code>); Slides y Vídeo también permiten elegir la
-            orientación, y Slides puede generar imágenes con un modelo y estilo
-            consistentes. Puedes seleccionar un perfil distinto en cada ejecución.
+            orientación, Slides puede generar imágenes y Publicación permite fijar
+            textos y enlaces recurrentes. Puedes seleccionar un perfil distinto en
+            cada ejecución.
           </>
         }
       />
@@ -227,6 +228,12 @@ export default function ProfilesPage() {
                       {p.logo_mode && p.logo_mode !== "none" && (
                         <span className="badge-info shrink-0">Con logo</span>
                       )}
+                      {p.publisher_recurrent_text !== null &&
+                        (p.publisher_recurrent_text || p.publisher_recurrent_links) && (
+                          <span className="badge-info shrink-0">
+                            Contenido recurrente
+                          </span>
+                        )}
                       <span className="shrink-0 text-xs text-zinc-500">
                         v{p.active_version} activa
                         {p.active_version !== p.version
