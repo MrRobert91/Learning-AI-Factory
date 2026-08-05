@@ -8,12 +8,13 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from factory_api.artifact_versions import artifact_metadata
 from factory_api.auth import CurrentUser
 from factory_api.config import get_settings
 from factory_api.db import get_db
 from factory_api.models import Artifact, Job, OAuthToken, Project
 from factory_api.routers.runs import _job_read
-from factory_api.runner import PREFIXES, runner
+from factory_api.runner import runner
 from factory_api.schemas import JobRead, YouTubePublishRequest, YouTubeStatus
 from factory_api.youtube import YOUTUBE_SCOPES
 
@@ -129,21 +130,17 @@ def publish_video(body: YouTubePublishRequest, user: CurrentUser, db: DB):
     if project is None or project.owner_id != user.id:
         raise HTTPException(status_code=404, detail="Paquete de publicación no encontrado")
 
-    base = package.title.removeprefix(PREFIXES["publication_package"])
-    video = db.scalars(
-        select(Artifact)
-        .where(
-            Artifact.project_id == package.project_id,
-            Artifact.type == "video",
-            Artifact.title == f"{PREFIXES['video']}{base}",
-            Artifact.is_selected.is_(True),
-        )
-        .order_by(Artifact.created_at.desc())
-        .limit(1)
-    ).first()
-    if video is None:
+    package_metadata = artifact_metadata(package)
+    video_id = package_metadata.get("video_artifact_id")
+    video = db.get(Artifact, video_id) if video_id else None
+    if (
+        video is None
+        or video.project_id != package.project_id
+        or video.type != "course_video"
+    ):
         raise HTTPException(
-            status_code=409, detail=f"No hay vídeo para «{base}»: genera el vídeo primero"
+            status_code=409,
+            detail="El paquete no conserva un vídeo completo válido: vuelve a prepararlo",
         )
 
     if body.privacy not in ("private", "unlisted", "public"):

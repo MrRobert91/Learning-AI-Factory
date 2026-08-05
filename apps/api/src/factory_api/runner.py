@@ -1849,8 +1849,8 @@ PREFIXES = {
     "voice_script": "Voz — ",
     "video": "Vídeo — ",
     "subtitles": "Subtítulos — ",
+    "course_video": "Vídeo completo",
     "publication_package": "Publicación — ",
-    "thumbnail": "Miniatura — ",
 }
 
 
@@ -3028,15 +3028,20 @@ def extract_srt_timestamps(srt_content: str) -> list[str]:
 
 
 def run_publisher_job(job_id: str, payload: dict) -> dict:
-    from factory_agents.agents.publisher import render_publisher_input, run_publisher
+    from factory_agents.agents.publisher import (
+        apply_recurrent_content,
+        render_publisher_input,
+        run_publisher,
+    )
     from factory_agents.tools.thumbnail import render_thumbnail
 
     settings = get_settings()
-    videos = _latest_by_base(payload, "video")
+    videos = _latest_by_base(payload, "course_video")
     if not videos:
-        raise RuntimeError("Falta el artefacto 'video': ejecuta antes el montaje de vídeo")
-    subtitles = _latest_by_base(payload, "subtitles")
-    scripts = _latest_by_base(payload, "teaching_script")
+        raise RuntimeError(
+            "Falta el artefacto 'course_video': genera antes el vídeo completo del curso"
+        )
+    plans = _latest_by_base(payload, "course_plan")
     client = _client(
         job_id,
         agent="publisher",
@@ -3046,7 +3051,6 @@ def run_publisher_job(job_id: str, payload: dict) -> dict:
     language = payload.get("project", {}).get("language", "es")
 
     artifact_ids: list[str] = []
-    thumbnail_ids: list[str] = []
     for base, video in videos.items():
         unit, cached = _before_unit(
             job_id,
@@ -3057,24 +3061,45 @@ def run_publisher_job(job_id: str, payload: dict) -> dict:
         )
         if cached and cached.get("artifact_id"):
             artifact_ids.append(cached["artifact_id"])
-            if cached.get("thumbnail_id"):
-                thumbnail_ids.append(cached["thumbnail_id"])
             continue
-        append_event(job_id, "stage", f"Preparando publicación de {base}…")
-        srt_artifact = subtitles.get(base)
-        chapters = []
-        if srt_artifact is not None:
-            srt_path = settings.data_dir / srt_artifact.path
-            if srt_path.is_file():
-                chapters = extract_srt_timestamps(srt_path.read_text(encoding="utf-8"))
-        script_artifact = scripts.get(base)
-        script_md = ""
-        if script_artifact is not None:
-            script_md = (settings.data_dir / script_artifact.path).read_text(encoding="utf-8")
+        append_event(job_id, "stage", "Preparando la publicación del curso completo…")
+        video_metadata = artifact_metadata(video)
+        chapters: list[str] = []
+        manifest_id = video_metadata.get("chapter_manifest_id")
+        if manifest_id:
+            with SessionLocal() as db:
+                manifest = db.get(Artifact, manifest_id)
+                if manifest is not None and manifest.project_id == payload["project_id"]:
+                    manifest_path = settings.data_dir / manifest.path
+                    if manifest_path.is_file():
+                        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                        for chapter in manifest_data.get("chapters", []):
+                            start = int(float(chapter.get("start_seconds", 0)))
+                            hours, remainder = divmod(start, 3600)
+                            minutes, seconds = divmod(remainder, 60)
+                            chapters.append(
+                                f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+                                if hours
+                                else f"{minutes:02d}:{seconds:02d}"
+                            )
+        plan_text = ""
+        plan = next(iter(plans.values()), None)
+        if plan is not None:
+            plan_path = settings.data_dir / plan.path
+            if plan_path.is_file():
+                plan_text = plan_path.read_text(encoding="utf-8")
+        recurrent_text = payload.get("publisher_recurrent_text", "")
+        recurrent_links = payload.get("publisher_recurrent_links", "")
         package = run_publisher(
             _augment_input(
                 render_publisher_input(
-                    base, payload.get("project_title", ""), chapters, script_md, language
+                    "Vídeo completo",
+                    payload.get("project_title", ""),
+                    chapters,
+                    plan_text,
+                    language,
+                    recurrent_text,
+                    recurrent_links,
                 ),
                 payload,
             ),
@@ -3083,15 +3108,7 @@ def run_publisher_job(job_id: str, payload: dict) -> dict:
             soul_md=payload.get("soul_md", ""),
             agents_md=payload.get("agents_md", ""),
         )
-        package_id = _save_artifact(
-            job_id,
-            payload["project_id"],
-            "publication_package",
-            f"Publicación — {base}",
-            package.model_dump_json(indent=2),
-            format_="json",
-        )
-        artifact_ids.append(package_id)
+        package = apply_recurrent_content(package, recurrent_text, recurrent_links)
 
         workdir = settings.data_dir / "runs" / job_id
         thumb = render_thumbnail(
@@ -3100,36 +3117,54 @@ def run_publisher_job(job_id: str, payload: dict) -> dict:
             payload.get("project_title", "Curso"),
             workdir / f"thumb-{len(artifact_ids)}.png",
         )
+        thumbnail_metadata = None
         if thumb is not None:
-            thumb_id = _register_artifact_file(
-                job_id, payload["project_id"], "thumbnail", f"Miniatura — {base}", thumb, "image"
+            thumbnail_relative = (
+                f"artifacts/{payload['project_id']}/publication-{job_id}-"
+                f"{uuid.uuid4().hex[:8]}-thumbnail.png"
             )
-            thumbnail_ids.append(thumb_id)
-            append_event(
-                job_id, "artifact", f"Miniatura de {base} lista", {"artifact_id": thumb_id}
-            )
+            thumbnail_path = settings.data_dir / thumbnail_relative
+            thumbnail_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(thumb, thumbnail_path)
+            thumbnail_metadata = {
+                "path": thumbnail_relative,
+                "media_type": "image/png",
+                "size_bytes": thumbnail_path.stat().st_size,
+                "sha256": hashlib.sha256(thumbnail_path.read_bytes()).hexdigest(),
+            }
         else:
             append_event(
                 job_id, "stage", "Chromium no disponible: miniatura omitida (solo metadatos)"
             )
+        package_id = _save_artifact(
+            job_id,
+            payload["project_id"],
+            "publication_package",
+            f"Publicación — {payload.get('project_title', 'Curso')}",
+            package.model_dump_json(indent=2),
+            format_="json",
+            metadata={
+                "video_artifact_id": video.id,
+                "thumbnail": thumbnail_metadata,
+                "publisher_profile_id": payload.get("profile_id"),
+                "publisher_profile_version": payload.get("profile_version"),
+            },
+        )
+        artifact_ids.append(package_id)
         append_event(
             job_id,
             "artifact",
-            f"Paquete de publicación de {base} listo",
+            "Paquete de publicación del curso listo",
             {"artifact_id": package_id},
         )
         _complete_unit(
             job_id,
             "publisher",
             unit,
-            {
-                "artifact_id": package_id,
-                "thumbnail_id": thumbnail_ids[-1] if thumb is not None else None,
-            },
-            message=f"Publicación de {base} completada",
+            {"artifact_id": package_id},
+            message="Publicación del curso completada",
         )
     _deactivate_unproduced(payload["project_id"], "publication_package", artifact_ids)
-    _deactivate_unproduced(payload["project_id"], "thumbnail", thumbnail_ids)
     return {"artifact_ids": artifact_ids}
 
 
@@ -3156,10 +3191,10 @@ def run_youtube_upload_job(job_id: str, payload: dict) -> dict:
         package = _json.loads(
             (settings.data_dir / package_artifact.path).read_text(encoding="utf-8")
         )
-        thumbnails = _latest_by_base(payload, "thumbnail")
-        base = video.title.removeprefix(PREFIXES["video"])
-        thumb = thumbnails.get(base)
-        thumb_path = settings.data_dir / thumb.path if thumb else None
+        package_metadata = artifact_metadata(package_artifact)
+        thumbnail = package_metadata.get("thumbnail") or {}
+        thumbnail_relative = thumbnail.get("path") if isinstance(thumbnail, dict) else None
+        thumb_path = settings.data_dir / thumbnail_relative if thumbnail_relative else None
 
     append_event(job_id, "stage", f"Subiendo «{package.get('video_title', '')}» a YouTube…")
     result = upload_video(

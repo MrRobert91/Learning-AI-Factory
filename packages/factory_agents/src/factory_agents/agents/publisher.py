@@ -1,4 +1,4 @@
-"""YouTube Publisher: prepares metadata, chapters and thumbnail copy.
+"""YouTube Publisher: prepares course metadata, chapters and thumbnail copy.
 
 The agent only PREPARES the publication package; the actual upload always
 requires an explicit human action in the UI (hard guardrail).
@@ -14,7 +14,7 @@ from factory_agents.runtime import AgentSpec, compose_system_prompt, register
 
 PUBLISHER_BASE_PROMPT = """\
 Eres el Publicador de AI Learning Factory. Preparas la publicación en YouTube del \
-vídeo de una lección: título, descripción, tags, capítulos y el texto de la miniatura.
+vídeo completo de un curso: título, descripción, tags, capítulos y el texto de la miniatura.
 
 Criterios:
 - Título: claro y buscable, promete el resultado de aprendizaje, sin clickbait vacío. \
@@ -54,7 +54,7 @@ PUBLISHER_SPEC = register(
             "La subida a YouTube siempre requiere tu aprobación explícita."
         ),
         base_prompt=PUBLISHER_BASE_PROMPT,
-        consumes=("video", "subtitles", "teaching_script"),
+        consumes=("course_video", "course_subtitles", "course_video_manifest", "course_plan"),
         produces=("publication_package",),
         default_soul_md=DEFAULT_SOUL,
         default_agents_md=DEFAULT_AGENTS_MD,
@@ -65,20 +65,45 @@ MAX_ATTEMPTS = 3
 
 
 def render_publisher_input(
-    lesson_label: str,
+    video_label: str,
     course_title: str,
     chapter_timestamps: list[str],
     script_excerpt: str,
     language: str,
+    recurrent_text: str = "",
+    recurrent_links: str = "",
 ) -> str:
     timestamps = "\n".join(chapter_timestamps) or "(vídeo sin capítulos calculados)"
     return (
         f"Curso: {course_title}\n"
-        f"Lección: {lesson_label}\n"
+        f"Vídeo: {video_label}\n"
         f"Idioma: {language}\n\n"
         f"Timestamps de inicio de cada sección (para los capítulos):\n{timestamps}\n\n"
-        f"Guion de la lección (para entender el contenido):\n\n{script_excerpt[:6000]}"
+        f"Plan y contenido del curso (para entender el vídeo completo):\n\n"
+        f"{script_excerpt[:6000]}\n\n"
+        "Texto recurrente que debe aparecer literalmente al final de la descripción:\n"
+        f"{recurrent_text.strip() or '(ninguno)'}\n\n"
+        "Enlaces recurrentes que deben aparecer literalmente al final de la descripción:\n"
+        f"{recurrent_links.strip() or '(ninguno)'}"
     )
+
+
+def apply_recurrent_content(
+    package: PublicationPackage,
+    recurrent_text: str = "",
+    recurrent_links: str = "",
+) -> PublicationPackage:
+    """Append profile-owned recurring copy deterministically after generation."""
+    sections = [value.strip() for value in (recurrent_text, recurrent_links) if value.strip()]
+    if not sections:
+        return package
+    suffix = "\n\n".join(sections)
+    description = package.description.rstrip()
+    if suffix not in description:
+        available = max(0, 5000 - len(suffix) - 2)
+        description = description[:available].rstrip()
+        description = f"{description}\n\n{suffix}" if description else suffix
+    return package.model_copy(update={"description": description})
 
 
 def run_publisher(

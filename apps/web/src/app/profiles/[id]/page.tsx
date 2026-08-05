@@ -43,6 +43,8 @@ export default function ProfileEditorPage() {
   const [automaticReviewEnabled, setAutomaticReviewEnabled] = useState(false);
   const [maxAutomaticRegenerations, setMaxAutomaticRegenerations] = useState(0);
   const [humanReviewEnabled, setHumanReviewEnabled] = useState(false);
+  const [publisherRecurrentText, setPublisherRecurrentText] = useState("");
+  const [publisherRecurrentLinks, setPublisherRecurrentLinks] = useState("");
   const [ttsOptions, setTTSOptions] = useState<TTSOptions | null>(null);
   const [ttsProvider, setTTSProvider] = useState<"openai" | "openrouter">("openai");
   const [ttsModel, setTTSModel] = useState("");
@@ -122,6 +124,8 @@ export default function ProfileEditorPage() {
     setAutomaticReviewEnabled(p.automatic_review_enabled);
     setMaxAutomaticRegenerations(p.max_automatic_regenerations);
     setHumanReviewEnabled(p.human_review_enabled);
+    setPublisherRecurrentText(p.publisher_recurrent_text ?? "");
+    setPublisherRecurrentLinks(p.publisher_recurrent_links ?? "");
     setTTSOptions(voiceOptions);
     setTTSProvider(p.tts_provider ?? voiceOptions.default.tts_provider);
     setTTSModel(p.tts_model ?? voiceOptions.default.tts_model);
@@ -204,6 +208,8 @@ export default function ProfileEditorPage() {
       logo_opacity?: number;
       logo_background_mode?: "opaque" | "transparent";
       logo_visibility?: LogoVisibility;
+      publisher_recurrent_text?: string;
+      publisher_recurrent_links?: string;
       note?: string;
     } = {};
     if (name !== profile.name) patch.name = name;
@@ -319,6 +325,18 @@ export default function ProfileEditorPage() {
     ) {
       patch.logo_visibility = logoVisibility;
     }
+    if (
+      profile.publisher_recurrent_text !== null &&
+      publisherRecurrentText !== profile.publisher_recurrent_text
+    ) {
+      patch.publisher_recurrent_text = publisherRecurrentText;
+    }
+    if (
+      profile.publisher_recurrent_links !== null &&
+      publisherRecurrentLinks !== profile.publisher_recurrent_links
+    ) {
+      patch.publisher_recurrent_links = publisherRecurrentLinks;
+    }
     return patch;
   }
 
@@ -355,7 +373,9 @@ export default function ProfileEditorPage() {
       patch.logo_margin_px !== undefined ||
       patch.logo_opacity !== undefined ||
       patch.logo_background_mode !== undefined ||
-      patch.logo_visibility !== undefined);
+      patch.logo_visibility !== undefined ||
+      patch.publisher_recurrent_text !== undefined ||
+      patch.publisher_recurrent_links !== undefined);
   const paletteChanged = patch?.slide_palette !== undefined;
   const currentPaletteWarnings = slidePalette ? paletteWarnings(slidePalette) : [];
 
@@ -606,6 +626,7 @@ export default function ProfileEditorPage() {
   const isSlides = profile.agent_type === "slides";
   const isVoice = profile.agent_type === "voice";
   const isAutomaticVideo = profile.agent_type === "video";
+  const isPublisher = profile.agent_type === "publisher";
   const selectedTTSModel = ttsOptions?.models.find(
     (option) => option.provider === ttsProvider && option.model === ttsModel,
   );
@@ -1600,6 +1621,41 @@ export default function ProfileEditorPage() {
               Las imágenes usan créditos de OpenRouter. Los fallos se reintentan dos
               veces y no bloquean la generación del deck.
             </p>
+          </div>
+        )}
+        {isPublisher && (
+          <div className="card p-5">
+            <div className="mb-4">
+              <label className="label">Contenido recurrente de la publicación</label>
+              <p className="text-xs leading-relaxed text-zinc-500">
+                Se congela con la versión del perfil y se añade al final de cada
+                descripción del curso, después del contenido generado por el agente.
+              </p>
+            </div>
+            <div className="grid gap-4 lg:grid-cols-2">
+              <label className="text-xs font-semibold text-zinc-300">
+                Texto recurrente
+                <textarea
+                  value={publisherRecurrentText}
+                  onChange={(event) => setPublisherRecurrentText(event.target.value)}
+                  rows={6}
+                  maxLength={2000}
+                  placeholder="Suscríbete al canal, aviso legal, créditos…"
+                  className="input mt-1 resize-y text-[13px]"
+                />
+              </label>
+              <label className="text-xs font-semibold text-zinc-300">
+                Enlaces recurrentes
+                <textarea
+                  value={publisherRecurrentLinks}
+                  onChange={(event) => setPublisherRecurrentLinks(event.target.value)}
+                  rows={6}
+                  maxLength={2000}
+                  placeholder={"Web: https://…\nNewsletter: https://…"}
+                  className="input mt-1 resize-y font-mono text-[13px]"
+                />
+              </label>
+            </div>
           </div>
         )}
         {!isAutomaticVideo && (

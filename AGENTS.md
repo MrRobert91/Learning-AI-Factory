@@ -116,6 +116,12 @@ docker compose up --build                # stack completo (2 contenedores)
   el job concatena sin LLM/TTS, ajusta SRT/capítulos a la transición, valida la
   salida con ffprobe y solo entonces publica `course_video` y sus asociados
   versionados. Inputs y opciones idénticos reutilizan la versión válida.
+- **Publicación del curso**: `publisher` consume exclusivamente el
+  `course_video` completo seleccionado y congela el perfil usado. Sus textos y
+  enlaces recurrentes se versionan en el perfil y se añaden de forma
+  determinista a la descripción. La miniatura vive como asset del
+  `publication_package` (no como artefacto independiente) y la subida a YouTube
+  usa el vídeo y la miniatura congelados por ese paquete.
 - **FFmpeg**: toda recodificación `libx264` usa la política efectiva
   `FFMPEG_THREADS`/`FFMPEG_FILTER_THREADS`/`FFMPEG_FILTER_COMPLEX_THREADS`,
   `FFMPEG_PRESET` y `FFMPEG_CRF`. La composición de lecciones precompone una

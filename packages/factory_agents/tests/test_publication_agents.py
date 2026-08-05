@@ -1,7 +1,7 @@
 import json
 from types import SimpleNamespace
 
-from factory_agents.agents.publisher import run_publisher
+from factory_agents.agents.publisher import apply_recurrent_content, run_publisher
 from factory_agents.contracts.publication import PublicationPackage
 from factory_agents.memory import render_wiki_for_prompt, run_librarian
 
@@ -34,6 +34,29 @@ def test_publisher_parses_package():
     assert package.video_title.startswith("Qué es")
     # Schema is embedded in the system prompt
     assert "video_title" in client.requests[0]["messages"][0]["content"]
+
+
+def test_recurrent_content_is_appended_once():
+    package = PublicationPackage(
+        video_title="Curso",
+        description="Descripción generada",
+        tags=["ia"],
+        chapters=["00:00 Inicio"],
+        thumbnail_title="Curso completo",
+    )
+    updated = apply_recurrent_content(
+        package,
+        "Suscríbete al canal.",
+        "Web: https://example.com",
+    )
+    assert updated.description.endswith(
+        "Suscríbete al canal.\n\nWeb: https://example.com"
+    )
+    assert apply_recurrent_content(
+        updated,
+        "Suscríbete al canal.",
+        "Web: https://example.com",
+    ).description == updated.description
 
 
 def test_librarian_returns_page_updates():

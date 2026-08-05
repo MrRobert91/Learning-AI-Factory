@@ -297,6 +297,8 @@ export interface AgentProfile {
   logo_background_mode: "opaque" | "transparent" | null;
   logo_visibility: LogoVisibility | null;
   logo_candidates: LogoCandidate[] | null;
+  publisher_recurrent_text: string | null;
+  publisher_recurrent_links: string | null;
   version: number;
   active_version: number;
   is_default: boolean;
@@ -339,6 +341,8 @@ export interface ProfileVersion {
   logo_background_mode: "opaque" | "transparent" | null;
   logo_visibility: LogoVisibility | null;
   logo_candidates: LogoCandidate[] | null;
+  publisher_recurrent_text: string | null;
+  publisher_recurrent_links: string | null;
   note: string;
   created_at: string;
 }
@@ -767,6 +771,8 @@ export const api = {
       logo_opacity?: number;
       logo_background_mode?: "opaque" | "transparent";
       logo_visibility?: LogoVisibility;
+      publisher_recurrent_text?: string;
+      publisher_recurrent_links?: string;
     },
   ) =>
     request<AgentProfile>(`/api/agents/${agentType}/profiles`, {
@@ -816,6 +822,8 @@ export const api = {
         | "logo_opacity"
         | "logo_background_mode"
         | "logo_visibility"
+        | "publisher_recurrent_text"
+        | "publisher_recurrent_links"
       >
     > & { model?: string; note?: string },
   ) =>

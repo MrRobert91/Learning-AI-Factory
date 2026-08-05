@@ -1,6 +1,9 @@
 from pathlib import Path
 
 from factory_agents.contracts.publication import PublicationPackage
+from factory_api.artifact_versions import add_artifact_version
+from factory_api.config import get_settings
+from factory_api.db import SessionLocal
 from factory_api.runner import extract_srt_timestamps
 from test_media_pipeline import _patch_media, _prepare_slides, _run
 
@@ -72,6 +75,27 @@ def _project_with_video(auth_client, monkeypatch):
     return project
 
 
+def _project_with_course_video(auth_client, monkeypatch):
+    project = _project_with_video(auth_client, monkeypatch)
+    settings = get_settings()
+    relative = f"artifacts/{project['id']}/course-video.mp4"
+    path = settings.data_dir / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"COURSE-MP4")
+    with SessionLocal() as db:
+        add_artifact_version(
+            db,
+            project_id=project["id"],
+            type_="course_video",
+            format_="video",
+            title="Vídeo completo",
+            path=relative,
+            metadata={"duration_seconds": 4.0},
+        )
+        db.commit()
+    return project
+
+
 def test_srt_timestamp_extraction():
     srt = (
         "1\n00:00:00,000 --> 00:00:02,000\nHola.\n\n"
@@ -80,9 +104,9 @@ def test_srt_timestamp_extraction():
     assert extract_srt_timestamps(srt) == ["00:00", "00:02"]
 
 
-def test_publisher_run_creates_package_and_thumbnail(auth_client, monkeypatch):
+def test_publisher_run_embeds_thumbnail_in_package(auth_client, monkeypatch):
     _patch_publication(monkeypatch)
-    project = _project_with_video(auth_client, monkeypatch)
+    project = _project_with_course_video(auth_client, monkeypatch)
 
     job = _run(auth_client, project["id"], "publisher")
     assert job["status"] == "done", job["error"]
@@ -90,10 +114,15 @@ def test_publisher_run_creates_package_and_thumbnail(auth_client, monkeypatch):
     artifacts = auth_client.get(f"/api/projects/{project['id']}/artifacts").json()
     packages = [a for a in artifacts if a["type"] == "publication_package"]
     thumbnails = [a for a in artifacts if a["type"] == "thumbnail"]
-    assert len(packages) == 2 and len(thumbnails) == 2
+    assert len(packages) == 1 and thumbnails == []
 
     package = auth_client.get(f"/api/artifacts/{packages[0]['id']}").json()
     assert "video_title" in package["content"]
+    assert package["metadata"]["video_artifact_id"]
+    assert package["metadata"]["thumbnail"]["media_type"] == "image/png"
+    thumbnail = auth_client.get(f"/api/artifacts/{package['id']}/thumbnail")
+    assert thumbnail.status_code == 200
+    assert thumbnail.content == b"PNG-THUMB"
 
 
 def test_publisher_requires_video(auth_client, monkeypatch):
@@ -105,7 +134,7 @@ def test_publisher_requires_video(auth_client, monkeypatch):
         f"/api/projects/{project['id']}/agent-runs", json={"agent": "publisher"}
     )
     assert response.status_code == 409
-    assert "video" in response.json()["detail"]
+    assert "course_video" in response.json()["detail"]
 
 
 def test_youtube_status_and_publish_guardrails(auth_client, monkeypatch):
@@ -116,7 +145,7 @@ def test_youtube_status_and_publish_guardrails(auth_client, monkeypatch):
     assert status == {"configured": False, "connected": False}
 
     # Publishing without configuration is refused
-    project = _project_with_video(auth_client, monkeypatch)
+    project = _project_with_course_video(auth_client, monkeypatch)
     _run(auth_client, project["id"], "publisher")
     artifacts = auth_client.get(f"/api/projects/{project['id']}/artifacts").json()
     package = next(a for a in artifacts if a["type"] == "publication_package")

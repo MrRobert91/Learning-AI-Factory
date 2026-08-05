@@ -31,8 +31,11 @@
   --color-emerald-400: #0b6a43;
   --color-emerald-500: #0b6a43;
   --color-emerald-600: #095737;
-  --color-amber-300: #a05a00;
-  --color-amber-400: #8f5100;
+  --color-amber-100: #4a321c;
+  --color-amber-200: #623b08;
+  --color-amber-300: #744300;
+  --color-amber-400: #623700;
+  --color-amber-500: #b56800;
   --color-red-300: #a41d15;
   --color-red-400: #911711;
   --color-red-500: #a41d15;
@@ -211,6 +214,14 @@ select.input option {
 .badge-info {
   @apply inline-flex items-center gap-1.5 rounded border-2 px-2 py-0.5 text-[11px] font-bold tracking-wide uppercase;
   border-color: var(--ink);
+}
+
+.notice-warning {
+  @apply rounded-md border-2 px-4 py-3;
+  border-color: var(--ink);
+  background: #f4e4c3;
+  color: var(--ink);
+  box-shadow: 3px 3px 0 0 var(--shadow);
 }
 
 .badge-neutral {
