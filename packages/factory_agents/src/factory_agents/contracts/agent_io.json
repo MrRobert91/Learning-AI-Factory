@@ -29,10 +29,15 @@
     "outputs": ["voice_script"],
     "name": "Adaptación a voz"
   },
+  "audio": {
+    "inputs": ["voice_script"],
+    "outputs": ["audio", "subtitles"],
+    "name": "Generación de audio"
+  },
   "video": {
-    "inputs": ["slide_deck", "voice_script"],
-    "outputs": ["video", "subtitles"],
-    "name": "Vídeo"
+    "inputs": ["slide_deck", "audio"],
+    "outputs": ["video"],
+    "name": "Montaje de vídeo"
   },
   "publisher": {
     "inputs": ["course_video"],

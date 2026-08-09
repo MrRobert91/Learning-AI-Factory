@@ -624,7 +624,7 @@ export default function ProfileEditorPage() {
   const supportsOrientation =
     profile.agent_type === "slides" || profile.agent_type === "video";
   const isSlides = profile.agent_type === "slides";
-  const isVoice = profile.agent_type === "voice";
+  const isAudio = profile.agent_type === "audio";
   const isAutomaticVideo = profile.agent_type === "video";
   const isPublisher = profile.agent_type === "publisher";
   const selectedTTSModel = ttsOptions?.models.find(
@@ -819,7 +819,7 @@ export default function ProfileEditorPage() {
             </div>
           </div>
         )}
-        {isVoice && ttsOptions && (
+        {isAudio && ttsOptions && (
           <div className="card p-5">
             <div className="mb-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -834,9 +834,9 @@ export default function ProfileEditorPage() {
                 </button>
               </div>
               <p className="text-xs leading-relaxed text-zinc-500">
-                Proveedor, modelo, idioma y voz quedan congelados en cada
-                <code className="mx-1 text-zinc-300">voice_script</code>. El montaje
-                usa ese snapshot aunque edites después el perfil.
+                Proveedor, modelo, idioma y voz quedan congelados en cada artefacto
+                <code className="mx-1 text-zinc-300">audio</code>. El montaje usa ese
+                snapshot y sus segmentos aunque edites después el perfil o las slides.
               </p>
               <p className="mt-1 text-xs text-zinc-500">
                 Catálogo {ttsOptions.source === "openrouter_models_api" ? "OpenRouter" : "local"}

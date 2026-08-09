@@ -77,14 +77,32 @@ def test_script_requires_slides(auth_client, monkeypatch):
     assert "slide_deck" in response.json()["detail"]
 
 
-def test_voice_script_freezes_versioned_openrouter_tts_configuration(
-    auth_client, monkeypatch
+def test_audio_artifact_freezes_versioned_openrouter_tts_configuration(
+    auth_client, monkeypatch, tmp_path
 ):
     _patch_media(monkeypatch)
     project = _prepare_slides(auth_client, monkeypatch)
     assert _run(auth_client, project["id"], "script")["status"] == "done"
+    assert _run(auth_client, project["id"], "voice")["status"] == "done"
+
+    class FakeProvider:
+        last_generation_id = "fake-audio"
+
+    monkeypatch.setattr(
+        "factory_agents.tools.tts.build_tts_provider", lambda *args, **kwargs: FakeProvider()
+    )
+
+    def fake_synthesize(_provider, text, _cache_dir):
+        path = tmp_path / f"{abs(hash(text))}.mp3"
+        path.write_bytes(b"ID3audio")
+        return path, False
+
+    monkeypatch.setattr(
+        "factory_agents.tools.tts.synthesize_cached_with_status", fake_synthesize
+    )
+    monkeypatch.setattr("factory_agents.tools.video.probe_duration", lambda _path: 2.5)
     profile = auth_client.post(
-        "/api/agents/voice/profiles",
+        "/api/agents/audio/profiles",
         json={
             "name": "MAI español",
             "tts_provider": "openrouter",
@@ -94,7 +112,7 @@ def test_voice_script_freezes_versioned_openrouter_tts_configuration(
         },
     ).json()
 
-    job = _run(auth_client, project["id"], "voice", profile_id=profile["id"])
+    job = _run(auth_client, project["id"], "audio", profile_id=profile["id"])
     assert job["status"] == "done", job["error"]
     artifact = auth_client.get(
         f"/api/artifacts/{job['result']['artifact_ids'][0]}"
@@ -245,6 +263,7 @@ def test_slides_profile_generates_selected_images_without_blocking_pipeline(
 def test_video_job_with_mocked_media_tools(auth_client, monkeypatch, tmp_path):
     _patch_media(monkeypatch)
     composed_orientations = []
+    synthesized_texts = []
 
     class FakeProvider:
         cache_key = "fake"
@@ -253,6 +272,7 @@ def test_video_job_with_mocked_media_tools(auth_client, monkeypatch, tmp_path):
             pass
 
         def synthesize(self, text):
+            synthesized_texts.append(text)
             return b"ID3fakeaudio"
 
     def fake_images(deck_path, out_dir):
@@ -288,10 +308,29 @@ def test_video_job_with_mocked_media_tools(auth_client, monkeypatch, tmp_path):
     voice_artifact = auth_client.get(
         f"/api/artifacts/{voice_job['result']['artifact_ids'][0]}"
     ).json()
-    assert voice_artifact["metadata"]["tts"]["tts_provider"] == "openai"
-    assert voice_artifact["metadata"]["tts"]["tts_model"] == "gpt-4o-mini-tts"
-    assert voice_artifact["metadata"]["tts"]["tts_voice"] == "nova"
-    assert voice_artifact["metadata"]["tts"]["tts_language_effective"] == "es-ES"
+    assert "tts" not in voice_artifact["metadata"]
+
+    audio_job = _run(auth_client, project["id"], "audio")
+    assert audio_job["status"] == "done", audio_job["error"]
+    assert len(audio_job["result"]["artifact_ids"]) == 2
+    audio_artifact = auth_client.get(
+        f"/api/artifacts/{audio_job['result']['artifact_ids'][0]}"
+    ).json()
+    assert audio_artifact["metadata"]["tts"]["tts_provider"] == "openai"
+    assert audio_artifact["metadata"]["tts"]["tts_model"] == "gpt-4o-mini-tts"
+    assert audio_artifact["metadata"]["tts"]["tts_voice"] == "nova"
+    assert audio_artifact["metadata"]["tts"]["tts_language_effective"] == "es-ES"
+    preview = auth_client.get(
+        f"/api/artifacts/{audio_artifact['id']}/audio/1"
+    )
+    assert preview.status_code == 200
+    assert preview.content.startswith(b"ID3")
+    immutable = auth_client.patch(
+        f"/api/artifacts/{audio_artifact['id']}",
+        json={"content": "{}"},
+    )
+    assert immutable.status_code == 422
+    synthesis_count = len(synthesized_texts)
 
     srt_profile = auth_client.post(
         "/api/agents/video/profiles",
@@ -313,6 +352,7 @@ def test_video_job_with_mocked_media_tools(auth_client, monkeypatch, tmp_path):
     assert all(a["metadata"]["orientation"] == "horizontal" for a in videos)
     assert all(a["metadata"]["subtitles_mode"] == "srt" for a in videos)
     assert all(a["metadata"]["tts"]["tts_voice"] == "nova" for a in videos)
+    assert all(a["metadata"]["audio_artifact_id"] for a in videos)
 
     srt = auth_client.get(f"/api/artifacts/{subtitles[0]['id']}").json()
     assert "00:00:00,000 --> 00:00:02,500" in srt["content"]
@@ -332,6 +372,10 @@ def test_video_job_with_mocked_media_tools(auth_client, monkeypatch, tmp_path):
     assert vertical_profile.status_code == 201
     assert vertical_profile.json()["orientation"] == "vertical"
 
+    # A slide-only regeneration must not synthesize audio again. The montage
+    # consumes the already-selected immutable audio manifests.
+    assert _run(auth_client, project["id"], "slides")["status"] == "done"
+
     vertical_job = _run(
         auth_client,
         project["id"],
@@ -347,6 +391,7 @@ def test_video_job_with_mocked_media_tools(auth_client, monkeypatch, tmp_path):
     assert all(a["versions"][0]["metadata"]["orientation"] == "vertical" for a in videos)
     assert all(a["versions"][1]["metadata"]["orientation"] == "horizontal" for a in videos)
     assert all(len(a["versions"]) == 1 for a in subtitles)
+    assert len(synthesized_texts) == synthesis_count
     assert composed_orientations == [
         "horizontal",
         "horizontal",
@@ -355,11 +400,11 @@ def test_video_job_with_mocked_media_tools(auth_client, monkeypatch, tmp_path):
     ]
 
 
-def test_video_requires_voice_script(auth_client, monkeypatch):
+def test_video_requires_audio(auth_client, monkeypatch):
     _patch_media(monkeypatch)
     project = _create_project(auth_client)
     response = auth_client.post(
         f"/api/projects/{project['id']}/agent-runs", json={"agent": "video"}
     )
     assert response.status_code == 409
-    assert "voice_script" in response.json()["detail"]
+    assert "audio" in response.json()["detail"]

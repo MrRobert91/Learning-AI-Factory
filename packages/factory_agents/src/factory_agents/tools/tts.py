@@ -1066,7 +1066,7 @@ class OpenAITTSProvider:
         instructions: str = "",
     ):
         if not api_key:
-            raise TTSError("OPENAI_API_KEY no está configurada para el perfil de voz")
+            raise TTSError("OPENAI_API_KEY no está configurada para el perfil de audio")
         from openai import OpenAI
 
         self._client = OpenAI(api_key=api_key)
@@ -1126,7 +1126,7 @@ class OpenRouterTTSProvider:
         max_retries: int = 2,
     ):
         if not api_key:
-            raise TTSError("OPENROUTER_API_KEY no está configurada para el perfil de voz")
+            raise TTSError("OPENROUTER_API_KEY no está configurada para el perfil de audio")
         self.api_key = api_key
         self.model = model
         self.voice = voice

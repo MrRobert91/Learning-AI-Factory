@@ -93,10 +93,13 @@ docker compose up --build                # stack completo (2 contenedores)
   metadatos del artefacto; no dupliques subtítulos si su contenido no cambia.
   Las slides verticales usan el tema Marp `factory-vertical` con canvas nativo
   1080×1920 en HTML/PDF/PPTX/PNG; un PPTX conjunto nunca mezcla orientaciones.
-- **Voz y subtítulos**: el perfil versionado de `voice` es la fuente de verdad
-  para proveedor/modelo/idioma/voz TTS. Cada `voice_script` congela la
-  combinación efectiva y vídeo debe consumir ese snapshot, no la configuración
-  global mutable. El formato de request, MIME, sample rate y canales se resuelven
+- **Voz, audio y subtítulos**: `voice` solo adapta el guion y produce
+  `voice_script`. El perfil versionado de `audio` es la fuente de verdad para
+  proveedor/modelo/idioma/voz TTS; cada artefacto `audio` copia segmentos
+  autosuficientes con duración/hash y congela la combinación efectiva. `video`
+  es un montador determinista que consume `slide_deck` + `audio`, nunca llama a
+  TTS y puede remontar slides nuevas con audio histórico. El formato de request,
+  MIME, sample rate y canales se resuelven
   desde capacidades por modelo; Gemini PCM se normaliza a WAV antes de preview,
   caché y ffmpeg, sin etiquetarlo como MP3. El perfil de `video` guarda
   `subtitles_mode` (`none` por
@@ -107,9 +110,9 @@ docker compose up --build                # stack completo (2 contenedores)
   voces documentadas completan metadata incompleta del API. Solo se muestran y
   envían controles declarados por el modelo (`speed`, instrucciones, estilo,
   intensidad, tags/pronunciación). El perfil versiona esas opciones, el
-  `voice_script` congela entrada de catálogo/precio/configuración y la clave de
+  artefacto `audio` congela entrada de catálogo/precio/configuración y la clave de
   caché incluye toda opción audible; una combinación retirada bloquea runs
-  nuevos, pero vídeo sigue consumiendo snapshots históricos autosuficientes.
+  nuevos, pero vídeo sigue consumiendo audios históricos autosuficientes.
 - **Vídeo completo del curso**: `course_video_export` consume el `course_plan` y
   las versiones seleccionadas de `video`/`subtitles` en orden pedagógico. El
   preflight bloquea inputs ausentes, corruptos o incompatibles antes de ffmpeg;

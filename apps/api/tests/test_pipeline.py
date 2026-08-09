@@ -198,7 +198,9 @@ def test_unknown_agent_rejected(auth_client):
 
 def test_agent_contract_matrix_is_canonical():
     assert AGENT_INPUTS["slides"] == ("course_plan", "lesson_content")
-    assert AGENT_OUTPUTS["video"] == ("video", "subtitles")
+    assert AGENT_OUTPUTS["audio"] == ("audio", "subtitles")
+    assert AGENT_INPUTS["video"] == ("slide_deck", "audio")
+    assert AGENT_OUTPUTS["video"] == ("video",)
     web_contracts = json.loads(
         Path("apps/web/src/lib/agent_io.generated.json").read_text(encoding="utf-8")
     )

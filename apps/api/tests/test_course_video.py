@@ -65,6 +65,24 @@ def _seed_inputs(auth_client, *, video_count=3, with_subtitles=True):
             label = f"{module_index}.{lesson_index} {lesson.title}"
             video_path = root / f"lesson-{index}.mp4"
             video_path.write_bytes(f"VIDEO-{index}".encode())
+            subtitle_id = None
+            if with_subtitles:
+                srt_path = root / f"lesson-{index}.srt"
+                srt_path.write_text(
+                    "1\n"
+                    f"00:00:00,000 --> 00:00:0{int(DURATIONS[index])},000\n"
+                    f"Texto {index}\n",
+                    encoding="utf-8",
+                )
+                subtitle = add_artifact_version(
+                    db,
+                    project_id=project["id"],
+                    type_="subtitles",
+                    format_="text",
+                    title=f"Subtítulos — {label}",
+                    path=str(srt_path.relative_to(settings.data_dir)),
+                )
+                subtitle_id = subtitle.id
             add_artifact_version(
                 db,
                 project_id=project["id"],
@@ -77,24 +95,9 @@ def _seed_inputs(auth_client, *, video_count=3, with_subtitles=True):
                     "orientation": "horizontal",
                     "width": 1920,
                     "height": 1080,
+                    "subtitles_id": subtitle_id,
                 },
             )
-            if with_subtitles:
-                srt_path = root / f"lesson-{index}.srt"
-                srt_path.write_text(
-                    "1\n"
-                    f"00:00:00,000 --> 00:00:0{int(DURATIONS[index])},000\n"
-                    f"Texto {index}\n",
-                    encoding="utf-8",
-                )
-                add_artifact_version(
-                    db,
-                    project_id=project["id"],
-                    type_="subtitles",
-                    format_="text",
-                    title=f"Subtítulos — {label}",
-                    path=str(srt_path.relative_to(settings.data_dir)),
-                )
         db.commit()
     return project
 

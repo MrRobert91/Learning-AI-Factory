@@ -1,4 +1,4 @@
-"""Configurable automatic video assembly stage."""
+"""Configurable deterministic video assembly stage."""
 
 from factory_agents.runtime import AgentSpec, register
 
@@ -7,13 +7,13 @@ VIDEO_SPEC = register(
         name="video",
         display_name="Montaje de vídeo",
         description=(
-            "Sintetiza la narración, renderiza las slides y monta el vídeo "
-            "en formato horizontal o vertical."
+            "Monta de forma determinista slides y audio ya generados, con "
+            "orientación y subtítulos configurables."
         ),
         base_prompt="",
-        tool_names=("TTS", "Marp", "ffmpeg"),
-        consumes=("voice_script", "slide_deck"),
-        produces=("video", "subtitles"),
+        tool_names=("Marp", "ffmpeg"),
+        consumes=("slide_deck", "audio"),
+        produces=("video",),
         kind="automatic",
     )
 )

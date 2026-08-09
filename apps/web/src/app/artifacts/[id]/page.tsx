@@ -42,6 +42,7 @@ const TYPE_LABELS: Record<string, string> = {
   slide_deck: "Slides",
   teaching_script: "Guion docente",
   voice_script: "Guion de voz",
+  audio: "Audio narrado",
   video: "Vídeo",
   subtitles: "Subtítulos",
   course_video: "Vídeo completo",
@@ -67,6 +68,32 @@ function orientationLabel(metadata: Record<string, unknown>): string | null {
     : metadata.orientation === "horizontal"
       ? "Horizontal 16:9"
       : null;
+}
+
+function audioSegments(metadata: Record<string, unknown>): Array<{
+  index: number;
+  slide: number;
+  duration_seconds: number;
+}> {
+  if (!Array.isArray(metadata.segments)) return [];
+  return metadata.segments.flatMap((item) => {
+    if (typeof item !== "object" || item === null) return [];
+    const value = item as Record<string, unknown>;
+    if (
+      typeof value.index !== "number" ||
+      typeof value.slide !== "number" ||
+      typeof value.duration_seconds !== "number"
+    ) {
+      return [];
+    }
+    return [
+      {
+        index: value.index,
+        slide: value.slide,
+        duration_seconds: value.duration_seconds,
+      },
+    ];
+  });
 }
 
 function paletteLabel(metadata: Record<string, unknown>): string | null {
@@ -301,7 +328,9 @@ export default function ArtifactViewerPage() {
   }
 
   const editable =
-    artifact.content !== null && EDITABLE_FORMATS.has(artifact.format);
+    artifact.type !== "audio" &&
+    artifact.content !== null &&
+    EDITABLE_FORMATS.has(artifact.format);
   const images = slideImages(artifact.metadata);
   const generation =
     typeof artifact.metadata.image_generation === "object" &&
@@ -622,6 +651,28 @@ export default function ArtifactViewerPage() {
                   : "aspect-video"
               }`}
             />
+          )}
+          {artifact.type === "audio" && audioSegments(artifact.metadata).length > 0 && (
+            <section className="card mb-6 p-4 sm:p-6">
+              <h2 className="text-sm font-semibold text-zinc-100">
+                Segmentos de narración
+              </h2>
+              <div className="mt-4 space-y-4">
+                {audioSegments(artifact.metadata).map((segment) => (
+                  <div key={segment.index}>
+                    <p className="mb-1 text-xs text-zinc-400">
+                      Slide {segment.slide} · {segment.duration_seconds.toFixed(1)} s
+                    </p>
+                    <audio
+                      controls
+                      preload="none"
+                      src={`/api/artifacts/${artifact.id}/audio/${segment.index}`}
+                      className="w-full"
+                    />
+                  </div>
+                ))}
+              </div>
+            </section>
           )}
           {artifact.type === "course_video" && (
             <section className="card mb-6 p-4 sm:p-6">

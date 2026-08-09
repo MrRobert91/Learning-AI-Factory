@@ -69,6 +69,7 @@ const KIND_LABELS: Record<string, string> = {
   slides_run: "Diseñador de slides",
   script_run: "Guionista docente",
   voice_run: "Adaptador a voz",
+  audio_run: "Generación de audio",
   video_run: "Montaje de vídeo",
   course_video_export: "Vídeo completo del curso",
   publisher_run: "Preparación de publicación",
@@ -128,9 +129,16 @@ const STAGES: {
     consumes: AGENT_INPUTS.voice,
   },
   {
+    agent: "audio",
+    label: "Generación de audio",
+    description: "Sintetiza y versiona narración y subtítulos reutilizables",
+    produces: AGENT_OUTPUTS.audio[0],
+    consumes: AGENT_INPUTS.audio,
+  },
+  {
     agent: "video",
-    label: "Vídeo",
-    description: "Sintetiza la voz y monta el vídeo (TTS + ffmpeg)",
+    label: "Montaje de vídeo",
+    description: "Monta slides y audio existentes de forma determinista",
     produces: AGENT_OUTPUTS.video[0],
     consumes: AGENT_INPUTS.video,
   },
@@ -153,6 +161,7 @@ const TYPE_LABELS: Record<string, string> = {
   slide_deck: "Slides",
   teaching_script: "Guion docente",
   voice_script: "Guion de voz",
+  audio: "Audio narrado",
   video: "Vídeo",
   subtitles: "Subtítulos",
   course_video: "Vídeo completo",
@@ -170,6 +179,7 @@ const ARTIFACT_TYPE_ORDER = [
   "performance_report",
   "video",
   "subtitles",
+  "audio",
   "voice_script",
   "teaching_script",
   "slide_deck",
@@ -266,7 +276,7 @@ function artifactIcon(type: string) {
   if (type === "lesson_content") return <IconBrain size={16} />;
   if (type === "slide_deck") return <IconPresentation size={16} />;
   if (type === "teaching_script") return <IconMessage size={16} />;
-  if (type === "voice_script") return <IconMic size={16} />;
+  if (type === "voice_script" || type === "audio") return <IconMic size={16} />;
   if (type === "video" || type === "course_video") return <IconVideo size={16} />;
   if (type === "subtitles" || type === "course_subtitles") {
     return <IconCaptions size={16} />;
@@ -1182,7 +1192,7 @@ export default function FactoryPanel({
                 Aprobación humana: {humanReviewEnabled ? "sí" : "no"}
                 {frozenPolicy ? " · política congelada del run" : ""}
               </p>
-              {stage.agent === "voice" && configuredProfile?.tts_model && (
+              {stage.agent === "audio" && configuredProfile?.tts_model && (
                 <p className="mb-2 text-[11px] text-zinc-500">
                   TTS: {configuredProfile.tts_provider} · {configuredProfile.tts_model}
                   {" · "}

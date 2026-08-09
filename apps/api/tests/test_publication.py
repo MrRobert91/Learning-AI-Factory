@@ -69,7 +69,7 @@ def _patch_publication(monkeypatch, thumbnail_ok=True):
 
 def _project_with_video(auth_client, monkeypatch):
     project = _prepare_slides(auth_client, monkeypatch)
-    for agent in ("script", "voice", "video"):
+    for agent in ("script", "voice", "audio", "video"):
         job = _run(auth_client, project["id"], agent)
         assert job["status"] == "done", job["error"]
     return project

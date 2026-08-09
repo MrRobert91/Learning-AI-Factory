@@ -27,6 +27,7 @@ export const ARTIFACT_NAMES: Record<string, string> = {
   slide_deck: "slides",
   teaching_script: "guion docente",
   voice_script: "guion de voz",
+  audio: "audio narrado",
   video: "v\u00eddeo",
   subtitles: "subt\u00edtulos",
 };

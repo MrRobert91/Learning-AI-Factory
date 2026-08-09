@@ -160,7 +160,7 @@ def _profile_config(
                 "logo_candidates": [],
             }
         )
-    if agent_type == "voice":
+    if agent_type == "audio":
         config.update(
             default_tts_config(
                 provider=tts_provider or "openai",
@@ -242,7 +242,7 @@ def _slide_logo_fields(config: dict, agent_type: str) -> dict:
 
 
 def _voice_tts_fields(config: dict, agent_type: str) -> dict:
-    if agent_type != "voice":
+    if agent_type != "audio":
         return {
             "tts_provider": None,
             "tts_model": None,
@@ -330,12 +330,12 @@ def _validate_media_profile_config(
     *,
     changed_tts_fields: set[str] | None = None,
 ) -> None:
-    if agent_type != "voice" and TTS_CONFIG_KEYS.intersection(config):
+    if agent_type != "audio" and TTS_CONFIG_KEYS.intersection(config):
         raise HTTPException(
             status_code=422,
-            detail="Solo el agente Voice admite configuración TTS",
+            detail="Solo el agente de Audio admite configuración TTS",
         )
-    if agent_type == "voice":
+    if agent_type == "audio":
         try:
             normalize_current_tts_selection(
                 config,
@@ -498,6 +498,43 @@ def _normalize_supplied_palette(
 
 def seed_default_profiles(db: Session) -> None:
     """Create the factory default profile for any agent type missing one."""
+    audio_exists = db.scalars(
+        select(AgentProfile).where(AgentProfile.agent_type == "audio").limit(1)
+    ).first()
+    if audio_exists is None:
+        # Existing installations configured TTS on Voice. Clone those active
+        # choices once so the split does not silently reset the selected voice.
+        legacy_voice_profiles = db.scalars(
+            select(AgentProfile).where(AgentProfile.agent_type == "voice")
+        ).all()
+        for legacy in legacy_voice_profiles:
+            legacy_config = json.loads(legacy.config_json or "{}")
+            audio_config = _profile_config("audio", None, None)
+            audio_config.update(
+                {key: legacy_config[key] for key in TTS_CONFIG_KEYS if key in legacy_config}
+            )
+            audio_config["migrated_from_voice_profile_id"] = legacy.id
+            profile = AgentProfile(
+                agent_type="audio",
+                name=legacy.name.replace("Adaptador de voz", "Generación de audio"),
+                soul_md="",
+                agents_md="",
+                config_json=json.dumps(audio_config, ensure_ascii=False),
+                active_version=1,
+                is_default=legacy.is_default,
+            )
+            db.add(profile)
+            db.flush()
+            db.add(
+                AgentProfileVersion(
+                    profile_id=profile.id,
+                    version=1,
+                    soul_md="",
+                    agents_md="",
+                    config_json=profile.config_json,
+                    note="Migrado al separar audio y montaje de vídeo",
+                )
+            )
     for spec in REGISTRY.values():
         exists = db.scalars(
             select(AgentProfile).where(AgentProfile.agent_type == spec.name).limit(1)
@@ -622,10 +659,10 @@ def create_profile(agent_type: str, body: ProfileCreate, user: CurrentUser, db: 
     supplied_logo = _supplied_logo_config(body)
     _validate_slide_logo_config(agent_type, supplied_logo)
     supplied_tts = _supplied_tts_config(body)
-    if supplied_tts and agent_type != "voice":
+    if supplied_tts and agent_type != "audio":
         raise HTTPException(
             status_code=422,
-            detail="Solo el agente Voice admite configuración TTS",
+            detail="Solo el agente de Audio admite configuración TTS",
         )
     if body.subtitles_mode is not None and agent_type != "video":
         raise HTTPException(
@@ -721,8 +758,8 @@ def preview_profile_tts(
     profile = db.get(AgentProfile, profile_id)
     if profile is None:
         raise HTTPException(status_code=404, detail="Perfil no encontrado")
-    if profile.agent_type != "voice":
-        raise HTTPException(status_code=422, detail="El perfil no pertenece a Voice")
+    if profile.agent_type != "audio":
+        raise HTTPException(status_code=422, detail="El perfil no pertenece a Audio")
 
     now = time.monotonic()
     calls = [value for value in _TTS_PREVIEW_CALLS.get(user.id, []) if now - value < 60]
@@ -774,7 +811,7 @@ def preview_profile_tts(
     cost = estimated_tts_cost(resolved, len(body.text))
     generation_id = getattr(provider, "last_generation_id", None)
     record_usage(
-        agent="voice",
+        agent="audio",
         operation="tts",
         provider=resolved["tts_provider"],
         model=resolved["tts_model"],
@@ -930,7 +967,7 @@ def update_profile(profile_id: str, body: ProfileUpdate, user: CurrentUser, db: 
 
     current_config = json.loads(profile.config_json or "{}")
     proposed_config = dict(current_config)
-    if profile.agent_type == "voice":
+    if profile.agent_type == "audio":
         for key, value in default_tts_config(
             model=get_settings().tts_model,
             voice=get_settings().tts_voice,
@@ -976,10 +1013,10 @@ def update_profile(profile_id: str, body: ProfileUpdate, user: CurrentUser, db: 
         proposed_config["human_review_enabled"] = body.human_review_enabled
     supplied_tts = _supplied_tts_config(body)
     if supplied_tts:
-        if profile.agent_type != "voice":
+        if profile.agent_type != "audio":
             raise HTTPException(
                 status_code=422,
-                detail="Solo el agente Voice admite configuración TTS",
+                detail="Solo el agente de Audio admite configuración TTS",
             )
         proposed_config.update(supplied_tts)
     if body.subtitles_mode is not None:

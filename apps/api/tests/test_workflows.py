@@ -1,3 +1,10 @@
+import json
+
+from factory_api.db import SessionLocal
+from factory_api.models import AgentProfile, User, Workflow
+from factory_api.routers.agents import seed_default_profiles
+from factory_api.routers.workflows import seed_template_workflows
+from sqlalchemy import select
 from test_pipeline import _patch_all
 from test_runs import _create_project, _wait_for_job
 
@@ -17,6 +24,59 @@ def _wait_for_status(auth_client, job_id, statuses, timeout=10):
 def _template_id(auth_client, name):
     workflows = auth_client.get("/api/workflows").json()
     return next(w["id"] for w in workflows if w["name"] == name)
+
+
+def test_startup_migrates_legacy_voice_profile_and_workflow(auth_client):
+    with SessionLocal() as db:
+        voice = db.scalars(
+            select(AgentProfile)
+            .where(AgentProfile.agent_type == "voice", AgentProfile.is_default.is_(True))
+            .limit(1)
+        ).one()
+        legacy_config = json.loads(voice.config_json or "{}")
+        legacy_config.update(
+            {
+                "tts_provider": "openai",
+                "tts_model": "gpt-4o-mini-tts",
+                "tts_language": "inherit",
+                "tts_voice": "nova",
+            }
+        )
+        voice.config_json = json.dumps(legacy_config)
+        for profile in db.scalars(
+            select(AgentProfile).where(AgentProfile.agent_type == "audio")
+        ).all():
+            db.delete(profile)
+        owner = db.scalars(select(User).limit(1)).one()
+        workflow = Workflow(
+            owner_id=owner.id,
+            name="Workflow multimedia histórico",
+            definition_json=json.dumps(
+                {
+                    "steps": [
+                        {"agent": "voice", "profile_id": voice.id},
+                        {"agent": "video"},
+                    ]
+                }
+            ),
+            is_template=False,
+        )
+        db.add(workflow)
+        db.commit()
+        workflow_id = workflow.id
+        voice_id = voice.id
+
+        seed_default_profiles(db)
+        seed_template_workflows(db)
+        migrated = db.scalars(
+            select(AgentProfile).where(AgentProfile.agent_type == "audio")
+        ).one()
+        migrated_config = json.loads(migrated.config_json)
+        assert migrated_config["migrated_from_voice_profile_id"] == voice_id
+        assert migrated_config["tts_voice"] == "nova"
+        upgraded = json.loads(db.get(Workflow, workflow_id).definition_json)["steps"]
+        assert [step["agent"] for step in upgraded] == ["voice", "audio", "video"]
+        assert upgraded[1]["profile_id"] == migrated.id
 
 
 def _human_profile(auth_client, agent, name=None):

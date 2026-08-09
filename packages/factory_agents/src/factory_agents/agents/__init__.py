@@ -2,6 +2,7 @@
 
 from factory_agents.agents import (  # noqa: F401
     analyst,
+    audio,
     curator,
     ideation,
     lessons,
