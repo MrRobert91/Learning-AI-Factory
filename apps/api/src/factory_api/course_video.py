@@ -30,7 +30,6 @@ TRANSITION_SECONDS = {
     "gap_500ms": 0.5,
 }
 VIDEO_PREFIX = "Vídeo — "
-SUBTITLE_PREFIX = "Subtítulos — "
 _SRT_RANGE = re.compile(
     r"^(?P<start>\d{2,}:\d{2}:\d{2},\d{3})\s+-->\s+"
     r"(?P<end>\d{2,}:\d{2}:\d{2},\d{3})$"
@@ -273,12 +272,18 @@ def build_preflight(
             issues.append(_issue("invalid_course_plan", f"El course_plan no es válido: {exc}"))
 
     videos = _artifact_map(db, project.id, "video", VIDEO_PREFIX)
-    subtitles = _artifact_map(db, project.id, "subtitles", SUBTITLE_PREFIX)
     if plan is not None:
         for module_index, lesson_index, module, lesson in plan.iter_lessons():
             label = f"{module_index}.{lesson_index} {lesson.title}"
             video = videos.get(label)
-            subtitle = subtitles.get(label)
+            metadata = artifact_metadata(video) if video is not None else {}
+            linked_subtitle_id = metadata.get("subtitles_id")
+            subtitle = db.get(Artifact, linked_subtitle_id) if linked_subtitle_id else None
+            if (
+                subtitle is not None
+                and (subtitle.project_id != project.id or subtitle.type != "subtitles")
+            ):
+                subtitle = None
             public = {
                 "module_index": module_index,
                 "lesson_index": lesson_index,
@@ -299,7 +304,6 @@ def build_preflight(
             if not video_path.is_file():
                 issues.append(_issue("missing_video_file", "El fichero de vídeo no existe.", label))
                 continue
-            metadata = artifact_metadata(video)
             media: dict[str, Any] = {
                 "duration_seconds": float(metadata.get("duration_seconds") or 0),
                 "width": int(metadata.get("width") or 0),

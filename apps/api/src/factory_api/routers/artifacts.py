@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import logging
@@ -768,6 +769,11 @@ def edit_artifact(
 ):
     """Save edited text as the next immutable artifact version."""
     original = _check_owner(db, user.id, db.get(Artifact, artifact_id))
+    if original.type == "audio":
+        raise HTTPException(
+            status_code=422,
+            detail="Los manifiestos de audio son inmutables; regenera el agente de Audio",
+        )
     if original.format not in TEXT_FORMATS:
         raise HTTPException(status_code=422, detail="Este formato no se puede editar como texto")
     if original.format == "json":
@@ -887,6 +893,49 @@ def delete_artifact(artifact_id: str, user: CurrentUser, db: DB):
         if thumbnail_relative:
             thumbnail_path = get_settings().data_dir / thumbnail_relative
             thumbnail_path.unlink(missing_ok=True)
+    if artifact.type == "audio":
+        data_root = get_settings().data_dir.resolve()
+        for segment in metadata.get("segments") or []:
+            if not isinstance(segment, dict) or not segment.get("path"):
+                continue
+            candidate = (data_root / str(segment["path"])).resolve()
+            if candidate.is_relative_to(data_root):
+                candidate.unlink(missing_ok=True)
+
+
+@router.get("/artifacts/{artifact_id}/audio/{segment_index}")
+def get_audio_segment(
+    artifact_id: str,
+    segment_index: int,
+    user: CurrentUser,
+    db: DB,
+):
+    artifact = _check_owner(db, user.id, db.get(Artifact, artifact_id))
+    if artifact.type != "audio":
+        raise HTTPException(status_code=404, detail="Segmento de audio no encontrado")
+    segments = artifact_metadata(artifact).get("segments") or []
+    segment = next(
+        (
+            item
+            for item in segments
+            if isinstance(item, dict) and item.get("index") == segment_index
+        ),
+        None,
+    )
+    if segment is None or not segment.get("path"):
+        raise HTTPException(status_code=404, detail="Segmento de audio no encontrado")
+    data_root = get_settings().data_dir.resolve()
+    path = (data_root / str(segment["path"])).resolve()
+    if not path.is_relative_to(data_root) or not path.is_file():
+        raise HTTPException(status_code=404, detail="Segmento de audio no encontrado")
+    expected_sha256 = str(segment.get("sha256") or "")
+    if expected_sha256 and hashlib.sha256(path.read_bytes()).hexdigest() != expected_sha256:
+        raise HTTPException(status_code=409, detail="El segmento de audio está dañado")
+    return FileResponse(
+        path,
+        media_type=str(segment.get("mime_type") or "application/octet-stream"),
+        filename=f"{artifact.title}-segmento-{segment_index}{path.suffix}",
+    )
 
 
 @router.get("/artifacts/{artifact_id}/thumbnail")

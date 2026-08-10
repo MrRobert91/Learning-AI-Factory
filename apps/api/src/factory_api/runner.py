@@ -96,7 +96,7 @@ def _log_category(phase: str) -> str:
         return "IMAGE"
     if normalized in {"slides", "marp", "render"}:
         return "SLIDE"
-    if normalized in {"voice", "tts"}:
+    if normalized in {"voice", "audio", "tts"}:
         return "TTS"
     if normalized in {"video", "course_video", "course_video_export", "ffmpeg"}:
         return "VIDEO"
@@ -294,6 +294,7 @@ class JobRunner:
                         "slides",
                         "script",
                         "voice",
+                        "audio",
                         "video",
                         "publisher",
                     )
@@ -1847,6 +1848,7 @@ PREFIXES = {
     "slide_deck": "Slides — ",
     "teaching_script": "Guion — ",
     "voice_script": "Voz — ",
+    "audio": "Audio — ",
     "video": "Vídeo — ",
     "subtitles": "Subtítulos — ",
     "course_video": "Vídeo completo",
@@ -1951,7 +1953,6 @@ def run_script_job(job_id: str, payload: dict) -> dict:
 
 def run_voice_job(job_id: str, payload: dict) -> dict:
     from factory_agents.agents.voice import render_voice_input, run_voice
-    from factory_agents.tools.tts import default_tts_config, resolve_tts_config
 
     settings = get_settings()
     scripts = _latest_by_base(payload, "teaching_script")
@@ -1966,20 +1967,6 @@ def run_voice_job(job_id: str, payload: dict) -> dict:
         workflow_step=payload.get("_workflow_step"),
     )
     language = payload.get("project", {}).get("language", "es")
-    tts_candidate = payload.get("tts_config") or default_tts_config(
-        model=settings.tts_model,
-        voice=settings.tts_voice,
-    )
-    try:
-        tts_config = resolve_tts_config(
-            tts_candidate,
-            project_language=language,
-        )
-    except ValueError as exc:
-        raise RuntimeError(
-            f"La configuración TTS del perfil Voice no es compatible con "
-            f"el idioma del proyecto ({language}): {exc}"
-        ) from exc
     _emit_duration_event(job_id, payload, "voice")
     spec = _duration_spec(payload)
 
@@ -2021,12 +2008,8 @@ def run_voice_job(job_id: str, payload: dict) -> dict:
             metadata={
                 **_duration_metadata(payload, "voice"),
                 "llm_model": payload.get("model") or settings.openrouter_model,
-                "tts": {
-                    **tts_config,
-                    "profile_id": payload.get("profile_id"),
-                    "profile_version": payload.get("profile_version"),
-                    "llm_model": payload.get("model") or settings.openrouter_model,
-                },
+                "profile_id": payload.get("profile_id"),
+                "profile_version": payload.get("profile_version"),
             },
         )
         artifact_ids.append(artifact_id)
@@ -2047,7 +2030,8 @@ def run_voice_job(job_id: str, payload: dict) -> dict:
     return {"artifact_ids": artifact_ids}
 
 
-def run_video_job(job_id: str, payload: dict) -> dict:
+def run_audio_job(job_id: str, payload: dict) -> dict:
+    """Synthesize reusable, versioned narration without rendering any slides."""
     from factory_agents.contracts import VoiceScript
     from factory_agents.tools.tts import (
         build_tts_provider,
@@ -2057,12 +2041,244 @@ def run_video_job(job_id: str, payload: dict) -> dict:
         resolve_tts_config,
         synthesize_cached_with_status,
     )
+    from factory_agents.tools.video import build_srt, probe_duration
+
+    settings = get_settings()
+    voices = _latest_by_base(payload, "voice_script")
+    if not voices:
+        raise RuntimeError("Falta el artefacto 'voice_script': ejecuta antes el Adaptador de voz")
+
+    language = payload.get("project", {}).get("language", "es")
+    tts_candidate = payload.get("tts_config") or default_tts_config(
+        model=settings.tts_model,
+        voice=settings.tts_voice,
+    )
+    try:
+        tts_config = resolve_tts_config(tts_candidate, project_language=language)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"La configuración TTS del perfil de Audio no es compatible con "
+            f"el idioma del proyecto ({language}): {exc}"
+        ) from exc
+    tts_snapshot = {
+        **tts_config,
+        "profile_id": payload.get("profile_id"),
+        "profile_version": payload.get("profile_version"),
+    }
+    provider = build_tts_provider(
+        tts_config,
+        openai_api_key=settings.openai_api_key,
+        openrouter_api_key=settings.openrouter_api_key,
+    )
+    cache_dir = settings.data_dir / "tts-cache"
+    spec = _duration_spec(payload)
+    _emit_duration_event(job_id, payload, "audio")
+
+    audio_ids: list[str] = []
+    subtitle_ids: list[str] = []
+    for base, voice_artifact in voices.items():
+        lesson_unit, cached_lesson = _before_unit(
+            job_id,
+            payload,
+            "audio",
+            voice_artifact.id,
+            f"Preparando el audio de {base}",
+        )
+        if cached_lesson and cached_lesson.get("audio_id"):
+            audio_ids.append(cached_lesson["audio_id"])
+            if cached_lesson.get("subtitles_id"):
+                subtitle_ids.append(cached_lesson["subtitles_id"])
+            continue
+
+        voice_script = VoiceScript.model_validate_json(
+            (settings.data_dir / voice_artifact.path).read_text(encoding="utf-8")
+        )
+        append_event(
+            job_id,
+            "stage",
+            f"Sintetizando audio de {base} ({len(voice_script.segments)} segmentos)…",
+        )
+        durable_root = (
+            settings.data_dir
+            / "artifacts"
+            / payload["project_id"]
+            / "audio-assets"
+            / f"{job_id}-{uuid.uuid4().hex[:8]}"
+        )
+        durable_root.mkdir(parents=True, exist_ok=True)
+        manifest_segments: list[dict] = []
+        srt_segments: list[tuple[str, float]] = []
+        try:
+            for segment_index, segment in enumerate(voice_script.segments, start=1):
+                segment_unit, cached_segment = _before_unit(
+                    job_id,
+                    payload,
+                    "tts",
+                    f"{voice_artifact.id}:{segment_index}",
+                    f"Sintetizando segmento {segment_index} de {base}",
+                )
+                cached_audio = (
+                    Path(cached_segment["audio_path"])
+                    if cached_segment and cached_segment.get("audio_path")
+                    else None
+                )
+                reused_control_unit = bool(
+                    cached_audio is not None and is_valid_audio_file(provider, cached_audio)
+                )
+                if reused_control_unit:
+                    synthesized = cached_audio
+                    cache_hit = True
+                else:
+                    synthesized, cache_hit = synthesize_cached_with_status(
+                        provider, segment.text, cache_dir
+                    )
+                duration = probe_duration(synthesized)
+                suffix = synthesized.suffix or f".{tts_config['tts_output_format']}"
+                durable = durable_root / f"segment-{segment_index:03d}{suffix}"
+                shutil.copyfile(synthesized, durable)
+                digest = hashlib.sha256(durable.read_bytes()).hexdigest()
+                relative_path = durable.relative_to(settings.data_dir).as_posix()
+                manifest_segments.append(
+                    {
+                        "index": segment_index,
+                        "slide": segment.slide,
+                        "text": segment.text,
+                        "path": relative_path,
+                        "duration_seconds": duration,
+                        "sha256": digest,
+                        "size_bytes": durable.stat().st_size,
+                        "format": tts_config["tts_output_format"],
+                        "mime_type": tts_config["tts_mime_type"],
+                    }
+                )
+                srt_segments.append((segment.text, duration))
+                cost = None if cache_hit else estimated_tts_cost(tts_config, len(segment.text))
+                record_usage(
+                    job_id=job_id,
+                    workflow_step=payload.get("_workflow_step"),
+                    agent="audio",
+                    operation="tts",
+                    provider=tts_config["tts_provider"],
+                    model=tts_config["tts_model"],
+                    provider_request_id=(
+                        None if cache_hit else getattr(provider, "last_generation_id", None)
+                    ),
+                    input_characters=len(segment.text),
+                    cost_usd=0 if cache_hit else cost,
+                    cost_source=(
+                        "provider_actual"
+                        if cache_hit
+                        else "estimated_catalog" if cost is not None else "unknown"
+                    ),
+                    pricing_snapshot={
+                        "currency": "USD",
+                        "cache_hit": cache_hit,
+                        "price_per_million_characters_usd": tts_config.get(
+                            "price_per_million_characters_usd"
+                        ),
+                    },
+                    work_unit_key=f"audio:{base}:tts:{segment_index}",
+                    idempotency_key=f"{job_id}:audio:{base}:tts:{segment_index}",
+                    metadata={
+                        "language": tts_config["tts_language_effective"],
+                        "voice": tts_config["tts_voice"],
+                        "output_format": tts_config["tts_output_format"],
+                        "mime_type": tts_config["tts_mime_type"],
+                        "speed": tts_config["tts_speed"],
+                        "style": tts_config["tts_style"],
+                        "style_degree": tts_config["tts_style_degree"],
+                        "cache_hit": cache_hit,
+                        "segment": segment_index,
+                    },
+                )
+                if not reused_control_unit:
+                    _complete_unit(
+                        job_id,
+                        "tts",
+                        segment_unit,
+                        {"audio_path": str(synthesized)},
+                        message=f"Segmento {segment_index} de {base} sintetizado",
+                    )
+
+            duration = sum(item[1] for item in srt_segments)
+            target_seconds = spec.target_minutes_per_video * 60 if spec else None
+            deviation_ratio = (
+                abs(duration - target_seconds) / target_seconds if target_seconds else None
+            )
+            srt_content = build_srt(srt_segments)
+            subtitle_id = _save_artifact_if_changed(
+                job_id,
+                payload["project_id"],
+                "subtitles",
+                f"Subtítulos — {base}",
+                srt_content,
+                format_="text",
+                metadata={
+                    **_duration_metadata(payload, "audio"),
+                    "voice_script_id": voice_artifact.id,
+                    "duration_seconds": duration,
+                    "tts": tts_snapshot,
+                },
+            )
+            manifest = {
+                "schema_version": 1,
+                "voice_script_id": voice_artifact.id,
+                "duration_seconds": duration,
+                "subtitles_id": subtitle_id,
+                "segments": manifest_segments,
+            }
+            audio_id = _save_artifact(
+                job_id,
+                payload["project_id"],
+                "audio",
+                f"Audio — {base}",
+                json.dumps(manifest, ensure_ascii=False, indent=2),
+                format_="json",
+                metadata={
+                    **_duration_metadata(payload, "audio"),
+                    "voice_script_id": voice_artifact.id,
+                    "duration_seconds": duration,
+                    "target_duration_seconds": target_seconds,
+                    "duration_deviation_ratio": deviation_ratio,
+                    "duration_within_tolerance": (
+                        deviation_ratio <= spec.tolerance_ratio
+                        if deviation_ratio is not None and spec is not None
+                        else None
+                    ),
+                    "subtitles_id": subtitle_id,
+                    "tts": tts_snapshot,
+                    "segments": manifest_segments,
+                },
+            )
+        except Exception:
+            shutil.rmtree(durable_root, ignore_errors=True)
+            raise
+
+        audio_ids.append(audio_id)
+        subtitle_ids.append(subtitle_id)
+        append_event(
+            job_id,
+            "artifact",
+            f"Audio de {base} listo ({duration / 60:.1f} min)",
+            {"artifact_id": audio_id, "subtitles_id": subtitle_id},
+        )
+        _complete_unit(
+            job_id,
+            "audio",
+            lesson_unit,
+            {"audio_id": audio_id, "subtitles_id": subtitle_id},
+            message=f"Audio de {base} completado",
+        )
+    _deactivate_unproduced(payload["project_id"], "audio", audio_ids)
+    _deactivate_unproduced(payload["project_id"], "subtitles", subtitle_ids)
+    return {"artifact_ids": audio_ids, "subtitles_ids": subtitle_ids}
+
+
+def run_video_job(job_id: str, payload: dict) -> dict:
     from factory_agents.tools.video import (
         FFmpegPolicy,
-        build_srt,
         burn_subtitles,
         compose_video,
-        probe_duration,
         render_slide_images,
     )
 
@@ -2074,12 +2290,11 @@ def run_video_job(job_id: str, payload: dict) -> dict:
         preset=settings.ffmpeg_preset,
         crf=settings.ffmpeg_crf,
     )
-    voices = _latest_by_base(payload, "voice_script")
+    audios = _latest_by_base(payload, "audio")
     decks = _latest_by_base(payload, "slide_deck")
-    if not voices:
-        raise RuntimeError("Falta el artefacto 'voice_script': ejecuta antes el Adaptador de voz")
+    if not audios:
+        raise RuntimeError("Falta el artefacto 'audio': ejecuta antes Generación de audio")
 
-    cache_dir = settings.data_dir / "tts-cache"
     workdir_root = settings.data_dir / "runs" / job_id
     orientation = payload.get("orientation", "horizontal")
     subtitles_mode = payload.get("subtitles_mode", "none")
@@ -2088,19 +2303,16 @@ def run_video_job(job_id: str, payload: dict) -> dict:
     spec = _duration_spec(payload)
 
     video_ids: list[str] = []
-    subtitle_ids: list[str] = []
-    for base, voice_artifact in voices.items():
+    for base, audio_artifact in audios.items():
         lesson_unit, cached_lesson = _before_unit(
             job_id,
             payload,
             "video",
-            voice_artifact.id,
+            audio_artifact.id,
             f"Preparando el vídeo de {base}",
         )
         if cached_lesson and cached_lesson.get("video_id"):
             video_ids.append(cached_lesson["video_id"])
-            if cached_lesson.get("subtitles_id"):
-                subtitle_ids.append(cached_lesson["subtitles_id"])
             continue
         deck = decks.get(base)
         if deck is None:
@@ -2111,7 +2323,7 @@ def run_video_job(job_id: str, payload: dict) -> dict:
             job_id,
             payload,
             "video-render",
-            voice_artifact.id,
+            f"{deck.id}:{audio_artifact.id}",
             f"Preparando el render de slides de {base}",
         )
         images = [Path(value) for value in cached_render.get("images", [])] if cached_render else []
@@ -2126,119 +2338,38 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                 message=f"Slides de {base} renderizadas",
             )
 
-        voice_script = VoiceScript.model_validate_json(
-            (settings.data_dir / voice_artifact.path).read_text(encoding="utf-8")
-        )
-        voice_metadata = artifact_metadata(voice_artifact)
-        tts_candidate = voice_metadata.get("tts") or default_tts_config(
-            model=settings.tts_model,
-            voice=settings.tts_voice,
-        )
         try:
-            tts_config = resolve_tts_config(
-                tts_candidate,
-                project_language=payload.get("project", {}).get("language", "es"),
+            manifest = json.loads(
+                (settings.data_dir / audio_artifact.path).read_text(encoding="utf-8")
             )
-        except ValueError as exc:
-            raise RuntimeError(
-                f"El voice_script seleccionado para «{base}» tiene una "
-                f"configuración TTS no disponible: {exc}"
-            ) from exc
-        provider = build_tts_provider(
-            tts_config,
-            openai_api_key=settings.openai_api_key,
-            openrouter_api_key=settings.openrouter_api_key,
-        )
-        append_event(
-            job_id,
-            "stage",
-            f"Sintetizando narración de {base} ({len(voice_script.segments)} segmentos)…",
-        )
-        pairs: list[tuple] = []
-        srt_segments: list[tuple[str, float]] = []
-        for segment_index, segment in enumerate(voice_script.segments, start=1):
-            segment_unit, cached_segment = _before_unit(
-                job_id,
-                payload,
-                "tts",
-                f"{voice_artifact.id}:{segment_index}",
-                f"Preparando segmento {segment_index} de {base}",
-            )
-            cached_audio = (
-                Path(cached_segment["audio_path"])
-                if cached_segment and cached_segment.get("audio_path")
-                else None
-            )
-            reused_control_unit = (
-                cached_audio is not None
-                and is_valid_audio_file(provider, cached_audio)
-            )
-            if reused_control_unit:
-                audio = cached_audio
-                cache_hit = True
-            else:
-                audio, cache_hit = synthesize_cached_with_status(provider, segment.text, cache_dir)
-            record_usage(
-                job_id=job_id,
-                workflow_step=payload.get("_workflow_step"),
-                agent="video",
-                operation="tts",
-                provider=tts_config["tts_provider"],
-                model=tts_config["tts_model"],
-                provider_request_id=(
-                    None if cache_hit else getattr(provider, "last_generation_id", None)
-                ),
-                input_characters=len(segment.text),
-                cost_usd=(0 if cache_hit else estimated_tts_cost(tts_config, len(segment.text))),
-                cost_source=(
-                    "provider_actual"
-                    if cache_hit
-                    else (
-                        "estimated_catalog"
-                        if estimated_tts_cost(tts_config, len(segment.text)) is not None
-                        else "unknown"
-                    )
-                ),
-                pricing_snapshot={
-                    "currency": "USD",
-                    "cache_hit": cache_hit,
-                    "price_per_million_characters_usd": tts_config.get(
-                        "price_per_million_characters_usd"
-                    ),
-                },
-                work_unit_key=f"video:{base}:tts:{segment_index}",
-                idempotency_key=f"{job_id}:video:{base}:tts:{segment_index}",
-                metadata={
-                    "language": tts_config["tts_language_effective"],
-                    "voice": tts_config["tts_voice"],
-                    "request_format": tts_config["tts_format"],
-                    "output_format": tts_config["tts_output_format"],
-                    "mime_type": tts_config["tts_mime_type"],
-                    "speed": tts_config["tts_speed"],
-                    "instructions_sha256": hashlib.sha256(
-                        tts_config["tts_instructions"].encode()
-                    ).hexdigest()
-                    if tts_config["tts_instructions"]
-                    else None,
-                    "style": tts_config["tts_style"],
-                    "style_degree": tts_config["tts_style_degree"],
-                    "catalog_updated_at": tts_config["tts_catalog_updated_at"],
-                    "cache_hit": cache_hit,
-                    "segment": segment_index,
-                },
-            )
-            if not reused_control_unit:
-                _complete_unit(
-                    job_id,
-                    "tts",
-                    segment_unit,
-                    {"audio_path": str(audio)},
-                    message=f"Segmento {segment_index} de {base} sintetizado",
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"El audio seleccionado para «{base}» no es válido") from exc
+        segments = manifest.get("segments")
+        if not isinstance(segments, list) or not segments:
+            raise RuntimeError(f"El audio seleccionado para «{base}» no contiene segmentos")
+        pairs: list[tuple[Path, Path]] = []
+        for segment in segments:
+            if not isinstance(segment, dict):
+                raise RuntimeError(f"El manifiesto de audio de «{base}» está dañado")
+            try:
+                slide = int(segment["slide"])
+                audio_path = settings.data_dir / str(segment["path"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise RuntimeError(f"El manifiesto de audio de «{base}» está incompleto") from exc
+            if not audio_path.is_file():
+                raise RuntimeError(
+                    f"Falta un segmento persistido del audio de «{base}»: "
+                    f"{audio_path.name}"
                 )
-            image = images[min(segment.slide, len(images)) - 1]
-            pairs.append((image, audio))
-            srt_segments.append((segment.text, probe_duration(audio)))
-        duration = sum(value for _text, value in srt_segments)
+            actual_sha256 = hashlib.sha256(audio_path.read_bytes()).hexdigest()
+            if actual_sha256 != segment.get("sha256"):
+                raise RuntimeError(
+                    f"Un segmento persistido del audio de «{base}» no supera la validación"
+                )
+            pairs.append((images[min(max(slide, 1), len(images)) - 1], audio_path))
+        duration = float(manifest.get("duration_seconds") or 0)
+        if duration <= 0:
+            raise RuntimeError(f"El audio seleccionado para «{base}» no tiene duración válida")
         target_seconds = spec.target_minutes_per_video * 60 if spec else None
         deviation_ratio = (
             abs(duration - target_seconds) / target_seconds if target_seconds else None
@@ -2248,14 +2379,26 @@ def run_video_job(job_id: str, payload: dict) -> dict:
             job_id,
             payload,
             "video-compose",
-            voice_artifact.id,
+            f"{deck.id}:{audio_artifact.id}:{orientation}:{subtitles_mode}",
             f"Preparando el montaje ffmpeg de {base}",
         )
-        srt_content = build_srt(srt_segments)
-        srt_path = workdir / "subtitles.srt"
+        srt_id = None
+        srt_path = None
         if subtitles_mode != "none":
-            srt_path.parent.mkdir(parents=True, exist_ok=True)
-            srt_path.write_text(srt_content, encoding="utf-8")
+            srt_id = manifest.get("subtitles_id")
+            with SessionLocal() as db:
+                subtitle_artifact = db.get(Artifact, srt_id) if srt_id else None
+                if (
+                    subtitle_artifact is None
+                    or subtitle_artifact.project_id != payload["project_id"]
+                    or subtitle_artifact.type != "subtitles"
+                ):
+                    raise RuntimeError(
+                        f"El audio de «{base}» no conserva subtítulos reutilizables"
+                    )
+                srt_path = settings.data_dir / subtitle_artifact.path
+            if not srt_path.is_file():
+                raise RuntimeError(f"Falta el fichero de subtítulos del audio de «{base}»")
         out_mp4 = (
             Path(cached_compose["video_path"])
             if cached_compose and cached_compose.get("video_path")
@@ -2345,24 +2488,6 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                 message=f"Montaje ffmpeg de {base} completado",
             )
 
-        srt_id = None
-        if subtitles_mode != "none":
-            srt_id = _save_artifact_if_changed(
-                job_id,
-                payload["project_id"],
-                "subtitles",
-                f"Subtítulos — {base}",
-                srt_content,
-                format_="text",
-                metadata={
-                    **_duration_metadata(payload, "video"),
-                    "voice_script_id": voice_artifact.id,
-                    "duration_seconds": duration,
-                    "subtitles_mode": subtitles_mode,
-                    "tts": tts_config,
-                },
-            )
-            subtitle_ids.append(srt_id)
         video_id = _register_artifact_file(
             job_id,
             payload["project_id"],
@@ -2378,8 +2503,9 @@ def run_video_job(job_id: str, payload: dict) -> dict:
                 "ffmpeg_policy": ffmpeg_policy.as_dict(),
                 "slide_orientation": artifact_metadata(deck).get("orientation", "horizontal"),
                 "slide_deck_id": deck.id,
-                "voice_script_id": voice_artifact.id,
-                "tts": tts_config,
+                "audio_artifact_id": audio_artifact.id,
+                "voice_script_id": manifest.get("voice_script_id"),
+                "tts": artifact_metadata(audio_artifact).get("tts"),
                 "subtitles_mode": subtitles_mode,
                 "subtitles_id": srt_id,
                 "subtitles_style": subtitle_style,
@@ -2427,7 +2553,6 @@ def run_video_job(job_id: str, payload: dict) -> dict:
             message=f"Vídeo de {base} completado",
         )
     _deactivate_unproduced(payload["project_id"], "video", video_ids)
-    _deactivate_unproduced(payload["project_id"], "subtitles", subtitle_ids)
     return {"artifact_ids": video_ids}
 
 
@@ -3698,6 +3823,7 @@ HANDLERS = {
     "slides_run": run_slides_job,
     "script_run": run_script_job,
     "voice_run": run_voice_job,
+    "audio_run": run_audio_job,
     "video_run": run_video_job,
     "course_video_export": run_course_video_job,
     "publisher_run": run_publisher_job,

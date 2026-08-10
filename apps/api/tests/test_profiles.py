@@ -632,7 +632,7 @@ def test_automatic_review_policy_is_validated_and_versioned(auth_client):
     )
 
 
-def test_tts_catalog_and_voice_profile_configuration_are_closed_and_versioned(
+def test_tts_catalog_and_audio_profile_configuration_are_closed_and_versioned(
     auth_client,
 ):
     options = auth_client.get("/api/agents/tts-options?refresh=true")
@@ -672,7 +672,7 @@ def test_tts_catalog_and_voice_profile_configuration_are_closed_and_versioned(
     assert gemini["capabilities"]["instructions"] is True
 
     response = auth_client.post(
-        "/api/agents/voice/profiles",
+        "/api/agents/audio/profiles",
         json={
             "name": "Narración económica",
             "tts_provider": "openrouter",
@@ -815,7 +815,7 @@ def test_tts_preview_returns_audio_without_creating_a_profile_version(
         lambda config, **kwargs: (captured.update(config) or FakeProvider()),
     )
     profile = auth_client.post(
-        "/api/agents/voice/profiles",
+        "/api/agents/audio/profiles",
         json={"name": "Preview de voz"},
     ).json()
     response = auth_client.post(
@@ -864,7 +864,7 @@ def test_gemini_tts_preview_returns_normalized_wav_mime(auth_client, monkeypatch
         lambda *args, **kwargs: FakeProvider(),
     )
     profile = auth_client.post(
-        "/api/agents/voice/profiles",
+        "/api/agents/audio/profiles",
         json={
             "name": "Preview Gemini",
             "tts_provider": "openrouter",

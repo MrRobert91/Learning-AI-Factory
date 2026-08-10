@@ -20,7 +20,8 @@ const AGENT_LABELS: Record<string, string> = {
   slides: "Slides",
   script: "Guion docente",
   voice: "Adaptación a voz",
-  video: "Vídeo",
+  audio: "Generación de audio",
+  video: "Montaje de vídeo",
   publisher: "Publicación",
 };
 

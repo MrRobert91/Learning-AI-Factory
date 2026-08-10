@@ -257,7 +257,7 @@ export default function PrivacyPage() {
                     >
                       OpenAI
                     </a>
-                    , cuando el perfil de voz configurado usa directamente sus
+                    , cuando el perfil de audio configurado usa directamente sus
                     servicios TTS.
                   </li>
                   <li>

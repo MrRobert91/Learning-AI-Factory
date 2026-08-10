@@ -30,6 +30,7 @@ AGENT_LABELS = {
     "slides": "Diseñador de slides",
     "script": "Guion docente",
     "voice": "Adaptación a voz",
+    "audio": "Generación de audio",
     "video": "Montaje de vídeo",
     "publisher": "Publicación",
 }

@@ -18,6 +18,7 @@ const TYPE_LABELS: Record<string, string> = {
   slide_deck: "slides",
   teaching_script: "guion docente",
   voice_script: "guion de voz",
+  audio: "audio narrado",
   video: "vídeo",
   subtitles: "subtítulos",
   course_video: "vídeo completo del curso",
@@ -34,6 +35,7 @@ const EXECUTION_ORDER = [
   "slides",
   "script",
   "voice",
+  "audio",
   "video",
   "publisher",
   "analyst",
@@ -87,7 +89,8 @@ export default function ProfilesPage() {
             Cada perfil conserva la configuración de una etapa. Los agentes de
             IA incluyen personalidad (<code>soul.md</code>) y reglas operativas (
             <code>agents.md</code>); Slides y Vídeo también permiten elegir la
-            orientación, Slides puede generar imágenes y Publicación permite fijar
+            orientación, Audio configura la voz TTS, Slides puede generar imágenes y
+            Publicación permite fijar
             textos y enlaces recurrentes. Puedes seleccionar un perfil distinto en
             cada ejecución.
           </>

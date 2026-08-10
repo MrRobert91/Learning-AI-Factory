@@ -108,6 +108,7 @@ RUNNABLE_AGENTS = (
     "slides",
     "script",
     "voice",
+    "audio",
     "video",
     "publisher",
 )
@@ -254,7 +255,7 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
             or {"cover": True, "content": True, "summary": True},
         }
     tts_config = None
-    if profile.agent_type == "voice":
+    if profile.agent_type == "audio":
         candidate = dict(config)
         if not {"tts_provider", "tts_model", "tts_language", "tts_voice"}.issubset(
             candidate
@@ -271,7 +272,7 @@ def _profile_fields(profile: AgentProfile | None) -> dict:
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"El perfil de voz «{profile.name}» usa una configuración TTS "
+                    f"El perfil de audio «{profile.name}» usa una configuración TTS "
                     f"histórica no disponible: {exc}. Edita el perfil antes de ejecutar."
                 ),
             ) from exc
@@ -398,7 +399,8 @@ def create_agent_run(project_id: str, body: AgentRunCreate, user: CurrentUser, d
 
     if project.duration_spec is None and (
         body.agent == "pipeline"
-        or body.agent in {"planner", "lessons", "slides", "script", "voice", "video", "publisher"}
+        or body.agent
+        in {"planner", "lessons", "slides", "script", "voice", "audio", "video", "publisher"}
     ):
         raise HTTPException(
             status_code=409,

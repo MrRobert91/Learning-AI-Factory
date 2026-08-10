@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from factory_api.auth import CurrentUser
 from factory_api.db import get_db
-from factory_api.models import Artifact, Job, Project, Workflow
+from factory_api.models import AgentProfile, Artifact, Job, Project, Workflow
 from factory_api.routers.agents import get_default_profile
 from factory_api.routers.runs import _base_payload, _job_read, _profile_fields
 from factory_api.run_control import (
@@ -83,6 +83,7 @@ TEMPLATES = [
             {"agent": "slides"},
             {"agent": "script"},
             {"agent": "voice"},
+            {"agent": "audio"},
             {"agent": "video"},
         ],
     },
@@ -96,7 +97,7 @@ TEMPLATES = [
     {
         "name": "Narración y vídeo (desde guion)",
         "description": "Adapta el guion a voz, sintetiza la narración y monta el vídeo.",
-        "steps": [{"agent": "voice"}, {"agent": "video"}],
+        "steps": [{"agent": "voice"}, {"agent": "audio"}, {"agent": "video"}],
     },
 ]
 
@@ -140,6 +141,45 @@ def seed_template_workflows(db: Session) -> None:
             # workflow-owned approval_after flags from existing databases.
             exists.description = template["description"]
             exists.definition_json = json.dumps({"steps": template["steps"]})
+    # Custom workflows created before the media split used Voice -> Video.
+    # Insert the new deterministic audio boundary once while retaining all
+    # profile choices and the original step order.
+    migrated_audio_profiles: dict[str, str] = {}
+    for profile in db.scalars(
+        select(AgentProfile).where(AgentProfile.agent_type == "audio")
+    ).all():
+        source_id = json.loads(profile.config_json or "{}").get(
+            "migrated_from_voice_profile_id"
+        )
+        if source_id:
+            migrated_audio_profiles[str(source_id)] = profile.id
+    for workflow in db.scalars(select(Workflow).where(Workflow.is_template.is_(False))).all():
+        definition = json.loads(workflow.definition_json or "{}")
+        steps = list(definition.get("steps") or [])
+        upgraded: list[dict] = []
+        changed = False
+        seen_voice = False
+        seen_voice_profile_id = None
+        seen_audio = False
+        for step in steps:
+            agent = step.get("agent")
+            if agent == "video" and seen_voice and not seen_audio:
+                audio_step = {"agent": "audio"}
+                migrated_profile_id = migrated_audio_profiles.get(
+                    str(seen_voice_profile_id or "")
+                )
+                if migrated_profile_id:
+                    audio_step["profile_id"] = migrated_profile_id
+                upgraded.append(audio_step)
+                seen_audio = True
+                changed = True
+            upgraded.append(step)
+            seen_voice = seen_voice or agent == "voice"
+            if agent == "voice":
+                seen_voice_profile_id = step.get("profile_id")
+            seen_audio = seen_audio or agent == "audio"
+        if changed:
+            workflow.definition_json = json.dumps({**definition, "steps": upgraded})
     db.commit()
 
 
