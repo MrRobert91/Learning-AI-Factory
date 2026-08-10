@@ -546,6 +546,21 @@ class ArtifactEdit(BaseModel):
     content: str = Field(min_length=1)
 
 
+class SlideTextItem(BaseModel):
+    index: int = Field(ge=1)
+    content: str = Field(min_length=1, max_length=20_000)
+
+
+class SlideTextDocument(BaseModel):
+    artifact_id: str
+    version: int
+    slides: list[SlideTextItem]
+
+
+class SlideTextEdit(BaseModel):
+    slides: list[SlideTextItem] = Field(min_length=1, max_length=200)
+
+
 class SlideImageRegenerate(BaseModel):
     prompt: str = Field(min_length=1, max_length=4000)
 

@@ -3,13 +3,17 @@ import json
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from factory_agents.tools.images import GeneratedImage
+from factory_agents.tools.logos import apply_slide_logo
+from factory_agents.tools.palette import DEFAULT_SLIDE_PALETTE, apply_slide_palette
 from factory_agents.tools.slide_layout import SlideOverflowError
 from factory_api.config import get_settings
 from factory_api.db import SessionLocal
 from factory_api.models import Artifact
 from factory_api.pdf_exports import LessonDocument, lessons_pdf
+from PIL import Image
 from pypdf import PdfReader
 from test_runs import _create_project
 
@@ -35,6 +39,12 @@ def _fake_complete_marp_render(source):
     outputs["pdf"].write_bytes(b"PDF")
     outputs["pptx"].write_bytes(b"PPTX")
     return {format_: str(output) for format_, output in outputs.items()}
+
+
+def _logo_png(color=(178, 58, 38, 255)) -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGBA", (80, 60), color).save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 def test_project_artifacts_are_a_newest_first_selected_chronology(auth_client):
@@ -166,6 +176,207 @@ def test_project_palette_edit_updates_all_selected_decks_atomically(auth_client,
     selected = auth_client.get(f"/api/projects/{project['id']}/artifacts").json()
     assert len(selected) == 2
     assert all(item["metadata"]["palette_name"] == "warm" for item in selected)
+
+
+def test_slide_text_editor_exposes_only_text_and_preserves_deck_assets(
+    auth_client, monkeypatch
+):
+    monkeypatch.setattr("factory_api.routers.artifacts.marp_available", lambda: False)
+    monkeypatch.setattr(
+        "factory_api.routers.artifacts.prepare_slide_layout",
+        lambda *_args, **_kwargs: SimpleNamespace(metadata={"schema_version": 1}),
+    )
+    project = _create_project(auth_client)
+    artifact = _upload(
+        auth_client,
+        project["id"],
+        "slide_deck",
+        "Slides — Editor seguro",
+        "---\nmarp: true\n---\n\n# Uno\n\nTexto uno.\n\n---\n\n## Dos\n\nTexto dos.\n",
+    )
+    settings = get_settings()
+    asset_dir = settings.data_dir / "artifacts" / project["id"] / "slide-assets-editor"
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    (asset_dir / "slide-2.png").write_bytes(b"slide-image")
+    logo_bytes = _logo_png()
+    (asset_dir / "brand-logo.png").write_bytes(logo_bytes)
+    deck = apply_slide_palette(
+        "---\nmarp: true\n---\n\n# Uno\n\nTexto uno.\n\n---\n\n"
+        "<!-- factory-image-id: slide-2 -->\n"
+        "<!-- _class: factory-side-image factory-side-image-right -->\n"
+        "![bg right:42%](slide-assets-editor/slide-2.png)\n\n"
+        "## Dos\n\nTexto dos.\n",
+        DEFAULT_SLIDE_PALETTE,
+    )
+    deck = apply_slide_logo(
+        deck,
+        "slide-assets-editor/brand-logo.png",
+        orientation="horizontal",
+        placement="top-right",
+        size="small",
+        margin_px=32,
+        opacity=1,
+        visibility={"cover": True, "content": True, "summary": True},
+    )
+    with SessionLocal() as db:
+        stored = db.get(Artifact, artifact["id"])
+        (settings.data_dir / stored.path).write_text(deck, encoding="utf-8")
+        stored.metadata_json = json.dumps(
+            {
+                "orientation": "horizontal",
+                "slide_palette": DEFAULT_SLIDE_PALETTE,
+                "images": [
+                    {
+                        "id": "slide-2",
+                        "slide": 2,
+                        "prompt": "Visual",
+                        "layout": "right",
+                        "path": f"artifacts/{project['id']}/slide-assets-editor/slide-2.png",
+                        "markdown_path": "slide-assets-editor/slide-2.png",
+                    }
+                ],
+                "logo": {
+                    "name": "Marca",
+                    "media_type": "image/png",
+                    "placement": "top-right",
+                    "size": "small",
+                    "margin_px": 32,
+                    "configured_margin_px": 32,
+                    "opacity": 1,
+                    "visibility": {"cover": True, "content": True, "summary": True},
+                    "path": f"artifacts/{project['id']}/slide-assets-editor/brand-logo.png",
+                    "markdown_path": "slide-assets-editor/brand-logo.png",
+                },
+            }
+        )
+        db.commit()
+
+    editable = auth_client.get(f"/api/artifacts/{artifact['id']}/slides/text")
+    assert editable.status_code == 200, editable.text
+    assert editable.json()["slides"] == [
+        {"index": 1, "content": "# Uno\n\nTexto uno."},
+        {"index": 2, "content": "## Dos\n\nTexto dos."},
+    ]
+
+    response = auth_client.patch(
+        f"/api/artifacts/{artifact['id']}/slides/text",
+        json={
+            "slides": [
+                {"index": 1, "content": "# Uno editado\n\nNuevo texto."},
+                {"index": 2, "content": "## Dos editado\n\n- Punto A\n- Punto B"},
+            ]
+        },
+    )
+    assert response.status_code == 200, response.text
+    edited = response.json()
+    assert edited["version"] == 2
+    assert edited["metadata"]["version_reason"] == "slide_text_edit"
+    assert edited["metadata"]["edited_slide_count"] == 2
+    assert "# Uno editado" in edited["content"]
+    assert "factory-slide-palette:start" in edited["content"]
+    assert "factory-logo:start" in edited["content"]
+    assert "factory-image-id: slide-2" in edited["content"]
+    assert "slide-assets-text-" in edited["content"]
+    assert auth_client.get(f"/api/artifacts/{edited['id']}/logo").content == logo_bytes
+    historical = auth_client.get(f"/api/artifacts/{artifact['id']}").json()
+    assert "# Uno\n" in historical["content"]
+    assert historical["is_selected"] is False
+
+
+def test_slide_text_editor_rejects_marp_controls_and_stale_indexes(auth_client):
+    project = _create_project(auth_client)
+    artifact = _upload(
+        auth_client,
+        project["id"],
+        "slide_deck",
+        "Slides — Controles protegidos",
+        "---\nmarp: true\n---\n\n# Uno\n\n---\n\n# Dos\n",
+    )
+
+    injected = auth_client.patch(
+        f"/api/artifacts/{artifact['id']}/slides/text",
+        json={
+            "slides": [
+                {"index": 1, "content": "# Uno\n\n<style>section { color: red; }</style>"},
+                {"index": 2, "content": "# Dos"},
+            ]
+        },
+    )
+    assert injected.status_code == 422
+    stale = auth_client.patch(
+        f"/api/artifacts/{artifact['id']}/slides/text",
+        json={"slides": [{"index": 1, "content": "# Solo una"}]},
+    )
+    assert stale.status_code == 409
+    unchanged = auth_client.patch(
+        f"/api/artifacts/{artifact['id']}/slides/text",
+        json={
+            "slides": [
+                {"index": 1, "content": "# Uno"},
+                {"index": 2, "content": "# Dos"},
+            ]
+        },
+    )
+    assert unchanged.status_code == 422
+    assert "No hay cambios" in unchanged.json()["detail"]
+    full_marp = auth_client.patch(
+        f"/api/artifacts/{artifact['id']}",
+        json={"content": "---\nmarp: true\n---\n\n# Reemplazo completo"},
+    )
+    assert full_marp.status_code == 422
+    assert "por diapositiva" in full_marp.json()["detail"]
+
+
+def test_artifact_logo_can_be_uploaded_and_repositioned_as_new_versions(
+    auth_client, monkeypatch
+):
+    monkeypatch.setattr("factory_api.routers.artifacts.marp_available", lambda: False)
+    monkeypatch.setattr(
+        "factory_api.routers.artifacts.prepare_slide_layout",
+        lambda *_args, **_kwargs: SimpleNamespace(metadata={"schema_version": 1}),
+    )
+    project = _create_project(auth_client)
+    original = _upload(
+        auth_client,
+        project["id"],
+        "slide_deck",
+        "Slides — Logo editable",
+        "---\nmarp: true\n---\n\n# Portada\n\nTexto.\n",
+    )
+    logo_bytes = _logo_png((10, 120, 220, 255))
+
+    uploaded = auth_client.patch(
+        f"/api/artifacts/{original['id']}/logo",
+        data={"placement": "bottom-left", "name": "Logo azul"},
+        files={"file": ("logo.png", logo_bytes, "image/png")},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    second = uploaded.json()
+    assert second["version"] == 2
+    assert second["metadata"]["version_reason"] == "logo_edit"
+    assert second["metadata"]["logo"]["source"] == "artifact_upload"
+    assert second["metadata"]["logo"]["placement"] == "bottom-left"
+    assert second["metadata"]["logo"]["margin_px"] == 48
+    assert "factory-logo-bottom" in second["content"]
+    assert auth_client.get(f"/api/artifacts/{second['id']}/logo").content == logo_bytes
+
+    moved = auth_client.patch(
+        f"/api/artifacts/{second['id']}/logo",
+        data={"placement": "top-right"},
+    )
+    assert moved.status_code == 200, moved.text
+    third = moved.json()
+    assert third["version"] == 3
+    assert third["metadata"]["logo"]["placement"] == "top-right"
+    assert third["metadata"]["logo"]["margin_px"] == 32
+    assert "factory-logo-top-right" in third["content"]
+    assert "factory-logo-bottom" not in third["content"]
+    assert auth_client.get(f"/api/artifacts/{third['id']}/logo").content == logo_bytes
+    unchanged = auth_client.patch(
+        f"/api/artifacts/{third['id']}/logo",
+        data={"placement": "top-right"},
+    )
+    assert unchanged.status_code == 422
 
 
 def test_artifact_edit_creates_version_and_lesson_pdf_exports(auth_client):
@@ -470,12 +681,17 @@ def test_invalid_slide_edit_does_not_publish_or_replace_selected_version(
         "factory_api.routers.artifacts.prepare_slide_layout", fail_layout
     )
     response = auth_client.patch(
-        f"/api/artifacts/{original['id']}",
+        f"/api/artifacts/{original['id']}/slides/text",
         json={
-            "content": (
-                "---\nmarp: true\n---\n\n# Versión inválida\n\n"
-                "| Columna | Valor |\n| --- | --- |\n| A | B |\n"
-            )
+            "slides": [
+                {
+                    "index": 1,
+                    "content": (
+                        "# Versión inválida\n\n"
+                        "| Columna | Valor |\n| --- | --- |\n| A | B |\n"
+                    ),
+                }
+            ]
         },
     )
 

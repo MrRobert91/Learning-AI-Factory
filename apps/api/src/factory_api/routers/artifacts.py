@@ -22,6 +22,7 @@ from factory_agents.tools.images import (
     replace_generated_image,
     resolve_style_prompt,
 )
+from factory_agents.tools.logos import apply_slide_logo
 from factory_agents.tools.marp import (
     available_renders,
     inline_local_images,
@@ -41,6 +42,10 @@ from factory_agents.tools.palette import (
     palette_warnings,
 )
 from factory_agents.tools.slide_layout import SlideLayoutError, prepare_slide_layout
+from factory_agents.tools.slide_text import (
+    extract_editable_slides,
+    replace_editable_slides,
+)
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, Response
 from pypdf import PdfReader, PdfWriter
@@ -56,6 +61,7 @@ from factory_api.artifact_versions import (
 from factory_api.auth import CurrentUser
 from factory_api.config import get_settings
 from factory_api.db import get_db
+from factory_api.logo_assets import MAX_LOGO_BYTES, LogoValidationError, validate_logo
 from factory_api.models import Artifact, Project
 from factory_api.pdf_exports import LessonDocument, lessons_pdf
 from factory_api.schemas import (
@@ -65,6 +71,8 @@ from factory_api.schemas import (
     SlideImageRegenerate,
     SlidePaletteApply,
     SlidePalettePreview,
+    SlideTextDocument,
+    SlideTextEdit,
 )
 from factory_api.usage import attach_usage_to_artifact, record_usage
 
@@ -396,6 +404,308 @@ def list_project_artifacts(project_id: str, user: CurrentUser, db: DB):
 def get_artifact(artifact_id: str, user: CurrentUser, db: DB):
     artifact = _check_owner(db, user.id, db.get(Artifact, artifact_id))
     return _artifact_read(db, artifact, include_content=True)
+
+
+def _slide_source(artifact: Artifact) -> Path:
+    if artifact.type != "slide_deck":
+        raise HTTPException(status_code=422, detail="El artefacto no es un deck de slides")
+    source = get_settings().data_dir / artifact.path
+    if not source.is_file():
+        raise HTTPException(status_code=404, detail="Fichero no encontrado")
+    return source
+
+
+@router.get(
+    "/artifacts/{artifact_id}/slides/text",
+    response_model=SlideTextDocument,
+)
+def get_slide_text(artifact_id: str, user: CurrentUser, db: DB):
+    """Expose only editable per-slide Markdown, never the complete Marp source."""
+    artifact = _check_owner(db, user.id, db.get(Artifact, artifact_id))
+    source = _slide_source(artifact)
+    return SlideTextDocument(
+        artifact_id=artifact.id,
+        version=artifact.version,
+        slides=[
+            {"index": slide.index, "content": slide.content}
+            for slide in extract_editable_slides(source.read_text(encoding="utf-8"))
+        ],
+    )
+
+
+@router.patch(
+    "/artifacts/{artifact_id}/slides/text",
+    response_model=ArtifactRead,
+)
+def edit_slide_text(
+    artifact_id: str,
+    body: SlideTextEdit,
+    user: CurrentUser,
+    db: DB,
+):
+    """Create an immutable deck version from text-only per-slide edits."""
+    original = _check_owner(db, user.id, db.get(Artifact, artifact_id))
+    source = _slide_source(original)
+    original_markdown = source.read_text(encoding="utf-8")
+    original_slides = extract_editable_slides(original_markdown)
+    expected = list(range(1, len(original_slides) + 1))
+    supplied = [slide.index for slide in body.slides]
+    if supplied != expected:
+        raise HTTPException(
+            status_code=409,
+            detail="Las diapositivas han cambiado; recarga el artefacto antes de guardar",
+        )
+    edited_slide_count = sum(
+        current.content.strip() != updated.content.strip()
+        for current, updated in zip(original_slides, body.slides, strict=True)
+    )
+    if edited_slide_count == 0:
+        raise HTTPException(status_code=422, detail="No hay cambios de texto que guardar")
+    try:
+        markdown = replace_editable_slides(
+            original_markdown,
+            [slide.content for slide in body.slides],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    metadata = artifact_metadata(original)
+    markdown, metadata, _asset_dir, _storage_dir = _clone_slide_assets(
+        markdown,
+        metadata,
+        original.project_id,
+        suffix="text",
+    )
+    metadata.update(
+        {
+            "source_artifact_id": original.id,
+            "version_reason": "slide_text_edit",
+            "edited_slide_count": edited_slide_count,
+        }
+    )
+    relative = (
+        f"artifacts/{original.project_id}/slide_deck-text-"
+        f"{uuid.uuid4().hex[:10]}.md"
+    )
+    path = get_settings().data_dir / relative
+    try:
+        metadata, _rendered = _prepare_slide_version(path, markdown, metadata)
+        edited = add_artifact_version(
+            db,
+            project_id=original.project_id,
+            type_="slide_deck",
+            format_="markdown",
+            title=original.title,
+            path=relative,
+            metadata=metadata,
+        )
+        db.commit()
+        db.refresh(edited)
+    except Exception:
+        db.rollback()
+        _cleanup_palette_files([path], [metadata], original.project_id)
+        raise
+    logger.info(
+        "Slide text edited as a new artifact version",
+        extra={
+            "artifact_id": edited.id,
+            "source_artifact_id": original.id,
+            "project_id": original.project_id,
+            "artifact_version": edited.version,
+            "edited_slide_count": metadata["edited_slide_count"],
+        },
+    )
+    return _artifact_read(db, edited, include_content=True)
+
+
+@router.get("/artifacts/{artifact_id}/logo")
+def get_artifact_logo(artifact_id: str, user: CurrentUser, db: DB):
+    artifact = _check_owner(db, user.id, db.get(Artifact, artifact_id))
+    _slide_source(artifact)
+    logo = artifact_metadata(artifact).get("logo")
+    path = _safe_stored_asset(str(logo.get("path") or "")) if isinstance(logo, dict) else None
+    if path is None or not path.is_file():
+        raise HTTPException(status_code=404, detail="Logo no encontrado")
+    return FileResponse(
+        path,
+        media_type=str(
+            logo.get("effective_media_type")
+            or logo.get("media_type")
+            or "application/octet-stream"
+        ),
+        filename=path.name,
+        content_disposition_type="inline",
+    )
+
+
+def _effective_logo_margin(orientation: str, placement: str, configured: int) -> int:
+    safe = (
+        72
+        if orientation == "vertical" and placement.startswith("bottom")
+        else 48
+        if placement.startswith("bottom")
+        else 36
+        if orientation == "vertical"
+        else 24
+    )
+    return max(configured, safe)
+
+
+@router.patch("/artifacts/{artifact_id}/logo", response_model=ArtifactRead)
+async def edit_artifact_logo(
+    artifact_id: str,
+    user: CurrentUser,
+    db: DB,
+    placement: Annotated[str, Form()],
+    file: Annotated[UploadFile | None, File()] = None,
+    name: Annotated[str, Form()] = "",
+):
+    """Replace or reposition a frozen deck logo without mutating its profile."""
+    if placement not in {"top-left", "top-right", "bottom-left", "bottom-right"}:
+        raise HTTPException(status_code=422, detail="Posición de logo desconocida")
+    original = _check_owner(db, user.id, db.get(Artifact, artifact_id))
+    source = _slide_source(original)
+    current_metadata = artifact_metadata(original)
+    current_logo = current_metadata.get("logo")
+    validated = None
+    if file is not None:
+        content = await file.read(MAX_LOGO_BYTES + 1)
+        try:
+            validated = validate_logo(
+                content,
+                file.filename or "",
+                file.content_type or "",
+            )
+        except LogoValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    elif not isinstance(current_logo, dict):
+        raise HTTPException(status_code=422, detail="Selecciona una imagen para el logo")
+    elif str(current_logo.get("placement") or "top-right") == placement:
+        raise HTTPException(status_code=422, detail="No hay cambios de logo que guardar")
+
+    markdown, metadata, output_dir, storage_asset_dir = _clone_slide_assets(
+        source.read_text(encoding="utf-8"),
+        current_metadata,
+        original.project_id,
+        suffix="logo",
+    )
+    logo = dict(metadata.get("logo") or {})
+    if validated is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"brand-logo-{uuid.uuid4().hex[:6]}{validated.extension}"
+        target = output_dir / filename
+        target.write_bytes(validated.content)
+        markdown_path = f"{output_dir.name}/{filename}"
+        logo.update(
+            {
+                "source_logo_id": None,
+                "source": "artifact_upload",
+                "name": name.strip() or Path(file.filename or "Logo").stem,
+                "media_type": validated.media_type,
+                "width": validated.width,
+                "height": validated.height,
+                "sha256": validated.sha256,
+                "original_path": f"{storage_asset_dir}/{filename}",
+                "original_media_type": validated.media_type,
+                "original_width": validated.width,
+                "original_height": validated.height,
+                "original_sha256": validated.sha256,
+                "effective_media_type": validated.media_type,
+                "effective_width": validated.width,
+                "effective_height": validated.height,
+                "effective_sha256": validated.sha256,
+                "background_mode": "opaque",
+                "background_removal": None,
+                "prompt": None,
+                "model": None,
+                "seed": None,
+                "cost_usd": None,
+                "profile_id": None,
+                "profile_version": None,
+                "mode": "uploaded",
+                "path": f"{storage_asset_dir}/{filename}",
+                "markdown_path": markdown_path,
+            }
+        )
+    cloned_logo_path = _safe_stored_asset(str(logo.get("path") or ""))
+    if cloned_logo_path is None or not cloned_logo_path.is_file():
+        _remove_slide_assets(metadata, original.project_id)
+        raise HTTPException(status_code=409, detail="El fichero del logo ya no está disponible")
+
+    orientation = str(metadata.get("orientation", "horizontal"))
+    configured_margin = int(logo.get("configured_margin_px", 32))
+    logo.update(
+        {
+            "placement": placement,
+            "size": logo.get("size", "small"),
+            "configured_margin_px": configured_margin,
+            "margin_px": _effective_logo_margin(
+                orientation,
+                placement,
+                configured_margin,
+            ),
+            "opacity": float(logo.get("opacity", 1.0)),
+            "visibility": logo.get("visibility")
+            or {"cover": True, "content": True, "summary": True},
+        }
+    )
+    metadata.update(
+        {
+            "logo": logo,
+            "source_artifact_id": original.id,
+            "version_reason": "logo_edit",
+        }
+    )
+    try:
+        markdown = apply_slide_logo(
+            markdown,
+            str(logo["markdown_path"]),
+            orientation=orientation,
+            placement=placement,
+            size=str(logo["size"]),
+            margin_px=int(logo["margin_px"]),
+            opacity=float(logo["opacity"]),
+            visibility=dict(logo["visibility"]),
+            alt=str(logo.get("name") or "Logo de marca"),
+        )
+    except ValueError as exc:
+        _remove_slide_assets(metadata, original.project_id)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    relative = (
+        f"artifacts/{original.project_id}/slide_deck-logo-"
+        f"{uuid.uuid4().hex[:10]}.md"
+    )
+    path = get_settings().data_dir / relative
+    try:
+        metadata, _rendered = _prepare_slide_version(path, markdown, metadata)
+        edited = add_artifact_version(
+            db,
+            project_id=original.project_id,
+            type_="slide_deck",
+            format_="markdown",
+            title=original.title,
+            path=relative,
+            metadata=metadata,
+        )
+        db.commit()
+        db.refresh(edited)
+    except Exception:
+        db.rollback()
+        _cleanup_palette_files([path], [metadata], original.project_id)
+        raise
+    logger.info(
+        "Slide logo edited as a new artifact version",
+        extra={
+            "artifact_id": edited.id,
+            "source_artifact_id": original.id,
+            "project_id": original.project_id,
+            "artifact_version": edited.version,
+            "placement": placement,
+            "image_replaced": validated is not None,
+        },
+    )
+    return _artifact_read(db, edited, include_content=True)
 
 
 @router.get("/artifacts/{artifact_id}/images/{image_id}")
@@ -769,6 +1079,14 @@ def edit_artifact(
 ):
     """Save edited text as the next immutable artifact version."""
     original = _check_owner(db, user.id, db.get(Artifact, artifact_id))
+    if original.type == "slide_deck":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Las slides se editan por diapositiva para proteger el estilo y la "
+                "configuración Marp"
+            ),
+        )
     if original.type == "audio":
         raise HTTPException(
             status_code=422,

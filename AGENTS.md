@@ -155,6 +155,12 @@ docker compose up --build                # stack completo (2 contenedores)
   defecto o `transparent`: este último conserva el original, reutiliza un PNG
   RGBA derivado y validado, y congela ambos hashes/asset efectivo en el snapshot.
   Nunca elimines el fondo ni regeneres el logo durante la producción.
+- **Edición de decks**: desde un artefacto `slide_deck`, el texto se edita por
+  diapositiva y el backend reconstruye el Markdown conservando frontmatter,
+  estilos canónicos, directivas, imágenes y logo; no expongas el Marp completo
+  al editor ni aceptes sintaxis de control en el texto. Cambiar texto, paleta o
+  logo/posición crea siempre una versión autosuficiente, clona assets y vuelve
+  a validar/renderizar sin LLM ni regeneración de imágenes.
 - **Overflow de slides**: toda versión nueva de `slide_deck` recibe el bloque
   canónico de safe area y, cuando Marp/Chromium están disponibles, se mide sobre
   el DOM real antes de seleccionarse. El ajuste reduce tipografía solo hasta el
