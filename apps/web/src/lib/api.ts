@@ -559,6 +559,23 @@ export interface Artifact {
   }[];
 }
 
+export interface SlideTextItem {
+  index: number;
+  content: string;
+}
+
+export interface SlideTextDocument {
+  artifact_id: string;
+  version: number;
+  slides: SlideTextItem[];
+}
+
+export type SlideLogoPlacement =
+  | "top-left"
+  | "top-right"
+  | "bottom-left"
+  | "bottom-right";
+
 export type CourseVideoTransition = "none" | "fade_500ms" | "gap_500ms";
 
 export interface CourseVideoPreflightIssue {
@@ -986,6 +1003,34 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ content }),
     }),
+  getSlideText: (id: string) =>
+    request<SlideTextDocument>(`/api/artifacts/${id}/slides/text`),
+  editSlideText: (id: string, slides: SlideTextItem[]) =>
+    request<Artifact>(`/api/artifacts/${id}/slides/text`, {
+      method: "PATCH",
+      body: JSON.stringify({ slides }),
+    }),
+  updateSlideLogo: async (
+    id: string,
+    placement: SlideLogoPlacement,
+    file?: File | null,
+  ) => {
+    const form = new FormData();
+    form.append("placement", placement);
+    if (file) {
+      form.append("file", file);
+      form.append("name", file.name.replace(/\.[^.]+$/, ""));
+    }
+    const response = await fetch(`/api/artifacts/${id}/logo`, {
+      method: "PATCH",
+      body: form,
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new ApiError(response.status, body.detail ?? response.statusText);
+    }
+    return (await response.json()) as Artifact;
+  },
   regenerateSlideImage: (artifactId: string, imageId: string, prompt: string) =>
     request<Artifact>(
       `/api/artifacts/${artifactId}/images/${encodeURIComponent(imageId)}/regenerate`,

@@ -7,7 +7,9 @@ import {
   api,
   type Artifact,
   type PaletteOptions,
+  type SlideLogoPlacement,
   type SlidePalette,
+  type SlideTextItem,
 } from "@/lib/api";
 import YouTubePublish from "@/components/YouTubePublish";
 import Markdown from "@/components/Markdown";
@@ -178,6 +180,9 @@ export default function ArtifactViewerPage() {
   const [notFound, setNotFound] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
+  const [slideText, setSlideText] = useState<SlideTextItem[]>([]);
+  const [originalSlideText, setOriginalSlideText] = useState<SlideTextItem[]>([]);
+  const [loadingEditor, setLoadingEditor] = useState(false);
   const [saving, setSaving] = useState(false);
   const [imagePrompts, setImagePrompts] = useState<Record<string, string>>({});
   const [regeneratingImage, setRegeneratingImage] = useState<string | null>(null);
@@ -190,12 +195,19 @@ export default function ArtifactViewerPage() {
   const [previewingPalette, setPreviewingPalette] = useState(false);
   const [confirmPalette, setConfirmPalette] = useState(false);
   const [applyingPalette, setApplyingPalette] = useState(false);
+  const [editingLogo, setEditingLogo] = useState(false);
+  const [logoPlacement, setLogoPlacement] =
+    useState<SlideLogoPlacement>("top-right");
+  const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [logoPreview, setLogoPreview] = useState<string | null>(null);
+  const [savingLogo, setSavingLogo] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setArtifact(null);
     setNotFound(false);
     setEditing(false);
+    setEditingLogo(false);
     setError(null);
     Promise.all([api.getArtifact(id), api.getPaletteOptions()])
       .then(([value, palettes]) => {
@@ -218,12 +230,45 @@ export default function ArtifactViewerPage() {
     [palettePreview],
   );
 
+  useEffect(
+    () => () => {
+      if (logoPreview) URL.revokeObjectURL(logoPreview);
+    },
+    [logoPreview],
+  );
+
+  async function openTextEditor() {
+    if (!artifact) return;
+    setError(null);
+    setEditingLogo(false);
+    setEditingPalette(false);
+    if (artifact.type !== "slide_deck") {
+      setDraft(artifact.content ?? "");
+      setEditing(true);
+      return;
+    }
+    setLoadingEditor(true);
+    try {
+      const document = await api.getSlideText(artifact.id);
+      setSlideText(document.slides);
+      setOriginalSlideText(document.slides);
+      setEditing(true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "No se pudo abrir el editor");
+    } finally {
+      setLoadingEditor(false);
+    }
+  }
+
   async function saveVersion() {
     if (!artifact) return;
     setSaving(true);
     setError(null);
     try {
-      const updated = await api.editArtifact(artifact.id, draft);
+      const updated =
+        artifact.type === "slide_deck"
+          ? await api.editSlideText(artifact.id, slideText)
+          : await api.editArtifact(artifact.id, draft);
       setArtifact(updated);
       setEditing(false);
       router.replace("/artifacts/" + updated.id);
@@ -233,6 +278,49 @@ export default function ArtifactViewerPage() {
       );
     } finally {
       setSaving(false);
+    }
+  }
+
+  function openLogoEditor() {
+    if (!artifact) return;
+    setEditingPalette(false);
+    const logo =
+      typeof artifact.metadata.logo === "object" && artifact.metadata.logo !== null
+        ? (artifact.metadata.logo as Record<string, unknown>)
+        : null;
+    const placement = logo?.placement;
+    setLogoPlacement(
+      placement === "top-left" ||
+        placement === "top-right" ||
+        placement === "bottom-left" ||
+        placement === "bottom-right"
+        ? placement
+        : "top-right",
+    );
+    setLogoFile(null);
+    if (logoPreview) URL.revokeObjectURL(logoPreview);
+    setLogoPreview(null);
+    setEditingLogo(true);
+    setError(null);
+  }
+
+  async function saveLogo() {
+    if (!artifact) return;
+    setSavingLogo(true);
+    setError(null);
+    try {
+      const updated = await api.updateSlideLogo(
+        artifact.id,
+        logoPlacement,
+        logoFile,
+      );
+      setArtifact(updated);
+      setEditingLogo(false);
+      router.replace("/artifacts/" + updated.id);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "No se pudo guardar el logo");
+    } finally {
+      setSavingLogo(false);
     }
   }
 
@@ -260,6 +348,7 @@ export default function ArtifactViewerPage() {
 
   function openPaletteEditor() {
     if (!artifact || !paletteOptions) return;
+    setEditingLogo(false);
     const stored = artifact.metadata.slide_palette;
     setSlidePalette(
       typeof stored === "object" && stored !== null
@@ -337,6 +426,19 @@ export default function ArtifactViewerPage() {
     artifact.metadata.image_generation !== null
       ? (artifact.metadata.image_generation as Record<string, unknown>)
       : null;
+  const logoMetadata =
+    typeof artifact.metadata.logo === "object" && artifact.metadata.logo !== null
+      ? (artifact.metadata.logo as Record<string, unknown>)
+      : null;
+  const storedLogoPlacement =
+    logoMetadata?.placement === "top-left" ||
+    logoMetadata?.placement === "top-right" ||
+    logoMetadata?.placement === "bottom-left" ||
+    logoMetadata?.placement === "bottom-right"
+      ? logoMetadata.placement
+      : null;
+  const slideTextChanged =
+    JSON.stringify(slideText) !== JSON.stringify(originalSlideText);
 
   return (
     <>
@@ -351,20 +453,31 @@ export default function ArtifactViewerPage() {
         </Link>
         <div className="flex flex-wrap gap-2">
           {artifact.type === "slide_deck" && !editing && (
-            <button type="button" onClick={openPaletteEditor} className="btn-primary btn-sm">
-              Cambiar paleta
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={openLogoEditor}
+                className="btn-secondary btn-sm"
+              >
+                Editar logo
+              </button>
+              <button
+                type="button"
+                onClick={openPaletteEditor}
+                className="btn-secondary btn-sm"
+              >
+                Cambiar paleta
+              </button>
+            </>
           )}
           {editable && !editing && (
             <button
               type="button"
-              onClick={() => {
-                setDraft(artifact.content ?? "");
-                setEditing(true);
-              }}
+              onClick={openTextEditor}
+              disabled={loadingEditor}
               className="btn-primary btn-sm"
             >
-              Editar texto
+              {loadingEditor ? "Abriendo editor…" : "Editar texto"}
             </button>
           )}
           {artifact.renders.map((fmt) => (
@@ -455,6 +568,115 @@ export default function ArtifactViewerPage() {
           </label>
         )}
       </div>
+
+      {editingLogo && (
+        <section className="card mb-6 p-4 sm:p-6">
+          <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold text-zinc-100">Editar logo</h2>
+              <p className="mt-1 text-xs text-zinc-500">
+                Cambia la imagen o su posición. Se clonarán todos los assets y se
+                creará la v{artifact.version + 1} sin modificar el perfil de Slides.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setEditingLogo(false);
+                setError(null);
+              }}
+              disabled={savingLogo}
+              className="btn-secondary btn-sm"
+            >
+              Cerrar
+            </button>
+          </div>
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(260px,0.7fr)]">
+            <div className="space-y-5">
+              <label className="block text-sm text-zinc-300">
+                Imagen del logo
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                  className="input mt-2 block w-full text-sm"
+                  onChange={(event) => {
+                    const selected = event.target.files?.[0] ?? null;
+                    if (logoPreview) URL.revokeObjectURL(logoPreview);
+                    setLogoFile(selected);
+                    setLogoPreview(selected ? URL.createObjectURL(selected) : null);
+                  }}
+                />
+                <span className="mt-1 block text-xs text-zinc-500">
+                  PNG, WebP, SVG o JPG · máximo 5 MB. Déjalo vacío para conservar la
+                  imagen actual.
+                </span>
+              </label>
+              <fieldset>
+                <legend className="mb-2 text-sm font-semibold text-zinc-300">
+                  Posición
+                </legend>
+                <div className="grid grid-cols-2 gap-2 sm:max-w-lg">
+                  {(
+                    [
+                      ["top-left", "Arriba izquierda"],
+                      ["top-right", "Arriba derecha"],
+                      ["bottom-left", "Abajo izquierda"],
+                      ["bottom-right", "Abajo derecha"],
+                    ] as const
+                  ).map(([value, label]) => (
+                    <label
+                      key={value}
+                      className={`cursor-pointer rounded-lg border px-3 py-3 text-sm transition-colors ${
+                        logoPlacement === value
+                          ? "border-red-500/60 bg-red-500/10 text-zinc-100"
+                          : "border-white/[0.09] bg-black/20 text-zinc-400"
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        className="mr-2"
+                        checked={logoPlacement === value}
+                        onChange={() => setLogoPlacement(value)}
+                      />
+                      {label}
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+              <button
+                type="button"
+                onClick={saveLogo}
+                disabled={
+                  savingLogo ||
+                  (!logoFile && !logoMetadata) ||
+                  (!logoFile && storedLogoPlacement === logoPlacement)
+                }
+                className="btn-primary btn-sm"
+              >
+                {savingLogo ? "Guardando…" : "Guardar como nueva versión"}
+              </button>
+              <ErrorBanner>{error}</ErrorBanner>
+            </div>
+            <div>
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                Vista de la imagen
+              </p>
+              {logoPreview || logoMetadata ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={logoPreview ?? `/api/artifacts/${artifact.id}/logo`}
+                  alt="Logo que se aplicará a las diapositivas"
+                  className="max-h-64 w-full rounded-lg border border-white/[0.09] bg-white object-contain p-5"
+                />
+              ) : (
+                <div className="flex min-h-48 items-center justify-center rounded-lg border border-dashed border-white/[0.12] px-6 text-center text-sm text-zinc-500">
+                  Este deck no tiene logo. Selecciona una imagen para añadirlo.
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
 
       {editingPalette && paletteOptions && slidePalette && (
         <section className="card mb-6 p-4 sm:p-6">
@@ -577,8 +799,9 @@ export default function ArtifactViewerPage() {
                 Editando v{artifact.version}
               </h2>
               <p className="mt-1 text-xs text-zinc-500">
-                Al guardar se creará la v{artifact.version + 1}; esta versión no
-                se modificará.
+                {artifact.type === "slide_deck"
+                  ? "Edita solo el Markdown de texto de cada diapositiva. El estilo, las imágenes y la configuración Marp permanecen protegidos."
+                  : `Al guardar se creará la v${artifact.version + 1}; esta versión no se modificará.`}
               </p>
             </div>
             <div className="flex gap-2">
@@ -586,6 +809,7 @@ export default function ArtifactViewerPage() {
                 type="button"
                 onClick={() => {
                   setDraft(artifact.content ?? "");
+                  setSlideText(originalSlideText);
                   setEditing(false);
                   setError(null);
                 }}
@@ -597,7 +821,12 @@ export default function ArtifactViewerPage() {
               <button
                 type="button"
                 onClick={saveVersion}
-                disabled={saving || draft === artifact.content}
+                disabled={
+                  saving ||
+                  (artifact.type === "slide_deck"
+                    ? !slideTextChanged
+                    : draft === artifact.content)
+                }
                 className="btn-primary btn-sm"
               >
                 {saving ? "Guardando…" : "Guardar como nueva versión"}
@@ -605,13 +834,48 @@ export default function ArtifactViewerPage() {
             </div>
           </div>
           <ErrorBanner>{error}</ErrorBanner>
-          <textarea
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            spellCheck={artifact.format !== "json"}
-            className="input min-h-[65vh] w-full resize-y font-mono text-sm leading-relaxed"
-            aria-label="Contenido del artefacto"
-          />
+          {artifact.type === "slide_deck" ? (
+            <div className="space-y-4">
+              {slideText.map((slide) => (
+                <article
+                  key={slide.index}
+                  className="rounded-xl border border-white/[0.09] bg-black/20 p-4"
+                >
+                  <label
+                    htmlFor={`slide-text-${slide.index}`}
+                    className="mb-2 block text-sm font-semibold text-zinc-200"
+                  >
+                    Diapositiva {slide.index}
+                  </label>
+                  <textarea
+                    id={`slide-text-${slide.index}`}
+                    value={slide.content}
+                    onChange={(event) =>
+                      setSlideText((current) =>
+                        current.map((item) =>
+                          item.index === slide.index
+                            ? { ...item, content: event.target.value }
+                            : item,
+                        ),
+                      )
+                    }
+                    rows={Math.max(6, slide.content.split("\n").length + 2)}
+                    spellCheck
+                    className="input w-full resize-y font-mono text-sm leading-relaxed"
+                    aria-label={`Texto Markdown de la diapositiva ${slide.index}`}
+                  />
+                </article>
+              ))}
+            </div>
+          ) : (
+            <textarea
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              spellCheck={artifact.format !== "json"}
+              className="input min-h-[65vh] w-full resize-y font-mono text-sm leading-relaxed"
+              aria-label="Contenido del artefacto"
+            />
+          )}
         </section>
       ) : (
         <>
