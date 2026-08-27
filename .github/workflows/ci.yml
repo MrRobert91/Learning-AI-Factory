@@ -32,6 +32,19 @@ jobs:
           docker build --file apps/api/Dockerfile --tag learning-ai-factory-backend:test .
           uid="$(docker run --rm learning-ai-factory-backend:test id -u)"
           test "$uid" -ne 0
+          volume="backend-data-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          trap 'docker volume rm --force "$volume"' EXIT
+          docker volume create "$volume"
+          docker run --rm \
+            --user root \
+            --entrypoint python \
+            --volume "$volume:/data" \
+            learning-ai-factory-backend:test \
+            -c 'from pathlib import Path; import sqlite3; Path("/data/db").mkdir(); sqlite3.connect("/data/db/factory.sqlite").execute("CREATE TABLE legacy (id INTEGER)").connection.commit()'
+          docker run --rm \
+            --volume "$volume:/data" \
+            learning-ai-factory-backend:test \
+            python -c 'import os, sqlite3; assert os.getuid() != 0; sqlite3.connect("/data/db/factory.sqlite").execute("ALTER TABLE legacy ADD COLUMN migrated INTEGER").connection.commit()'
           docker run --rm \
             --env PYTHON_SANDBOX_MODE=isolated \
             learning-ai-factory-backend:test \
